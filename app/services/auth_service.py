@@ -441,7 +441,7 @@ async def get_current_user(
     if payload.get("type") != "access":
         raise credentials_error
 
-    user_id: str | None = payload.get("sub")
+    user_id: Optional[str] = payload.get("sub")
     if not user_id:
         raise credentials_error
 
