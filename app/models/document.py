@@ -45,8 +45,10 @@ class Document(Base):
     )
     # Original filename shown to user
     original_filename: Mapped[str] = mapped_column(String(500), nullable=False)
-    # Path on disk (for uploaded) or None (for sample docs stored elsewhere)
+    # Cloudinary public_id (used for deletion) or sample file path
     file_path: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
+    # Cloudinary secure_url — direct HTTPS link to the file
+    file_url: Mapped[Optional[str]] = mapped_column(String(2000), nullable=True)
     file_size_mb: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     mime_type: Mapped[str] = mapped_column(String(100), nullable=False, default="application/pdf")
     source: Mapped[DocumentSource] = mapped_column(

@@ -1,9 +1,12 @@
 """
-Document Service — handles document uploads, sample document retrieval, and sample selection.
+Document Service — handles document uploads, community sample retrieval, and sample selection.
+Files are stored on Cloudinary. Only the public_id and secure_url are saved in the DB.
+
+Community samples: documents uploaded by any user are available as samples to other users
+in the same business category.
 """
 
 import logging
-import os
 import uuid
 from typing import List
 
@@ -12,8 +15,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.core.storage import upload_file_to_cloudinary
 from app.models.document import Document, DocumentSource, DocumentStatus
-from app.models.sample_document import SampleDocument
 from app.models.tenant import Tenant
 from app.models.tenant_quota import TenantQuota
 from app.models.usage_count import UsageCount
@@ -25,10 +28,24 @@ ALLOWED_MIME_TYPES = [m.strip() for m in settings.ALLOWED_MIME_TYPES.split(",")]
 
 
 # ---------------------------------------------------------------------------
-# Get sample documents for user's business category
+# Helper: attach business_category onto Document objects for the response
 # ---------------------------------------------------------------------------
 
-async def get_sample_documents(user: User, db: AsyncSession) -> List[SampleDocument]:
+class DocumentWithCategory:
+    """Wraps a Document and adds business_category from its owner's tenant."""
+    def __init__(self, doc: Document, business_category: str):
+        # Copy all Document attributes
+        self.__dict__.update(doc.__dict__)
+        self.business_category = business_category
+
+
+# ---------------------------------------------------------------------------
+# Get community sample documents for user's business category
+# Returns uploaded documents from OTHER tenants in the same business category
+# ---------------------------------------------------------------------------
+
+async def get_sample_documents(user: User, db: AsyncSession) -> List[DocumentWithCategory]:
+    # Get current user's tenant + business category
     result = await db.execute(
         select(Tenant).where(Tenant.id == user.tenant_id)
     )
@@ -40,17 +57,37 @@ async def get_sample_documents(user: User, db: AsyncSession) -> List[SampleDocum
             detail="Organization info not set. Complete the organization step first.",
         )
 
+    # Find all tenants in the same business category (excluding current user)
     result = await db.execute(
-        select(SampleDocument).where(
-            SampleDocument.business_category == tenant.business_category,
-            SampleDocument.is_active == True,
+        select(Tenant).where(
+            Tenant.business_category == tenant.business_category,
+            Tenant.id != user.tenant_id,
         )
     )
-    return result.scalars().all()
+    other_tenants = result.scalars().all()
+
+    if not other_tenants:
+        return []
+
+    other_tenant_ids = [t.id for t in other_tenants]
+
+    # Get uploaded (not sample) documents from those tenants that have a file_url
+    result = await db.execute(
+        select(Document).where(
+            Document.tenant_id.in_(other_tenant_ids),
+            Document.source == DocumentSource.uploaded,
+            Document.is_active == True,
+            Document.file_url.isnot(None),
+        ).order_by(Document.created_at.desc())
+    )
+    docs = result.scalars().all()
+
+    # Attach business_category to each doc
+    return [DocumentWithCategory(doc, tenant.business_category) for doc in docs]
 
 
 # ---------------------------------------------------------------------------
-# Upload documents
+# Upload documents — stored on Cloudflare R2
 # ---------------------------------------------------------------------------
 
 async def upload_documents(
@@ -75,7 +112,7 @@ async def upload_documents(
     )
     usage = result.scalar_one_or_none()
 
-    # Fetch existing active documents count and total storage
+    # Existing active documents
     result = await db.execute(
         select(Document).where(
             Document.tenant_id == user.tenant_id,
@@ -84,74 +121,63 @@ async def upload_documents(
     )
     existing_docs = result.scalars().all()
     existing_count = len(existing_docs)
-    existing_storage_mb = sum(d.file_size_mb for d in existing_docs)
 
-    saved_documents: List[Document] = []
+    # --- Validate all files first before uploading any ---
+    file_data = []  # (content, file_size_mb, filename, content_type)
     total_new_storage = 0.0
 
     for file in files:
-        # Validate MIME type
         if file.content_type not in ALLOWED_MIME_TYPES:
             raise HTTPException(
                 status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-                detail=f"File type '{file.content_type}' is not allowed. Allowed types: PDF, DOCX, DOC, TXT.",
+                detail=f"File type '{file.content_type}' is not allowed. Allowed: PDF, DOCX, DOC, TXT.",
             )
 
-        # Read file content
         content = await file.read()
-        file_size_bytes = len(content)
-        file_size_mb = file_size_bytes / (1024 * 1024)
+        file_size_mb = len(content) / (1024 * 1024)
 
-        # Validate individual file size
-        if file_size_mb > settings.MAX_UPLOAD_SIZE_MB:
+        # Use quota's per-file limit if available, otherwise fall back to global config
+        result_quota = await db.execute(
+            select(TenantQuota).where(TenantQuota.tenant_id == user.tenant_id)
+        )
+        _quota = result_quota.scalar_one_or_none()
+        max_mb = _quota.max_file_size_mb if _quota else settings.MAX_UPLOAD_SIZE_MB
+
+        if file_size_mb > max_mb:
             raise HTTPException(
                 status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                detail=f"File '{file.filename}' exceeds maximum size of {settings.MAX_UPLOAD_SIZE_MB}MB.",
+                detail=f"'{file.filename}' exceeds the {max_mb}MB per-file limit.",
             )
 
         total_new_storage += file_size_mb
+        file_data.append((content, file_size_mb, file.filename or "document", file.content_type))
 
-    # Quota checks (only if quota exists and limits are set)
+    # --- Quota checks ---
     if quota:
-        new_total_count = existing_count + len(files)
-        new_total_storage = existing_storage_mb + total_new_storage
-
-        if quota.max_documents != -1 and new_total_count > quota.max_documents:
+        if quota.max_documents != -1 and (existing_count + len(files)) > quota.max_documents:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Document quota exceeded. Your plan allows {quota.max_documents} documents.",
             )
 
-        if quota.max_storage_mb != -1 and new_total_storage > quota.max_storage_mb:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Storage quota exceeded. Your plan allows {quota.max_storage_mb}MB.",
-            )
+    # --- Upload to R2 and create DB records ---
+    saved_documents: List[Document] = []
 
-    # Create tenant upload directory
-    tenant_upload_dir = os.path.join(settings.UPLOAD_DIR, str(user.tenant_id))
-    os.makedirs(tenant_upload_dir, exist_ok=True)
-
-    # Save files
-    for file in files:
-        await file.seek(0)
-        content = await file.read()
-        file_size_mb = len(content) / (1024 * 1024)
-
-        # Generate unique filename to avoid collisions
-        file_ext = os.path.splitext(file.filename or "")[1]
-        unique_filename = f"{uuid.uuid4()}{file_ext}"
-        file_path = os.path.join(tenant_upload_dir, unique_filename)
-
-        with open(file_path, "wb") as f:
-            f.write(content)
+    for content, file_size_mb, filename, content_type in file_data:
+        public_id, secure_url = await upload_file_to_cloudinary(
+            file_content=content,
+            tenant_id=user.tenant_id,
+            original_filename=filename,
+            content_type=content_type,
+        )
 
         doc = Document(
             tenant_id=user.tenant_id,
-            original_filename=file.filename or unique_filename,
-            file_path=file_path,
+            original_filename=filename,
+            file_path=public_id,        # Cloudinary public_id (used for deletion)
+            file_url=secure_url,        # HTTPS URL to access the file
             file_size_mb=round(file_size_mb, 4),
-            mime_type=file.content_type,
+            mime_type=content_type,
             source=DocumentSource.uploaded,
             status=DocumentStatus.pending,
         )
@@ -160,93 +186,101 @@ async def upload_documents(
 
     await db.flush()
 
-    # Update usage count if exists
+    # Update usage count
     if usage:
         usage.documents_count = (usage.documents_count or 0) + len(saved_documents)
-        usage.storage_used_mb = round(
-            (usage.storage_used_mb or 0.0) + total_new_storage, 4
-        )
+        usage.storage_used_mb = round((usage.storage_used_mb or 0.0) + total_new_storage, 4)
 
     await db.commit()
 
     for doc in saved_documents:
         await db.refresh(doc)
 
-    logger.info(
-        "Uploaded %d document(s) for tenant %s",
-        len(saved_documents),
-        user.tenant_id,
-    )
+    logger.info("Uploaded %d file(s) to R2 for tenant %s", len(saved_documents), user.tenant_id)
     return saved_documents
 
 
 # ---------------------------------------------------------------------------
-# Select a sample document
+# Select a community document — copies it into the current user's workspace
 # ---------------------------------------------------------------------------
 
 async def select_sample_document(
-    user: User, sample_document_id: uuid.UUID, db: AsyncSession
+    user: User, document_id: uuid.UUID, db: AsyncSession
 ) -> Document:
-    # Verify sample document exists and belongs to the right category
+    # Fetch the source document (must belong to a different tenant)
     result = await db.execute(
-        select(SampleDocument).where(
-            SampleDocument.id == sample_document_id,
-            SampleDocument.is_active == True,
+        select(Document).where(
+            Document.id == document_id,
+            Document.is_active == True,
+            Document.file_url.isnot(None),
         )
     )
-    sample_doc = result.scalar_one_or_none()
+    source_doc = result.scalar_one_or_none()
 
-    if not sample_doc:
+    if not source_doc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Sample document not found.",
+            detail="Document not found.",
         )
 
-    # Verify sample doc matches user's business category
+    if source_doc.tenant_id == user.tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You cannot select your own document as a sample.",
+        )
+
+    # Verify the source doc's tenant has the same business category
     result = await db.execute(
         select(Tenant).where(Tenant.id == user.tenant_id)
     )
-    tenant = result.scalar_one_or_none()
+    my_tenant = result.scalar_one_or_none()
 
-    if not tenant or tenant.business_category != sample_doc.business_category:
+    result = await db.execute(
+        select(Tenant).where(Tenant.id == source_doc.tenant_id)
+    )
+    source_tenant = result.scalar_one_or_none()
+
+    if not source_tenant or not my_tenant:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Tenant not found.")
+
+    if my_tenant.business_category != source_tenant.business_category:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="This sample document does not match your business category.",
+            detail="This document is not from your business category.",
         )
 
-    # Check if already selected
+    # Prevent duplicate — don't add the same source doc twice
     result = await db.execute(
         select(Document).where(
             Document.tenant_id == user.tenant_id,
-            Document.sample_document_id == sample_document_id,
+            Document.file_url == source_doc.file_url,
             Document.is_active == True,
         )
     )
-    existing = result.scalar_one_or_none()
-    if existing:
+    if result.scalar_one_or_none():
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="You have already selected this sample document.",
+            detail="You have already added this document to your workspace.",
         )
 
+    # Create a copy in the current user's workspace (source=sample, points to same Cloudinary URL)
     doc = Document(
         tenant_id=user.tenant_id,
-        original_filename=sample_doc.filename,
-        file_path=sample_doc.file_path,
-        file_size_mb=sample_doc.file_size_mb,
-        mime_type="application/pdf",
+        original_filename=source_doc.original_filename,
+        file_path=source_doc.file_path,
+        file_url=source_doc.file_url,
+        file_size_mb=source_doc.file_size_mb,
+        mime_type=source_doc.mime_type,
         source=DocumentSource.sample,
         status=DocumentStatus.ready,
-        sample_document_id=sample_document_id,
     )
     db.add(doc)
     await db.commit()
     await db.refresh(doc)
 
     logger.info(
-        "Tenant %s selected sample document %s",
-        user.tenant_id,
-        sample_document_id,
+        "Tenant %s selected community doc %s from tenant %s",
+        user.tenant_id, document_id, source_doc.tenant_id,
     )
     return doc
 

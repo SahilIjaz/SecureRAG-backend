@@ -518,6 +518,57 @@ async def get_onboarding_user(
 
 
 # ---------------------------------------------------------------------------
+# get_any_valid_user dependency — accepts onboarding token OR access token
+# Use this on document endpoints so they work during and after onboarding
+# ---------------------------------------------------------------------------
+
+async def get_any_valid_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer_scheme),
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    """
+    Accepts either an onboarding token (purpose=onboarding) or a regular
+    access token (type=access). Use on endpoints that must work both during
+    onboarding and after it is complete.
+    """
+    credentials_error = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="A valid onboarding or access token is required.",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+    if credentials is None:
+        raise credentials_error
+
+    try:
+        payload = decode_token(credentials.credentials)
+    except JWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token is invalid or has expired.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    is_onboarding = payload.get("purpose") == "onboarding"
+    is_access = payload.get("type") == "access"
+
+    if not is_onboarding and not is_access:
+        raise credentials_error
+
+    user_id: Optional[str] = payload.get("sub")
+    if not user_id:
+        raise credentials_error
+
+    result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
+    user = result.scalar_one_or_none()
+
+    if user is None or not user.is_active:
+        raise credentials_error
+
+    return user
+
+
+# ---------------------------------------------------------------------------
 # Resend OTP
 # ---------------------------------------------------------------------------
 

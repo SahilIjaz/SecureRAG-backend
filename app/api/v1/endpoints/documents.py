@@ -5,28 +5,29 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.schemas.document import (
+    CommunityDocumentResponse,
     DocumentResponse,
     DocumentsResponse,
-    SampleDocumentResponse,
     SelectSampleDocumentRequest,
 )
 from app.services import auth_service, document_service
+from app.services.auth_service import get_any_valid_user
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
 
 @router.get(
     "/samples",
-    response_model=List[SampleDocumentResponse],
-    summary="List sample documents for user's business category",
+    response_model=List[CommunityDocumentResponse],
+    summary="List community documents for user's business category",
 )
 async def list_sample_documents(
-    user=Depends(auth_service.get_onboarding_user),
+    user=Depends(get_any_valid_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Returns sample documents filtered by the tenant's business category.
-    Requires onboarding token (issued after OTP verification).
+    Returns documents uploaded by other users in the same business category.
+    These act as community sample datasets. Requires onboarding token.
     """
     docs = await document_service.get_sample_documents(user, db)
     return docs
@@ -40,11 +41,12 @@ async def list_sample_documents(
 )
 async def upload_documents(
     files: List[UploadFile] = File(...),
-    user=Depends(auth_service.get_onboarding_user),
+    user=Depends(get_any_valid_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Upload user documents. Validates file types/sizes against tenant quota.
+    Upload user documents to Cloudinary. Validates file types/sizes against quota.
+    Uploaded files become available as community samples for others in the same category.
     Requires onboarding token.
     """
     saved = await document_service.upload_documents(user, files, db)
@@ -61,28 +63,29 @@ async def upload_documents(
     "/select-sample",
     response_model=DocumentResponse,
     status_code=201,
-    summary="Select a sample document for the tenant",
+    summary="Add a community document to your workspace",
 )
 async def select_sample_document(
     body: SelectSampleDocumentRequest,
-    user=Depends(auth_service.get_onboarding_user),
+    user=Depends(get_any_valid_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Creates a Document record (source=sample) linking to the chosen SampleDocument.
+    Copies a community-uploaded document into the current user's workspace.
+    Pass the document_id from GET /documents/samples.
     Requires onboarding token.
     """
-    doc = await document_service.select_sample_document(user, body.sample_document_id, db)
+    doc = await document_service.select_sample_document(user, body.document_id, db)
     return DocumentResponse.model_validate(doc)
 
 
 @router.get(
     "/",
     response_model=DocumentsResponse,
-    summary="List all documents for the authenticated tenant",
+    summary="List all documents in your workspace",
 )
 async def list_documents(
-    user=Depends(auth_service.get_current_user),
+    user=Depends(get_any_valid_user),
     db: AsyncSession = Depends(get_db),
 ):
     """

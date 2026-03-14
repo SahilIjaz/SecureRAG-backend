@@ -8,16 +8,17 @@ from app.models.document import DocumentSource, DocumentStatus
 
 
 # ---------------------------------------------------------------------------
-# Sample document responses
+# Community sample document response
+# Documents uploaded by other users in the same business category
 # ---------------------------------------------------------------------------
 
-class SampleDocumentResponse(BaseModel):
-    id: uuid.UUID
-    title: str
-    description: str
-    filename: str
+class CommunityDocumentResponse(BaseModel):
+    id: uuid.UUID                  # Document.id — pass this to /select-sample
+    original_filename: str
     file_size_mb: float
-    business_category: str
+    mime_type: str
+    file_url: Optional[str]
+    business_category: str         # from the uploader's tenant
 
     model_config = {"from_attributes": True}
 
@@ -34,6 +35,7 @@ class DocumentResponse(BaseModel):
     source: DocumentSource
     status: DocumentStatus
     sample_document_id: Optional[uuid.UUID]
+    file_url: Optional[str]   # Cloudinary secure URL
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -52,7 +54,7 @@ class DocumentPreferenceRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 class SelectSampleDocumentRequest(BaseModel):
-    sample_document_id: uuid.UUID
+    document_id: uuid.UUID   # ID of a community-uploaded Document to copy into your workspace
 
 
 # ---------------------------------------------------------------------------
