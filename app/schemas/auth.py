@@ -73,7 +73,6 @@ VALID_BUSINESS_CATEGORIES = {
 }
 
 class OrganizationInfoRequest(BaseModel):
-    email: EmailStr
     business_category: str = Field(..., examples=["Healthcare"])
     employee_count_range: str = Field(..., examples=["1-15"])
 
@@ -97,7 +96,6 @@ class OrganizationInfoRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 class WorkspaceSetupRequest(BaseModel):
-    email: EmailStr
     workspace_name: str = Field(..., min_length=2, max_length=100, examples=["Acme Corp"])
 
     @field_validator("workspace_name")
@@ -113,7 +111,6 @@ class WorkspaceSetupRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 class PlanSelectionRequest(BaseModel):
-    email: EmailStr
     plan_name: PlanName = Field(..., examples=["free"])
     billing_cycle: Optional[BillingCycle] = Field(None, examples=["monthly"])
 
@@ -156,17 +153,8 @@ class VerifyResetOTPRequest(BaseModel):
 
 
 class ResetPasswordRequest(BaseModel):
-    email: EmailStr = Field(..., examples=["jane@example.com"])
-    otp_code: str = Field(..., min_length=4, max_length=4, examples=["8472"])
     new_password: str = Field(..., min_length=8, max_length=128)
     confirm_password: str = Field(..., min_length=8, max_length=128)
-
-    @field_validator("otp_code")
-    @classmethod
-    def otp_digits_only(cls, v: str) -> str:
-        if not v.isdigit():
-            raise ValueError("OTP must contain only digits")
-        return v
 
     @field_validator("new_password")
     @classmethod
@@ -199,6 +187,12 @@ class ResetPasswordRequest(BaseModel):
 class MessageResponse(BaseModel):
     message: str
     email: Optional[str] = None
+
+
+class OTPVerifyResponse(BaseModel):
+    message: str
+    email: str
+    onboarding_token: str
 
 
 class TokenResponse(BaseModel):

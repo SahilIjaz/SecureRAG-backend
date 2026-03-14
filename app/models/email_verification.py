@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import enum
 import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, func
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, String, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -12,6 +13,11 @@ from app.database import Base
 
 if TYPE_CHECKING:
     from app.models.user import User
+
+
+class OTPPurpose(str, enum.Enum):
+    email_verification = "email_verification"
+    password_reset = "password_reset"
 
 
 class EmailVerification(Base):
@@ -33,6 +39,12 @@ class EmailVerification(Base):
         String(255),
         nullable=False,
         comment="Stores the bcrypt-hashed OTP code",
+    )
+    purpose: Mapped[OTPPurpose] = mapped_column(
+        Enum(OTPPurpose, name="otppurpose", create_type=False),
+        nullable=False,
+        default=OTPPurpose.email_verification,
+        index=True,
     )
     expires_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

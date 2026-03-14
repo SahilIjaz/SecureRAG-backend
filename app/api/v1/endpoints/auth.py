@@ -13,23 +13,29 @@ GET  /api/v1/auth/me              — Get current authenticated user profile
 """
 
 from fastapi import APIRouter, Depends, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models.user import User
 from app.schemas.auth import (
+    ForgotPasswordRequest,
     MessageResponse,
     OnboardingCompleteResponse,
     OTPVerifyRequest,
     OrganizationInfoRequest,
+    OTPVerifyResponse,
     PlanSelectionRequest,
     RefreshTokenRequest,
     ResendOTPRequest,
+    ResetPasswordRequest,
     SigninRequest,
     SignupStep1Request,
     TokenResponse,
+    VerifyResetOTPRequest,
     WorkspaceSetupRequest,
 )
+from app.models.user import User
 from app.schemas.user import UserWithTenantResponse
 from app.services import auth_service
 
@@ -70,25 +76,24 @@ async def signup(
 
 @router.post(
     "/verify-email",
-    response_model=MessageResponse,
+    response_model=OTPVerifyResponse,
     status_code=status.HTTP_200_OK,
     summary="Step 2 — Verify email with OTP",
     description=(
-        "Validates the 4-digit OTP sent to the user's email. "
-        "The OTP expires after 10 minutes. On success the email is "
-        "marked verified and the user may proceed to Step 3."
+        "Validates the 4-digit OTP. On success returns an onboarding_token "
+        "(valid 1 hour). Pass this as Bearer token in steps 3, 4, and 5."
     ),
 )
 async def verify_email(
     body: OTPVerifyRequest,
     db: AsyncSession = Depends(get_db),
-) -> MessageResponse:
+) -> OTPVerifyResponse:
     result = await auth_service.verify_email(
         email=body.email,
         otp_code=body.otp_code,
         db=db,
     )
-    return MessageResponse(**result)
+    return OTPVerifyResponse(**result)
 
 
 @router.post(
@@ -97,8 +102,7 @@ async def verify_email(
     status_code=status.HTTP_200_OK,
     summary="Step 2 — Resend OTP",
     description=(
-        "Invalidates all previous OTPs for the email and sends a fresh one. "
-        "Rate-limiting should be applied in production."
+        "Invalidates all previous OTPs for the email and sends a fresh one."
     ),
 )
 async def resend_otp(
@@ -119,16 +123,17 @@ async def resend_otp(
     status_code=status.HTTP_200_OK,
     summary="Step 3 — Save organisation info",
     description=(
-        "Saves the business category and employee count range "
-        "to the tenant record. Requires a verified email."
+        "Saves business category and employee count. "
+        "Requires Authorization: Bearer <onboarding_token> from Step 2."
     ),
 )
 async def organization_info(
     body: OrganizationInfoRequest,
+    current_user: User = Depends(auth_service.get_onboarding_user),
     db: AsyncSession = Depends(get_db),
 ) -> MessageResponse:
     result = await auth_service.save_organization_info(
-        email=body.email,
+        user=current_user,
         business_category=body.business_category,
         employee_count_range=body.employee_count_range,
         db=db,
@@ -146,24 +151,25 @@ async def organization_info(
     status_code=status.HTTP_200_OK,
     summary="Step 4 — Set up workspace",
     description=(
-        "Sets the workspace name and auto-generates a unique URL-safe slug "
-        "for the tenant. Requires a verified email."
+        "Sets the workspace name and generates a unique slug. "
+        "Requires Authorization: Bearer <onboarding_token> from Step 2."
     ),
 )
 async def setup_workspace(
     body: WorkspaceSetupRequest,
+    current_user: User = Depends(auth_service.get_onboarding_user),
     db: AsyncSession = Depends(get_db),
 ) -> MessageResponse:
     result = await auth_service.setup_workspace(
-        email=body.email,
+        user=current_user,
         workspace_name=body.workspace_name,
         db=db,
     )
-    return MessageResponse(message=result["message"], email=body.email)
+    return MessageResponse(message=result["message"], email=current_user.email)
 
 
 # ---------------------------------------------------------------------------
-# Step 5 — Select plan (completes onboarding, issues tokens)
+# Step 5 — Select plan (completes onboarding, issues full JWT pair)
 # ---------------------------------------------------------------------------
 
 @router.post(
@@ -172,17 +178,18 @@ async def setup_workspace(
     status_code=status.HTTP_201_CREATED,
     summary="Step 5 — Select subscription plan (completes onboarding)",
     description=(
-        "Creates the subscription and quota records, seeds the monthly usage "
-        "counter, and returns a JWT access + refresh token pair. "
-        "This is the final onboarding step — after this the user is fully logged in."
+        "Creates subscription + quota records, seeds usage counter. "
+        "Returns a full access + refresh token pair — onboarding is complete. "
+        "Requires Authorization: Bearer <onboarding_token> from Step 2."
     ),
 )
 async def select_plan(
     body: PlanSelectionRequest,
+    current_user: User = Depends(auth_service.get_onboarding_user),
     db: AsyncSession = Depends(get_db),
 ) -> TokenResponse:
     result = await auth_service.select_plan(
-        email=body.email,
+        user=current_user,
         plan_name=body.plan_name,
         billing_cycle=body.billing_cycle,
         db=db,
@@ -286,3 +293,79 @@ async def get_me(
         workspace_name=user.tenant.workspace_name if user.tenant else None,
         slug=user.tenant.slug if user.tenant else None,
     )
+
+
+# ---------------------------------------------------------------------------
+# Password reset — Step 1: request OTP
+# ---------------------------------------------------------------------------
+
+@router.post(
+    "/forgot-password",
+    response_model=MessageResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Step 1 — Request password reset OTP",
+    description=(
+        "Sends a 4-digit OTP to the provided email address. "
+        "Always returns a success message regardless of whether the account exists "
+        "to prevent user enumeration."
+    ),
+)
+async def forgot_password(
+    body: ForgotPasswordRequest,
+    db: AsyncSession = Depends(get_db),
+) -> MessageResponse:
+    result = await auth_service.forgot_password(email=body.email, db=db)
+    return MessageResponse(**result)
+
+
+# ---------------------------------------------------------------------------
+# Password reset — Step 2: verify OTP → get reset token
+# ---------------------------------------------------------------------------
+
+@router.post(
+    "/verify-reset-otp",
+    status_code=status.HTTP_200_OK,
+    summary="Step 2 — Verify reset OTP",
+    description=(
+        "Validates the 4-digit OTP sent to the email. "
+        "On success returns a short-lived reset_token (valid for 15 minutes) "
+        "that must be sent with the new password in Step 3."
+    ),
+)
+async def verify_reset_otp(
+    body: VerifyResetOTPRequest,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    return await auth_service.verify_reset_otp(
+        email=body.email,
+        otp_code=body.otp_code,
+        db=db,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Password reset — Step 3: set new password
+# ---------------------------------------------------------------------------
+
+@router.post(
+    "/reset-password",
+    response_model=MessageResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Step 3 — Set new password",
+    description=(
+        "Pass the reset_token from Step 2 as a Bearer token in the Authorization header. "
+        "Body only needs new_password and confirm_password. "
+        "The reset_token expires after 15 minutes."
+    ),
+)
+async def reset_password(
+    body: ResetPasswordRequest,
+    credentials: HTTPAuthorizationCredentials = Depends(HTTPBearer()),
+    db: AsyncSession = Depends(get_db),
+) -> MessageResponse:
+    result = await auth_service.reset_password(
+        reset_token=credentials.credentials,
+        new_password=body.new_password,
+        db=db,
+    )
+    return MessageResponse(message=result["message"])
