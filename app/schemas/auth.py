@@ -136,6 +136,63 @@ class RefreshTokenRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Password reset flow
+# ---------------------------------------------------------------------------
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr = Field(..., examples=["jane@example.com"])
+
+
+class VerifyResetOTPRequest(BaseModel):
+    email: EmailStr = Field(..., examples=["jane@example.com"])
+    otp_code: str = Field(..., min_length=4, max_length=4, examples=["8472"])
+
+    @field_validator("otp_code")
+    @classmethod
+    def otp_digits_only(cls, v: str) -> str:
+        if not v.isdigit():
+            raise ValueError("OTP must contain only digits")
+        return v
+
+
+class ResetPasswordRequest(BaseModel):
+    email: EmailStr = Field(..., examples=["jane@example.com"])
+    otp_code: str = Field(..., min_length=4, max_length=4, examples=["8472"])
+    new_password: str = Field(..., min_length=8, max_length=128)
+    confirm_password: str = Field(..., min_length=8, max_length=128)
+
+    @field_validator("otp_code")
+    @classmethod
+    def otp_digits_only(cls, v: str) -> str:
+        if not v.isdigit():
+            raise ValueError("OTP must contain only digits")
+        return v
+
+    @field_validator("new_password")
+    @classmethod
+    def password_complexity(cls, v: str) -> str:
+        errors = []
+        if len(v) < 8:
+            errors.append("at least 8 characters")
+        if not any(c.isupper() for c in v):
+            errors.append("at least one uppercase letter")
+        if not any(c.islower() for c in v):
+            errors.append("at least one lowercase letter")
+        if not any(c.isdigit() for c in v):
+            errors.append("at least one digit")
+        if errors:
+            raise ValueError("Password must contain " + ", ".join(errors))
+        return v
+
+    @field_validator("confirm_password")
+    @classmethod
+    def passwords_match(cls, v: str, info) -> str:
+        if "new_password" in info.data and v != info.data["new_password"]:
+            raise ValueError("Passwords do not match")
+        return v
+
+
+# ---------------------------------------------------------------------------
 # Responses
 # ---------------------------------------------------------------------------
 
