@@ -234,7 +234,13 @@ async def save_organization_info(
     tenant.business_category = business_category
     tenant.employee_count_range = employee_count_range
 
-    return {"message": "Organisation info saved.", "email": user.email}
+    return {
+        "message": "Organisation info saved.",
+        "email": user.email,
+        "full_name": user.full_name,
+        "business_category": business_category,
+        "employee_count_range": employee_count_range,
+    }
 
 
 # ---------------------------------------------------------------------------

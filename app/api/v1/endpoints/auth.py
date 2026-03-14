@@ -24,6 +24,7 @@ from app.schemas.auth import (
     OnboardingCompleteResponse,
     OTPVerifyRequest,
     OrganizationInfoRequest,
+    OrganizationInfoResponse,
     OTPVerifyResponse,
     PlanSelectionRequest,
     RefreshTokenRequest,
@@ -119,7 +120,7 @@ async def resend_otp(
 
 @router.post(
     "/organization",
-    response_model=MessageResponse,
+    response_model=OrganizationInfoResponse,
     status_code=status.HTTP_200_OK,
     summary="Step 3 — Save organisation info",
     description=(
@@ -131,14 +132,14 @@ async def organization_info(
     body: OrganizationInfoRequest,
     current_user: User = Depends(auth_service.get_onboarding_user),
     db: AsyncSession = Depends(get_db),
-) -> MessageResponse:
+) -> OrganizationInfoResponse:
     result = await auth_service.save_organization_info(
         user=current_user,
         business_category=body.business_category,
         employee_count_range=body.employee_count_range,
         db=db,
     )
-    return MessageResponse(**result)
+    return OrganizationInfoResponse(**result)
 
 
 # ---------------------------------------------------------------------------

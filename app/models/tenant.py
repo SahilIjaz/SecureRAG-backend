@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from app.models.subscription import Subscription
     from app.models.tenant_quota import TenantQuota
     from app.models.usage_count import UsageCount
+    from app.models.document import Document
 
 
 class Tenant(Base):
@@ -62,6 +63,11 @@ class Tenant(Base):
     usage_counts: Mapped[List["UsageCount"]] = relationship(
         "UsageCount",
         back_populates="tenant",
+    )
+    documents: Mapped[List["Document"]] = relationship(
+        "Document",
+        back_populates="tenant",
+        cascade="all, delete-orphan",
     )
 
     def __repr__(self) -> str:

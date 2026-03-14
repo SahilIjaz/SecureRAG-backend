@@ -195,6 +195,14 @@ class OTPVerifyResponse(BaseModel):
     onboarding_token: str
 
 
+class OrganizationInfoResponse(BaseModel):
+    message: str
+    email: str
+    full_name: str
+    business_category: str
+    employee_count_range: str
+
+
 class TokenResponse(BaseModel):
     access_token: str
     refresh_token: str

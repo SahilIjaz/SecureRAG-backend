@@ -21,6 +21,11 @@ class Settings(BaseSettings):
     # OTP
     OTP_EXPIRE_MINUTES: int = 10
 
+    # File storage
+    UPLOAD_DIR: str = "storage/uploads"
+    MAX_UPLOAD_SIZE_MB: int = 15
+    ALLOWED_MIME_TYPES: str = "application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,application/msword"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
