@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import smtplib
 from email.mime.multipart import MIMEMultipart
@@ -50,16 +51,28 @@ def _build_otp_html(full_name: str, otp: str) -> str:
     """
 
 
+def _send_smtp_blocking(recipient_email: str, msg_string: str) -> None:
+    """
+    Synchronous SMTP send — runs in a thread pool via run_in_executor.
+    Gmail App Passwords are stored with spaces for readability but must
+    be used without spaces when authenticating.
+    """
+    smtp_password = settings.SMTP_PASSWORD.replace(" ", "")
+    with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=15) as server:
+        server.ehlo()
+        server.starttls()
+        server.ehlo()
+        server.login(settings.SMTP_USERNAME, smtp_password)
+        server.sendmail(settings.EMAILS_FROM_EMAIL, recipient_email, msg_string)
+
+
 async def send_otp_email(recipient_email: str, full_name: str, otp: str) -> None:
     """
-    Send an OTP verification email via SMTP (TLS on port 587).
-    Raises RuntimeError if SMTP credentials are not configured.
+    Send an OTP verification email.
+    Falls back to logging the OTP when SMTP is not configured (dev mode).
     """
     if not settings.SMTP_USERNAME or not settings.SMTP_PASSWORD:
-        # In development without SMTP configured, just log the OTP
-        logger.warning(
-            "SMTP not configured — OTP for %s is: %s", recipient_email, otp
-        )
+        logger.warning("SMTP not configured — OTP for %s is: %s", recipient_email, otp)
         return
 
     msg = MIMEMultipart("alternative")
@@ -67,28 +80,18 @@ async def send_otp_email(recipient_email: str, full_name: str, otp: str) -> None
     msg["From"] = f"{settings.EMAILS_FROM_NAME} <{settings.EMAILS_FROM_EMAIL}>"
     msg["To"] = recipient_email
 
-    html_body = _build_otp_html(full_name, otp)
     plain_body = (
         f"Hi {full_name},\n\n"
         f"Your SecureRAG++ verification code is: {otp}\n\n"
         f"It expires in {settings.OTP_EXPIRE_MINUTES} minutes.\n\n"
         f"If you did not request this, ignore this email."
     )
-
     msg.attach(MIMEText(plain_body, "plain"))
-    msg.attach(MIMEText(html_body, "html"))
+    msg.attach(MIMEText(_build_otp_html(full_name, otp), "html"))
 
-    try:
-        # Gmail App Passwords are displayed with spaces (e.g. "qsqt hjxa rnsa tpdx")
-        # but must be used without spaces when authenticating.
-        smtp_password = settings.SMTP_PASSWORD.replace(" ", "")
+    msg_string = msg.as_string()
 
-        with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=10) as server:
-            server.ehlo()
-            server.starttls()
-            server.login(settings.SMTP_USERNAME, smtp_password)
-            server.sendmail(settings.EMAILS_FROM_EMAIL, recipient_email, msg.as_string())
-        logger.info("OTP email sent to %s", recipient_email)
-    except Exception as exc:
-        logger.error("Failed to send OTP email to %s: %s", recipient_email, exc)
-        raise RuntimeError(f"Email delivery failed: {exc}") from exc
+    # Run blocking SMTP call in a thread so it doesn't block the event loop
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, _send_smtp_blocking, recipient_email, msg_string)
+    logger.info("OTP email sent to %s", recipient_email)

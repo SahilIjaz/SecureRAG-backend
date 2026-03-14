@@ -499,11 +499,8 @@ async def _create_and_send_otp(user: User, db: AsyncSession) -> None:
     db.add(otp_record)
     await db.flush()
 
-    # Send email (fire-and-forget; logs on failure)
-    try:
-        await send_otp_email(user.email, user.full_name, otp)
-    except Exception as exc:
-        logger.error("OTP email failed for %s: %s", user.email, exc)
+    # Send email — runs SMTP in thread pool, errors are logged and re-raised
+    await send_otp_email(user.email, user.full_name, otp)
 
 
 async def _invalidate_old_otps(user_id: uuid.UUID, db: AsyncSession) -> None:
