@@ -395,7 +395,7 @@ async def refresh_tokens(
     if payload.get("type") != "refresh":
         raise credentials_error
 
-    user_id: str | None = payload.get("sub")
+    user_id: Optional[str] = payload.get("sub")
     if not user_id:
         raise credentials_error
 
