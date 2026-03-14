@@ -1,15 +1,11 @@
 from fastapi import APIRouter
 
+from app.api.v1.endpoints import auth
+
 router = APIRouter()
 
-# ---------------------------------------------------------------------------
-# Future route includes go here, for example:
-#   from app.api.v1.endpoints import auth, tenants, users, subscriptions
-#   router.include_router(auth.router, prefix="/auth", tags=["auth"])
-#   router.include_router(tenants.router, prefix="/tenants", tags=["tenants"])
-#   router.include_router(users.router, prefix="/users", tags=["users"])
-#   router.include_router(subscriptions.router, prefix="/subscriptions", tags=["subscriptions"])
-# ---------------------------------------------------------------------------
+# Auth
+router.include_router(auth.router)
 
 
 @router.get("/ping", tags=["health"], summary="Liveness check")

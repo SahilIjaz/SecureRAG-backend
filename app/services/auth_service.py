@@ -18,6 +18,7 @@ import logging
 import re
 import uuid
 from datetime import datetime, timezone, timedelta
+from typing import Optional
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -275,7 +276,7 @@ async def setup_workspace(
 async def select_plan(
     email: str,
     plan_name: PlanName,
-    billing_cycle: BillingCycle | None,
+    billing_cycle: Optional[BillingCycle],
     db: AsyncSession,
 ) -> dict:
     """
@@ -412,7 +413,7 @@ async def refresh_tokens(
 # ---------------------------------------------------------------------------
 
 async def get_current_user(
-    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer_scheme),
     db: AsyncSession = Depends(get_db),
 ) -> User:
     """

@@ -4,8 +4,6 @@ from typing import Optional
 
 from pydantic import BaseModel, EmailStr
 
-from app.schemas.tenant import TenantResponse
-
 
 class UserResponse(BaseModel):
     id: uuid.UUID
@@ -14,12 +12,11 @@ class UserResponse(BaseModel):
     is_email_verified: bool
     is_active: bool
     created_at: datetime
+    tenant_id: uuid.UUID
 
     model_config = {"from_attributes": True}
 
 
 class UserWithTenantResponse(UserResponse):
-    tenant_id: uuid.UUID
-    tenant: Optional[TenantResponse] = None
-
-    model_config = {"from_attributes": True}
+    workspace_name: Optional[str] = None
+    slug: Optional[str] = None
