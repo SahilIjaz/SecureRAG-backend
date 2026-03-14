@@ -3,12 +3,27 @@ from sqlalchemy.orm import declarative_base
 
 from app.config import settings
 
+
+def _build_database_url(raw_url: str) -> str:
+    """
+    Neon (and some other cloud PG providers) append ?sslmode=require&channel_binding=require
+    to the connection string. asyncpg does not accept these as query params — it needs
+    ssl passed via connect_args instead. Strip them from the URL here.
+    """
+    if "?" in raw_url:
+        raw_url = raw_url.split("?")[0]
+    return raw_url
+
+
+_db_url = _build_database_url(settings.DATABASE_URL)
+
 async_engine = create_async_engine(
-    settings.DATABASE_URL,
+    _db_url,
     echo=settings.DEBUG,
     pool_pre_ping=True,
-    pool_size=10,
-    max_overflow=20,
+    pool_size=5,
+    max_overflow=10,
+    connect_args={"ssl": "require"},
 )
 
 AsyncSessionLocal = async_sessionmaker(
