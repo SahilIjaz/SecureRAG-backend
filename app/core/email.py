@@ -79,10 +79,14 @@ async def send_otp_email(recipient_email: str, full_name: str, otp: str) -> None
     msg.attach(MIMEText(html_body, "html"))
 
     try:
+        # Gmail App Passwords are displayed with spaces (e.g. "qsqt hjxa rnsa tpdx")
+        # but must be used without spaces when authenticating.
+        smtp_password = settings.SMTP_PASSWORD.replace(" ", "")
+
         with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=10) as server:
             server.ehlo()
             server.starttls()
-            server.login(settings.SMTP_USERNAME, settings.SMTP_PASSWORD)
+            server.login(settings.SMTP_USERNAME, smtp_password)
             server.sendmail(settings.EMAILS_FROM_EMAIL, recipient_email, msg.as_string())
         logger.info("OTP email sent to %s", recipient_email)
     except Exception as exc:
