@@ -3,6 +3,14 @@
 .env.local
 .env.*.local
 
+
+
+venv/
+__pycache__/
+*.pyc
+
+
+
 # Python
 __pycache__/
 *.py[cod]
