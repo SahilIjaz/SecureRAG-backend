@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import smtplib
+import socket
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
@@ -58,18 +59,52 @@ def _send_smtp_blocking(recipient_email: str, msg_string: str) -> None:
     be used without spaces when authenticating.
     """
     smtp_password = settings.SMTP_PASSWORD.replace(" ", "")
+
+    logger.info("[EMAIL] SMTP config: host=%s, port=%s, username=%s",
+                settings.SMTP_HOST, settings.SMTP_PORT, settings.SMTP_USERNAME)
+
+    # Step 1: DNS resolution check
+    logger.info("[EMAIL] Step 1: Resolving DNS for %s ...", settings.SMTP_HOST)
+    try:
+        addr_info = socket.getaddrinfo(settings.SMTP_HOST, settings.SMTP_PORT)
+        logger.info("[EMAIL] DNS resolved: %s", addr_info[0][4])
+    except socket.gaierror as e:
+        logger.error("[EMAIL] DNS resolution FAILED: %s", e)
+        raise
+
+    # Step 2: Raw socket connectivity check
+    logger.info("[EMAIL] Step 2: Testing raw socket to %s:%s ...", settings.SMTP_HOST, settings.SMTP_PORT)
+    try:
+        test_sock = socket.create_connection((settings.SMTP_HOST, int(settings.SMTP_PORT)), timeout=10)
+        test_sock.close()
+        logger.info("[EMAIL] Raw socket connection OK")
+    except OSError as e:
+        logger.error("[EMAIL] Raw socket connection FAILED: %s", e)
+        raise
+
+    # Step 3: SMTP_SSL connection
+    logger.info("[EMAIL] Step 3: Opening SMTP_SSL connection ...")
     with smtplib.SMTP_SSL(settings.SMTP_HOST, settings.SMTP_PORT, timeout=15) as server:
+        logger.info("[EMAIL] SMTP_SSL connected successfully")
+
+        # Step 4: Login
+        logger.info("[EMAIL] Step 4: Logging in as %s ...", settings.SMTP_USERNAME)
         server.login(settings.SMTP_USERNAME, smtp_password)
+        logger.info("[EMAIL] Login successful")
+
+        # Step 5: Send
+        logger.info("[EMAIL] Step 5: Sending email to %s ...", recipient_email)
         server.sendmail(settings.EMAILS_FROM_EMAIL, recipient_email, msg_string)
+        logger.info("[EMAIL] Email sent successfully to %s", recipient_email)
 
 
 async def send_otp_email(recipient_email: str, full_name: str, otp: str) -> None:
     """
     Send an OTP verification email.
-    Falls back to logging the OTP when SMTP is not configured (dev mode).
+    Falls back to logging the OTP when SMTP is not configured or sending fails.
     """
     if not settings.SMTP_USERNAME or not settings.SMTP_PASSWORD:
-        logger.warning("SMTP not configured — OTP for %s is: %s", recipient_email, otp)
+        logger.warning("[EMAIL] SMTP not configured — OTP for %s is: %s", recipient_email, otp)
         return
 
     msg = MIMEMultipart("alternative")
@@ -88,7 +123,10 @@ async def send_otp_email(recipient_email: str, full_name: str, otp: str) -> None
 
     msg_string = msg.as_string()
 
-    # Run blocking SMTP call in a thread so it doesn't block the event loop
     loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, _send_smtp_blocking, recipient_email, msg_string)
-    logger.info("OTP email sent to %s", recipient_email)
+    try:
+        await loop.run_in_executor(None, _send_smtp_blocking, recipient_email, msg_string)
+        logger.info("[EMAIL] OTP email sent to %s", recipient_email)
+    except Exception as e:
+        logger.error("[EMAIL] FAILED to send OTP email to %s: %s", recipient_email, e)
+        logger.warning("[EMAIL] Falling back — OTP for %s is: %s", recipient_email, otp)
