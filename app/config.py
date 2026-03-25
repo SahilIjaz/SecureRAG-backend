@@ -10,13 +10,16 @@ class Settings(BaseSettings):
     APP_NAME: str = "SecureRAG++"
     DEBUG: bool = False
 
-    # Email / SMTP
+    # Email / SMTP (legacy, kept for local dev)
     SMTP_HOST: str = "smtp.gmail.com"
     SMTP_PORT: int = 587
     SMTP_USERNAME: str = ""
     SMTP_PASSWORD: str = ""
     EMAILS_FROM_EMAIL: str = ""
     EMAILS_FROM_NAME: str = "SecureRAG++"
+
+    # Brevo (used in production — HTTP API, works on Render)
+    BREVO_API_KEY: str = ""
 
     # OTP
     OTP_EXPIRE_MINUTES: int = 10

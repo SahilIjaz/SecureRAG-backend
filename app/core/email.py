@@ -1,13 +1,16 @@
 import asyncio
 import logging
 import smtplib
-import socket
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+
+import httpx
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+BREVO_API_URL = "https://api.brevo.com/v3/smtp/email"
 
 
 def _build_otp_html(full_name: str, otp: str) -> str:
@@ -52,81 +55,86 @@ def _build_otp_html(full_name: str, otp: str) -> str:
     """
 
 
-def _send_smtp_blocking(recipient_email: str, msg_string: str) -> None:
-    """
-    Synchronous SMTP send — runs in a thread pool via run_in_executor.
-    Gmail App Passwords are stored with spaces for readability but must
-    be used without spaces when authenticating.
-    """
-    smtp_password = settings.SMTP_PASSWORD.replace(" ", "")
-
-    logger.info("[EMAIL] SMTP config: host=%s, port=%s, username=%s",
-                settings.SMTP_HOST, settings.SMTP_PORT, settings.SMTP_USERNAME)
-
-    # Step 1: DNS resolution check
-    logger.info("[EMAIL] Step 1: Resolving DNS for %s ...", settings.SMTP_HOST)
-    try:
-        addr_info = socket.getaddrinfo(settings.SMTP_HOST, settings.SMTP_PORT)
-        logger.info("[EMAIL] DNS resolved: %s", addr_info[0][4])
-    except socket.gaierror as e:
-        logger.error("[EMAIL] DNS resolution FAILED: %s", e)
-        raise
-
-    # Step 2: Raw socket connectivity check
-    logger.info("[EMAIL] Step 2: Testing raw socket to %s:%s ...", settings.SMTP_HOST, settings.SMTP_PORT)
-    try:
-        test_sock = socket.create_connection((settings.SMTP_HOST, int(settings.SMTP_PORT)), timeout=10)
-        test_sock.close()
-        logger.info("[EMAIL] Raw socket connection OK")
-    except OSError as e:
-        logger.error("[EMAIL] Raw socket connection FAILED: %s", e)
-        raise
-
-    # Step 3: SMTP_SSL connection
-    logger.info("[EMAIL] Step 3: Opening SMTP_SSL connection ...")
-    with smtplib.SMTP_SSL(settings.SMTP_HOST, settings.SMTP_PORT, timeout=15) as server:
-        logger.info("[EMAIL] SMTP_SSL connected successfully")
-
-        # Step 4: Login
-        logger.info("[EMAIL] Step 4: Logging in as %s ...", settings.SMTP_USERNAME)
-        server.login(settings.SMTP_USERNAME, smtp_password)
-        logger.info("[EMAIL] Login successful")
-
-        # Step 5: Send
-        logger.info("[EMAIL] Step 5: Sending email to %s ...", recipient_email)
-        server.sendmail(settings.EMAILS_FROM_EMAIL, recipient_email, msg_string)
-        logger.info("[EMAIL] Email sent successfully to %s", recipient_email)
-
-
-async def send_otp_email(recipient_email: str, full_name: str, otp: str) -> None:
-    """
-    Send an OTP verification email.
-    Falls back to logging the OTP when SMTP is not configured or sending fails.
-    """
-    if not settings.SMTP_USERNAME or not settings.SMTP_PASSWORD:
-        logger.warning("[EMAIL] SMTP not configured — OTP for %s is: %s", recipient_email, otp)
-        return
-
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = "Your SecureRAG++ verification code"
-    msg["From"] = f"{settings.EMAILS_FROM_NAME} <{settings.EMAILS_FROM_EMAIL}>"
-    msg["To"] = recipient_email
-
-    plain_body = (
+def _build_plain_body(full_name: str, otp: str) -> str:
+    return (
         f"Hi {full_name},\n\n"
         f"Your SecureRAG++ verification code is: {otp}\n\n"
         f"It expires in {settings.OTP_EXPIRE_MINUTES} minutes.\n\n"
         f"If you did not request this, ignore this email."
     )
-    msg.attach(MIMEText(plain_body, "plain"))
+
+
+def _send_via_brevo(recipient_email: str, full_name: str, otp: str) -> None:
+    """Send OTP email using Brevo HTTP API (works on Render)."""
+    payload = {
+        "sender": {
+            "name": settings.EMAILS_FROM_NAME,
+            "email": settings.EMAILS_FROM_EMAIL,
+        },
+        "to": [{"email": recipient_email}],
+        "subject": "Your SecureRAG++ verification code",
+        "htmlContent": _build_otp_html(full_name, otp),
+        "textContent": _build_plain_body(full_name, otp),
+    }
+
+    headers = {
+        "api-key": settings.BREVO_API_KEY,
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+
+    logger.info("[EMAIL] Sending via Brevo API to %s ...", recipient_email)
+    response = httpx.post(BREVO_API_URL, json=payload, headers=headers, timeout=15)
+
+    if response.status_code == 201:
+        logger.info("[EMAIL] Brevo success: %s", response.json())
+    else:
+        logger.error("[EMAIL] Brevo error %s: %s", response.status_code, response.text)
+        response.raise_for_status()
+
+
+def _send_via_smtp(recipient_email: str, full_name: str, otp: str) -> None:
+    """Fallback: send OTP email via SMTP (for local development)."""
+    smtp_password = settings.SMTP_PASSWORD.replace(" ", "")
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = "Your SecureRAG++ verification code"
+    msg["From"] = f"{settings.EMAILS_FROM_NAME} <{settings.EMAILS_FROM_EMAIL}>"
+    msg["To"] = recipient_email
+    msg.attach(MIMEText(_build_plain_body(full_name, otp), "plain"))
     msg.attach(MIMEText(_build_otp_html(full_name, otp), "html"))
 
-    msg_string = msg.as_string()
+    with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=15) as server:
+        server.ehlo()
+        server.starttls()
+        server.ehlo()
+        server.login(settings.SMTP_USERNAME, smtp_password)
+        server.sendmail(settings.EMAILS_FROM_EMAIL, recipient_email, msg.as_string())
 
+
+async def send_otp_email(recipient_email: str, full_name: str, otp: str) -> None:
+    """
+    Send an OTP verification email.
+    Uses Brevo HTTP API if configured, otherwise falls back to SMTP, then to logging.
+    """
     loop = asyncio.get_event_loop()
-    try:
-        await loop.run_in_executor(None, _send_smtp_blocking, recipient_email, msg_string)
-        logger.info("[EMAIL] OTP email sent to %s", recipient_email)
-    except Exception as e:
-        logger.error("[EMAIL] FAILED to send OTP email to %s: %s", recipient_email, e)
-        logger.warning("[EMAIL] Falling back — OTP for %s is: %s", recipient_email, otp)
+
+    # Priority 1: Brevo HTTP API (works on Render)
+    if settings.BREVO_API_KEY:
+        try:
+            await loop.run_in_executor(None, _send_via_brevo, recipient_email, full_name, otp)
+            return
+        except Exception as e:
+            logger.error("[EMAIL] Brevo failed: %s", e)
+
+    # Priority 2: SMTP (works locally)
+    if settings.SMTP_USERNAME and settings.SMTP_PASSWORD:
+        try:
+            await loop.run_in_executor(None, _send_via_smtp, recipient_email, full_name, otp)
+            logger.info("[EMAIL] OTP sent via SMTP to %s", recipient_email)
+            return
+        except Exception as e:
+            logger.error("[EMAIL] SMTP failed: %s", e)
+
+    # Priority 3: Log OTP (dev fallback)
+    logger.warning("[EMAIL] No email provider available — OTP for %s is: %s", recipient_email, otp)
