@@ -14,6 +14,7 @@ Auth:
   get_current_user() — FastAPI dependency to extract + validate access token
 """
 
+import asyncio
 import logging
 import re
 import uuid
@@ -612,8 +613,8 @@ async def _create_and_send_otp(
     db.add(otp_record)
     await db.flush()
 
-    # Send email — runs SMTP in thread pool, errors are logged and re-raised
-    await send_otp_email(user.email, user.full_name, otp)
+    # Fire-and-forget — don't block the response waiting for email delivery
+    asyncio.create_task(send_otp_email(user.email, user.full_name, otp))
 
 
 async def _invalidate_old_otps(
