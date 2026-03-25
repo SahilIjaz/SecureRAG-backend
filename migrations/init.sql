@@ -89,6 +89,7 @@ CREATE INDEX IF NOT EXISTS idx_users_tenant_id ON users (tenant_id);
 -- TABLE: email_verifications
 -- =============================================================================
 
+
 CREATE TABLE IF NOT EXISTS email_verifications (
     id         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id    UUID        NOT NULL,
