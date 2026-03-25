@@ -12,7 +12,7 @@ from app.config import settings
 # Password hashing
 # ---------------------------------------------------------------------------
 
-_pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+_pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=10)
 
 
 def hash_password(password: str) -> str:
@@ -90,7 +90,7 @@ def decode_token(token: str) -> Dict[str, Any]:
 # OTP helpers
 # ---------------------------------------------------------------------------
 
-_otp_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+_otp_context = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=6)
 
 
 def generate_otp() -> str:

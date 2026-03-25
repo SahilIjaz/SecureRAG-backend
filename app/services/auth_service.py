@@ -134,11 +134,14 @@ async def register_user(
     db.add(placeholder_tenant)
     await db.flush()  # get tenant.id without committing
 
+    loop = asyncio.get_event_loop()
+    pw_hash = await loop.run_in_executor(None, hash_password, password)
+
     user = User(
         tenant_id=placeholder_tenant.id,
         full_name=full_name.strip(),
         email=email.lower().strip(),
-        password_hash=hash_password(password),
+        password_hash=pw_hash,
         is_email_verified=False,
     )
     db.add(user)
@@ -603,9 +606,12 @@ async def _create_and_send_otp(
     otp = generate_otp()
     expires_at = datetime.now(timezone.utc) + timedelta(minutes=settings.OTP_EXPIRE_MINUTES)
 
+    loop = asyncio.get_event_loop()
+    hashed_otp = await loop.run_in_executor(None, hash_otp, otp)
+
     otp_record = EmailVerification(
         user_id=user.id,
-        otp_code=hash_otp(otp),
+        otp_code=hashed_otp,
         purpose=purpose,
         expires_at=expires_at,
         is_used=False,
