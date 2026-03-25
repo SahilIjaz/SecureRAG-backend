@@ -58,10 +58,7 @@ def _send_smtp_blocking(recipient_email: str, msg_string: str) -> None:
     be used without spaces when authenticating.
     """
     smtp_password = settings.SMTP_PASSWORD.replace(" ", "")
-    with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=15) as server:
-        server.ehlo()
-        server.starttls()
-        server.ehlo()
+    with smtplib.SMTP_SSL(settings.SMTP_HOST, settings.SMTP_PORT, timeout=15) as server:
         server.login(settings.SMTP_USERNAME, smtp_password)
         server.sendmail(settings.EMAILS_FROM_EMAIL, recipient_email, msg_string)
 
