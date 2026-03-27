@@ -8,7 +8,6 @@ class Settings(BaseSettings):
     APP_NAME: str = "SecureRAG++"
     DEBUG: bool = False
 
-
     # Email / SMTP (legacy, kept for local dev)
     SMTP_HOST: str = "smtp.gmail.com"
     SMTP_PORT: int = 587
