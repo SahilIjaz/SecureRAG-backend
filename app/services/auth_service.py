@@ -361,6 +361,117 @@ async def select_plan(
 
 
 # ---------------------------------------------------------------------------
+# Google social login
+# ---------------------------------------------------------------------------
+
+async def google_login(token: str, db: AsyncSession) -> dict:
+    """
+    Verify a Google ID token and sign in (or register) the user.
+
+    - If the user already exists with auth_provider=google, issue JWT tokens.
+    - If the user exists with auth_provider=email (same email), link the
+      Google account and issue tokens.
+    - If no user exists, create a new user + placeholder tenant and issue
+      an onboarding_token so the frontend can complete steps 3-5.
+    """
+    try:
+        idinfo = google_id_token.verify_oauth2_token(
+            token,
+            google_requests.Request(),
+            settings.GOOGLE_CLIENT_ID,
+        )
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid Google ID token.",
+        )
+
+    google_uid: str = idinfo["sub"]
+    email: str = idinfo.get("email", "").lower().strip()
+    full_name: str = idinfo.get("name", email.split("@")[0])
+
+    if not email:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Google account does not have an email address.",
+        )
+
+    # Check if user already exists by email
+    result = await db.execute(select(User).where(User.email == email))
+    user = result.scalar_one_or_none()
+
+    if user is not None:
+        # Existing user — link Google if they signed up with email/password
+        if user.auth_provider == AuthProvider.email:
+            user.auth_provider = AuthProvider.google
+            user.provider_uid = google_uid
+            user.is_email_verified = True
+
+        if not user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Account is deactivated.",
+            )
+
+        # Check if onboarding is complete (has a subscription)
+        sub_result = await db.execute(
+            select(Subscription).where(Subscription.tenant_id == user.tenant_id)
+        )
+        has_subscription = sub_result.scalar_one_or_none() is not None
+
+        if has_subscription:
+            return {**_issue_tokens(user), "is_new_user": False}
+
+        # Onboarding incomplete — issue onboarding token so frontend can
+        # continue from where the user left off
+        onboarding_token = create_access_token(
+            data={"sub": str(user.id), "purpose": "onboarding"},
+            expires_delta=timedelta(hours=1),
+        )
+        return {
+            "access_token": "",
+            "refresh_token": "",
+            "token_type": "bearer",
+            "is_new_user": True,
+            "onboarding_token": onboarding_token,
+        }
+
+    # Brand-new user — create account with placeholder tenant
+    placeholder_tenant = Tenant(
+        workspace_name="__pending__",
+        slug=f"pending-{uuid.uuid4().hex[:8]}",
+    )
+    db.add(placeholder_tenant)
+    await db.flush()
+
+    user = User(
+        tenant_id=placeholder_tenant.id,
+        full_name=full_name,
+        email=email,
+        password_hash=None,
+        auth_provider=AuthProvider.google,
+        provider_uid=google_uid,
+        is_email_verified=True,
+    )
+    db.add(user)
+    await db.flush()
+
+    # New user needs to complete onboarding (steps 3-5)
+    onboarding_token = create_access_token(
+        data={"sub": str(user.id), "purpose": "onboarding"},
+        expires_delta=timedelta(hours=1),
+    )
+
+    return {
+        "access_token": "",
+        "refresh_token": "",
+        "token_type": "bearer",
+        "is_new_user": True,
+        "onboarding_token": onboarding_token,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Sign in
 # ---------------------------------------------------------------------------
 
