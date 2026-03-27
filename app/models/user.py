@@ -4,7 +4,8 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, List, Optional
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, func, Enum as SAEnum
+import enum
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -13,6 +14,11 @@ from app.database import Base
 if TYPE_CHECKING:
     from app.models.tenant import Tenant
     from app.models.email_verification import EmailVerification
+
+
+class AuthProvider(str, enum.Enum):
+    email = "email"
+    google = "google"
 
 
 class User(Base):
@@ -33,7 +39,14 @@ class User(Base):
     )
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)
     email: Mapped[str] = mapped_column(String(320), unique=True, nullable=False, index=True)
-    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    password_hash: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    auth_provider: Mapped[str] = mapped_column(
+        SAEnum(AuthProvider, name="authprovider", create_constraint=True),
+        default=AuthProvider.email,
+        server_default="email",
+        nullable=False,
+    )
+    provider_uid: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
     is_email_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(

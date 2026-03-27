@@ -116,6 +116,22 @@ class PlanSelectionRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Google social login
+# ---------------------------------------------------------------------------
+
+class GoogleLoginRequest(BaseModel):
+    id_token: str = Field(..., description="Google ID token from the frontend")
+
+
+class SocialLoginResponse(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: Literal["bearer"] = "bearer"
+    is_new_user: bool = False
+    onboarding_token: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
 # Sign in
 # ---------------------------------------------------------------------------
 

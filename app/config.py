@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     # Brevo (used in production — HTTP API, works on Render)
     BREVO_API_KEY: str = ""
 
+    # Google OAuth
+    GOOGLE_CLIENT_ID: str = ""
+
     # OTP
     OTP_EXPIRE_MINUTES: int = 10
 

@@ -27,6 +27,9 @@ from jose import JWTError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from google.auth.transport import requests as google_requests
+from google.oauth2 import id_token as google_id_token
+
 from app.config import settings
 from app.core.email import send_otp_email
 from app.core.security import (
@@ -45,7 +48,7 @@ from app.models.subscription import BillingCycle, PlanName, Subscription, Subscr
 from app.models.tenant import Tenant
 from app.models.tenant_quota import TenantQuota
 from app.models.usage_count import UsageCount
-from app.models.user import User
+from app.models.user import AuthProvider, User
 
 logger = logging.getLogger(__name__)
 
