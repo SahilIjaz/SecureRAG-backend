@@ -20,6 +20,7 @@ from app.database import get_db
 from app.models.user import User
 from app.schemas.auth import (
     ForgotPasswordRequest,
+    GoogleLoginRequest,
     MessageResponse,
     OnboardingCompleteResponse,
     OTPVerifyRequest,
@@ -32,6 +33,7 @@ from app.schemas.auth import (
     ResetPasswordRequest,
     SigninRequest,
     SignupStep1Request,
+    SocialLoginResponse,
     TokenResponse,
     VerifyResetOTPRequest,
     WorkspaceSetupRequest,
@@ -226,6 +228,30 @@ async def signin(
         db=db,
     )
     return TokenResponse(**result)
+
+
+# ---------------------------------------------------------------------------
+# Google social login
+# ---------------------------------------------------------------------------
+
+@router.post(
+    "/social/google",
+    response_model=SocialLoginResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Sign in or register with Google",
+    description=(
+        "Accepts a Google ID token (obtained from Google Sign-In on the frontend). "
+        "If the user exists and onboarding is complete, returns JWT tokens. "
+        "If the user is new or onboarding is incomplete, returns an onboarding_token "
+        "so the frontend can continue the onboarding flow (steps 3-5)."
+    ),
+)
+async def google_login(
+    body: GoogleLoginRequest,
+    db: AsyncSession = Depends(get_db),
+) -> SocialLoginResponse:
+    result = await auth_service.google_login(token=body.id_token, db=db)
+    return SocialLoginResponse(**result)
 
 
 # ---------------------------------------------------------------------------
