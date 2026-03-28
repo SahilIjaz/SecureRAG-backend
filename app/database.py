@@ -39,6 +39,7 @@ Base = declarative_base()
 
 
 async def get_db() -> AsyncSession:
+    """Yield an async DB session with automatic commit/rollback."""
     async with AsyncSessionLocal() as session:
         try:
             yield session
