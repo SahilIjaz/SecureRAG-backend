@@ -1,4 +1,5 @@
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,6 +13,21 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# Lifespan — replaces deprecated @app.on_event("startup")
+# ---------------------------------------------------------------------------
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info(
+        "%s API is running (debug=%s)",
+        settings.APP_NAME,
+        settings.DEBUG,
+    )
+    yield
+
+
 # ---------------------------------------------------------------------------
 # Application factory
 # ---------------------------------------------------------------------------
@@ -24,6 +40,7 @@ app = FastAPI(
         "Provides secure document ingestion, semantic search, and LLM-powered Q&A "
         "with per-tenant isolation, quota enforcement, and subscription management."
     ),
+    lifespan=lifespan,
     docs_url="/docs",
     redoc_url="/redoc",
     openapi_url="/openapi.json",
@@ -46,20 +63,6 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 
 app.include_router(v1_router, prefix="/api/v1")
-
-# ---------------------------------------------------------------------------
-# Lifecycle events
-# ---------------------------------------------------------------------------
-
-
-@app.on_event("startup")
-async def on_startup() -> None:
-    logger.info(
-        "%s API is running (debug=%s)",
-        settings.APP_NAME,
-        settings.DEBUG,
-    )
-
 
 # ---------------------------------------------------------------------------
 # Root endpoints
