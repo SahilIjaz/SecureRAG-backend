@@ -1,6 +1,6 @@
 from typing import Literal, Optional
 
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, EmailStr, Field, ValidationInfo, field_validator
 
 from app.models.subscription import BillingCycle, PlanName
 
@@ -190,7 +190,7 @@ class ResetPasswordRequest(BaseModel):
 
     @field_validator("confirm_password")
     @classmethod
-    def passwords_match(cls, v: str, info) -> str:
+    def passwords_match(cls, v: str, info: ValidationInfo) -> str:
         if "new_password" in info.data and v != info.data["new_password"]:
             raise ValueError("Passwords do not match")
         return v
