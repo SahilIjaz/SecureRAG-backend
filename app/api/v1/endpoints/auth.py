@@ -38,7 +38,6 @@ from app.schemas.auth import (
     VerifyResetOTPRequest,
     WorkspaceSetupRequest,
 )
-from app.models.user import User
 from app.schemas.user import UserWithTenantResponse
 from app.services import auth_service
 
