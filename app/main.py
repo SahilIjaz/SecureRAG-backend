@@ -72,4 +72,4 @@ app.include_router(v1_router, prefix="/api/v1")
 @app.get("/health", tags=["health"], summary="Health check")
 async def health_check() -> dict:
     """Return application health status."""
-    return {"status": "ok", "app": settings.APP_NAME}
+    return {"status": "ok", "app": settings.APP_NAME, "version": "1.0.0"}
