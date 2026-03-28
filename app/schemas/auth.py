@@ -211,6 +211,11 @@ class OTPVerifyResponse(BaseModel):
     onboarding_token: str
 
 
+class VerifyResetOTPResponse(BaseModel):
+    message: str
+    reset_token: str
+
+
 class OrganizationInfoResponse(BaseModel):
     message: str
     email: str

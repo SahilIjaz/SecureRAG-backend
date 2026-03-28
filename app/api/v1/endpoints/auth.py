@@ -38,6 +38,7 @@ from app.schemas.auth import (
     SocialLoginResponse,
     TokenResponse,
     VerifyResetOTPRequest,
+    VerifyResetOTPResponse,
     WorkspaceSetupRequest,
 )
 from app.schemas.user import UserWithTenantResponse
@@ -348,6 +349,7 @@ async def forgot_password(
 
 @router.post(
     "/verify-reset-otp",
+    response_model=VerifyResetOTPResponse,
     status_code=status.HTTP_200_OK,
     summary="Step 2 — Verify reset OTP",
     description=(
@@ -359,12 +361,13 @@ async def forgot_password(
 async def verify_reset_otp(
     body: VerifyResetOTPRequest,
     db: AsyncSession = Depends(get_db),
-) -> dict:
-    return await auth_service.verify_reset_otp(
+) -> VerifyResetOTPResponse:
+    result = await auth_service.verify_reset_otp(
         email=body.email,
         otp_code=body.otp_code,
         db=db,
     )
+    return VerifyResetOTPResponse(**result)
 
 
 # ---------------------------------------------------------------------------
