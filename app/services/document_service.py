@@ -33,7 +33,7 @@ ALLOWED_MIME_TYPES = [m.strip() for m in settings.ALLOWED_MIME_TYPES.split(",")]
 
 class DocumentWithCategory:
     """Wraps a Document and adds business_category from its owner's tenant."""
-    def __init__(self, doc: Document, business_category: str):
+    def __init__(self, doc: Document, business_category: str) -> None:
         # Copy all Document attributes
         self.__dict__.update(doc.__dict__)
         self.business_category = business_category
