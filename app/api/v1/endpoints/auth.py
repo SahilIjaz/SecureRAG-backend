@@ -14,7 +14,9 @@ GET  /api/v1/auth/me              — Get current authenticated user profile
 
 from fastapi import APIRouter, Depends, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.database import get_db
 from app.models.user import User
@@ -296,15 +298,11 @@ async def get_me(
     current_user: User = Depends(auth_service.get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> UserWithTenantResponse:
-    from sqlalchemy.orm import selectinload
-    from sqlalchemy import select
-    from app.models.user import User as UserModel
-
     # Reload user with tenant relationship eagerly loaded
     result = await db.execute(
-        select(UserModel)
-        .options(selectinload(UserModel.tenant))
-        .where(UserModel.id == current_user.id)
+        select(User)
+        .options(selectinload(User.tenant))
+        .where(User.id == current_user.id)
     )
     user = result.scalar_one()
 
