@@ -87,7 +87,7 @@ async def get_sample_documents(user: User, db: AsyncSession) -> List[DocumentWit
 
 
 # ---------------------------------------------------------------------------
-# Upload documents — stored on Cloudflare R2
+# Upload documents — stored on Cloudinary
 # ---------------------------------------------------------------------------
 
 async def upload_documents(
@@ -160,7 +160,7 @@ async def upload_documents(
                 detail=f"Document quota exceeded. Your plan allows {quota.max_documents} documents.",
             )
 
-    # --- Upload to R2 and create DB records ---
+    # --- Upload to Cloudinary and create DB records ---
     saved_documents: List[Document] = []
 
     for content, file_size_mb, filename, content_type in file_data:
@@ -196,7 +196,7 @@ async def upload_documents(
     for doc in saved_documents:
         await db.refresh(doc)
 
-    logger.info("Uploaded %d file(s) to R2 for tenant %s", len(saved_documents), user.tenant_id)
+    logger.info("Uploaded %d file(s) to Cloudinary for tenant %s", len(saved_documents), user.tenant_id)
     return saved_documents
 
 
