@@ -5,6 +5,7 @@ from sqlalchemy.orm import declarative_base
 from app.config import settings
 
 
+
 def _build_database_url(raw_url: str) -> str:
     """
     Neon (and some other cloud PG providers) append ?sslmode=require&channel_binding=require
