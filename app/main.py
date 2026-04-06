@@ -52,7 +52,11 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Restrict to specific origins in production
+    allow_origins=[
+        "http://localhost:5173",  # Local dev
+        "http://localhost:3000",  # Fallback local dev
+        settings.FRONTEND_URL if hasattr(settings, 'FRONTEND_URL') else "http://localhost:5173",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

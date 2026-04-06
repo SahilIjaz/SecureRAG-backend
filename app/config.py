@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     # OTP
     OTP_EXPIRE_MINUTES: int = 10
 
+    # Frontend URL (for CORS)
+    FRONTEND_URL: str = "http://localhost:5173"
+
     # File storage (local fallback)
     UPLOAD_DIR: str = "storage/uploads"
     MAX_UPLOAD_SIZE_MB: int = 15
