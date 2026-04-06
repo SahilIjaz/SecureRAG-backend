@@ -53,13 +53,18 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:5173",  # Local dev
-        "http://localhost:3000",  # Fallback local dev
-        settings.FRONTEND_URL if hasattr(settings, 'FRONTEND_URL') else "http://localhost:5173",
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "http://localhost:5175",
+        "http://localhost:3000",
+        "http://localhost:8000",
+        "http://localhost:8080",
+        "*",  # Allow all origins for development
     ],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 # ---------------------------------------------------------------------------
