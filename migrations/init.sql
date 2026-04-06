@@ -10,7 +10,6 @@
 -- =============================================================================
 
 
-
 -- Enable the pgcrypto extension so gen_random_uuid() is available on older PG.
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
