@@ -85,6 +85,7 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE INDEX IF NOT EXISTS idx_users_email     ON users (email);
 CREATE INDEX IF NOT EXISTS idx_users_tenant_id ON users (tenant_id);
 
+
 -- =============================================================================
 -- TABLE: email_verifications
 -- =============================================================================
