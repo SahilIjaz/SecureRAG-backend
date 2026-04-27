@@ -515,6 +515,16 @@ async def signin(
             detail="Invalid email or password.",
         )
 
+    # Check if user has completed onboarding (business_category set)
+    if not user.tenant.business_category:
+        # Return onboarding token instead of access token
+        payload = {"sub": str(user.id)}
+        return {
+            "onboarding_token": create_access_token(payload),
+            "token_type": "bearer",
+            "needs_onboarding": True,
+        }
+
     return _issue_tokens(user)
 
 
