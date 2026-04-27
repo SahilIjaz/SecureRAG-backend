@@ -26,6 +26,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token as google_id_token
@@ -495,7 +496,18 @@ async def signin(
     password: str,
     db: AsyncSession,
 ) -> dict:
-    user = await _get_user_by_email_or_404(email, db)
+    # Eagerly load tenant relationship to avoid async lazy loading
+    result = await db.execute(
+        select(User)
+        .where(User.email == email.lower().strip())
+        .options(selectinload(User.tenant))
+    )
+    user = result.scalar_one_or_none()
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No account found with this email address.",
+        )
 
     if not user.is_email_verified:
         raise HTTPException(
