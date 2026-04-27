@@ -240,6 +240,7 @@ async def save_organization_info(
 
     tenant.business_category = business_category
     tenant.employee_count_range = employee_count_range
+    await db.flush()
 
     return {
         "message": "Organisation info saved.",
@@ -280,6 +281,7 @@ async def setup_workspace(
 
     tenant.workspace_name = workspace_name.strip()
     tenant.slug = slug
+    await db.flush()
 
     return {
         "message": "Workspace set up successfully.",
@@ -350,6 +352,7 @@ async def select_plan(
         period_month=_first_of_month().date(),
     )
     db.add(usage)
+    await db.flush()
 
     # Issue JWT tokens — onboarding complete
     tokens = _issue_tokens(user)
