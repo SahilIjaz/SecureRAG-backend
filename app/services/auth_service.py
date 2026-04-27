@@ -236,19 +236,25 @@ async def save_organization_info(
     Persist organisation info onto the tenant record.
     The tenant exists as a placeholder from Step 1.
     """
-    tenant = await _get_tenant_for_user(user, db)
+    try:
+        tenant = await _get_tenant_for_user(user, db)
 
-    tenant.business_category = business_category
-    tenant.employee_count_range = employee_count_range
-    await db.flush()
+        tenant.business_category = business_category
+        tenant.employee_count_range = employee_count_range
+        await db.flush()
+        await db.commit()
 
-    return {
-        "message": "Organisation info saved.",
-        "email": user.email,
-        "full_name": user.full_name,
-        "business_category": business_category,
-        "employee_count_range": employee_count_range,
-    }
+        return {
+            "message": "Organisation info saved.",
+            "email": user.email,
+            "full_name": user.full_name,
+            "business_category": business_category,
+            "employee_count_range": employee_count_range,
+        }
+    except Exception as err:
+        await db.rollback()
+        logger.error(f"Failed to save organization info: {err}")
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -263,31 +269,37 @@ async def setup_workspace(
     """
     Set the tenant workspace name and generate its unique slug.
     """
-    tenant = await _get_tenant_for_user(user, db)
+    try:
+        tenant = await _get_tenant_for_user(user, db)
 
-    base_slug = _slugify(workspace_name)
+        base_slug = _slugify(workspace_name)
 
-    # Ensure slug uniqueness
-    slug = base_slug
-    counter = 1
-    while True:
-        result = await db.execute(
-            select(Tenant).where(Tenant.slug == slug, Tenant.id != tenant.id)
-        )
-        if result.scalar_one_or_none() is None:
-            break
-        slug = f"{base_slug}-{counter}"
-        counter += 1
+        # Ensure slug uniqueness
+        slug = base_slug
+        counter = 1
+        while True:
+            result = await db.execute(
+                select(Tenant).where(Tenant.slug == slug, Tenant.id != tenant.id)
+            )
+            if result.scalar_one_or_none() is None:
+                break
+            slug = f"{base_slug}-{counter}"
+            counter += 1
 
-    tenant.workspace_name = workspace_name.strip()
-    tenant.slug = slug
-    await db.flush()
+        tenant.workspace_name = workspace_name.strip()
+        tenant.slug = slug
+        await db.flush()
+        await db.commit()
 
-    return {
-        "message": "Workspace set up successfully.",
-        "workspace_name": tenant.workspace_name,
-        "slug": tenant.slug,
-    }
+        return {
+            "message": "Workspace set up successfully.",
+            "workspace_name": tenant.workspace_name,
+            "slug": tenant.slug,
+        }
+    except Exception as err:
+        await db.rollback()
+        logger.error(f"Failed to setup workspace: {err}")
+        raise
 
 
 # ---------------------------------------------------------------------------
