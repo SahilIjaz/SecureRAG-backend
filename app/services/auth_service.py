@@ -528,8 +528,9 @@ async def signin(
         )
 
     # Check if user has completed onboarding (business_category set)
-    if not user.tenant.business_category:
+    if not user.tenant or not user.tenant.business_category:
         # Return onboarding token instead of access token
+        logger.info(f"User {user.id} ({user.email}) needs to complete onboarding")
         payload = {"sub": str(user.id)}
         return {
             "onboarding_token": create_access_token(payload),
@@ -537,6 +538,7 @@ async def signin(
             "needs_onboarding": True,
         }
 
+    logger.info(f"User {user.id} ({user.email}) signin successful")
     return _issue_tokens(user)
 
 
