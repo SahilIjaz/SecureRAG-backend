@@ -225,9 +225,11 @@ class OrganizationInfoResponse(BaseModel):
 
 
 class TokenResponse(BaseModel):
-    access_token: str
-    refresh_token: str
+    access_token: Optional[str] = None
+    refresh_token: Optional[str] = None
     token_type: Literal["bearer"] = "bearer"
+    onboarding_token: Optional[str] = None
+    needs_onboarding: Optional[bool] = None
 
 
 class OnboardingCompleteResponse(TokenResponse):
