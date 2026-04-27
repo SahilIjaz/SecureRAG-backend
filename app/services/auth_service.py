@@ -531,9 +531,12 @@ async def signin(
     if not user.tenant or not user.tenant.business_category:
         # Return onboarding token instead of access token
         logger.info(f"User {user.id} ({user.email}) needs to complete onboarding")
-        payload = {"sub": str(user.id)}
+        onboarding_token = create_access_token(
+            data={"sub": str(user.id), "purpose": "onboarding"},
+            expires_delta=timedelta(hours=1),
+        )
         return {
-            "onboarding_token": create_access_token(payload),
+            "onboarding_token": onboarding_token,
             "token_type": "bearer",
             "needs_onboarding": True,
         }
