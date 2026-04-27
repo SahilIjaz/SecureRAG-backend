@@ -1,6 +1,8 @@
+import uuid
 from typing import List
 
 from fastapi import APIRouter, Depends, File, UploadFile
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -12,6 +14,10 @@ from app.schemas.document import (
 )
 from app.services import auth_service, document_service
 from app.services.auth_service import get_any_valid_user
+
+
+class SelectPlatformSampleDocumentsRequest(BaseModel):
+    sample_document_ids: List[uuid.UUID]
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -77,6 +83,34 @@ async def select_sample_document(
     """
     doc = await document_service.select_sample_document(user, body.document_id, db)
     return DocumentResponse.model_validate(doc)
+
+
+@router.post(
+    "/select-platform-samples",
+    response_model=DocumentsResponse,
+    status_code=201,
+    summary="Add platform sample documents to your workspace",
+)
+async def select_platform_sample_documents(
+    body: SelectPlatformSampleDocumentsRequest,
+    user=Depends(get_any_valid_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Copies platform sample documents into the current user's workspace.
+    Pass the sample_document_ids from GET /auth/sample-documents.
+    Requires onboarding token.
+    """
+    docs = await document_service.select_platform_sample_documents(
+        user, body.sample_document_ids, db
+    )
+    total_storage = round(sum(d.file_size_mb for d in docs), 4)
+    return DocumentsResponse(
+        message=f"{len(docs)} sample document(s) added successfully.",
+        documents=[DocumentResponse.model_validate(d) for d in docs],
+        total_count=len(docs),
+        total_storage_mb=total_storage,
+    )
 
 
 @router.get(

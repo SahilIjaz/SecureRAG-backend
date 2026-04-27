@@ -297,3 +297,53 @@ async def get_tenant_documents(user: User, db: AsyncSession) -> List[Document]:
         ).order_by(Document.created_at.desc())
     )
     return result.scalars().all()
+
+
+# ---------------------------------------------------------------------------
+# Select platform sample documents — copies SampleDocument records into workspace
+# ---------------------------------------------------------------------------
+
+async def select_platform_sample_documents(
+    user: User, sample_document_ids: List[uuid.UUID], db: AsyncSession
+) -> List[Document]:
+    """
+    Copies platform sample documents (SampleDocument records) into the user's workspace.
+    Creates Document records for each selected SampleDocument, linking via sample_document_id.
+    Used during onboarding when user selects "show me sample documents".
+    """
+    from app.models.sample_document import SampleDocument
+
+    # Fetch the sample documents
+    result = await db.execute(
+        select(SampleDocument).where(
+            SampleDocument.id.in_(sample_document_ids),
+            SampleDocument.is_active == True,
+        )
+    )
+    sample_docs = result.scalars().all()
+
+    if not sample_docs:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No sample documents found.",
+        )
+
+    # Create Document records for each sample document
+    saved_documents = []
+    for sample_doc in sample_docs:
+        doc = Document(
+            id=uuid.uuid4(),
+            tenant_id=user.tenant_id,
+            original_filename=sample_doc.filename,
+            file_size_mb=sample_doc.file_size_mb,
+            mime_type="application/pdf",
+            source=DocumentSource.sample,
+            status=DocumentStatus.ready,
+            file_url=sample_doc.file_path,
+            sample_document_id=sample_doc.id,
+        )
+        db.add(doc)
+        saved_documents.append(doc)
+
+    await db.commit()
+    return saved_documents

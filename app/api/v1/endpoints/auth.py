@@ -397,3 +397,22 @@ async def reset_password(
         db=db,
     )
     return MessageResponse(message=result["message"])
+
+
+@router.get(
+    "/sample-documents",
+    response_model=dict,
+    status_code=status.HTTP_200_OK,
+    summary="Get sample documents by category",
+    description="Fetch platform sample documents filtered by business category for onboarding.",
+)
+async def get_sample_documents(
+    category: str,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    documents = await auth_service.get_sample_documents_by_category(category, db)
+    return {
+        "message": "Sample documents retrieved successfully.",
+        "documents": documents,
+        "count": len(documents),
+    }

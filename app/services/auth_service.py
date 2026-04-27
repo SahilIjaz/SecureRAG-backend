@@ -956,3 +956,37 @@ async def reset_password(
     user.password_hash = hash_password(new_password)
 
     return {"message": "Password reset successfully. You can now sign in with your new password."}
+
+
+# ---------------------------------------------------------------------------
+# Sample documents — get documents for onboarding by category
+# ---------------------------------------------------------------------------
+
+async def get_sample_documents_by_category(
+    business_category: str,
+    db: AsyncSession,
+) -> list[dict]:
+    """
+    Fetch sample documents from the database for the given business category.
+    Used during onboarding when user selects "show sample documents".
+    """
+    from app.models.sample_document import SampleDocument
+
+    result = await db.execute(
+        select(SampleDocument)
+        .where(SampleDocument.business_category == business_category)
+        .where(SampleDocument.is_active == True)
+    )
+    documents = result.scalars().all()
+
+    return [
+        {
+            "id": str(doc.id),
+            "title": doc.title,
+            "desc": doc.description,
+            "pages": 0,  # Page count not stored in DB, frontend can infer from file_size_mb
+            "filename": doc.filename,
+            "file_size_mb": doc.file_size_mb,
+        }
+        for doc in documents
+    ]
