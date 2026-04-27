@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS tenants (
     employee_count_range VARCHAR(50)
         CHECK (
             employee_count_range IS NULL OR
-            employee_count_range IN ('1-15', '16-49', '50-249', '250+')
+            employee_count_range IN ('1-15', '16-49', '50-199', '200-1999', '2000-4999', 'just-me')
         ),
     is_active            BOOLEAN       NOT NULL DEFAULT TRUE,
     created_at           TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
