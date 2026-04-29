@@ -7,6 +7,7 @@
 -- Convention   : UUIDs generated via gen_random_uuid(); timestamps stored as
 --               TIMESTAMPTZ (UTC).  A value of -1 in quota columns means
 --       "unlimited".
+
 -- =============================================================================
 -- Enable the pgcrypto extension so gen_random_uuid() is available on older PG.
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
