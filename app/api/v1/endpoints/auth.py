@@ -13,11 +13,13 @@ POST /api/v1/auth/refresh         — Exchange refresh token for new token pair
 GET  /api/v1/auth/me              — Get current authenticated user profile
 """
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from app.database import get_db
 from app.models.user import User
@@ -46,6 +48,7 @@ from app.schemas.user import UserWithTenantResponse
 from app.services import auth_service
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
+limiter = Limiter(key_func=get_remote_address)
 
 
 # ---------------------------------------------------------------------------
@@ -63,7 +66,9 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
         "in Step 2 before proceeding."
     ),
 )
+@limiter.limit("3/minute")
 async def signup(
+    request: Request,
     body: SignupStep1Request,
     db: AsyncSession = Depends(get_db),
 ) -> MessageResponse:
@@ -90,7 +95,9 @@ async def signup(
         "(valid 1 hour). Pass this as Bearer token in steps 3, 4, and 5."
     ),
 )
+@limiter.limit("5/minute")
 async def verify_email(
+    request: Request,
     body: OTPVerifyRequest,
     db: AsyncSession = Depends(get_db),
 ) -> OTPVerifyResponse:
@@ -221,7 +228,9 @@ async def select_plan(
         "Attach the access token as: Authorization: Bearer <token>"
     ),
 )
+@limiter.limit("5/minute")
 async def signin(
+    request: Request,
     body: SigninRequest,
     db: AsyncSession = Depends(get_db),
 ) -> TokenResponse:

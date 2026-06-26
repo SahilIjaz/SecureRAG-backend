@@ -1,9 +1,11 @@
 """
-Document Service — handles document uploads, community sample retrieval, and sample selection.
+Document Service — handles document uploads, web scraping, community sample retrieval, and sample selection.
 Files are stored on Cloudinary. Only the public_id and secure_url are saved in the DB.
 
 Community samples: documents uploaded by any user are available as samples to other users
 in the same business category.
+
+Web scraping: URLs are scraped using Crawl4AI and converted to PDF before storage.
 """
 
 import logging
@@ -15,6 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.core.scraper import scrape_website_to_pdf
 from app.core.storage import upload_file_to_cloudinary
 from app.models.document import Document, DocumentSource, DocumentStatus
 from app.models.tenant import Tenant
@@ -346,4 +349,150 @@ async def select_platform_sample_documents(
         saved_documents.append(doc)
 
     await db.commit()
+    return saved_documents
+
+
+# ---------------------------------------------------------------------------
+# Scrape websites and add as documents
+# ---------------------------------------------------------------------------
+
+async def scrape_and_add_documents(
+    user: User, urls: List[str], db: AsyncSession
+) -> List[Document]:
+    """
+    Scrapes websites using Crawl4AI and adds them as PDF documents.
+    Validates quotas before scraping.
+
+    Args:
+        user: Current user
+        urls: List of website URLs to scrape
+        db: Database session
+
+    Returns:
+        List of created Document records
+    """
+    if not settings.CRAWL4AI_ENABLED:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Web scraping is not enabled.",
+        )
+
+    if not urls:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No URLs provided.",
+        )
+
+    # Validate URLs
+    for url in urls:
+        if not url.startswith(("http://", "https://")):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid URL: {url}. Must start with http:// or https://",
+            )
+
+    # Fetch tenant quota
+    result = await db.execute(
+        select(TenantQuota).where(TenantQuota.tenant_id == user.tenant_id)
+    )
+    quota = result.scalar_one_or_none()
+
+    # Fetch current usage
+    result = await db.execute(
+        select(UsageCount).where(UsageCount.tenant_id == user.tenant_id)
+        .order_by(UsageCount.period_month.desc())
+    )
+    usage = result.scalar_one_or_none()
+
+    # Existing active documents
+    result = await db.execute(
+        select(Document).where(
+            Document.tenant_id == user.tenant_id,
+            Document.is_active == True,
+        )
+    )
+    existing_docs = result.scalars().all()
+    existing_count = len(existing_docs)
+
+    # Check document count quota
+    if quota and quota.max_documents != -1:
+        if (existing_count + len(urls)) > quota.max_documents:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Document quota exceeded. Your plan allows {quota.max_documents} documents.",
+            )
+
+    saved_documents: List[Document] = []
+
+    for url in urls:
+        try:
+            # Scrape website and convert to PDF
+            pdf_content, page_title = await scrape_website_to_pdf(
+                url, timeout=settings.CRAWL4AI_TIMEOUT
+            )
+
+            file_size_mb = len(pdf_content) / (1024 * 1024)
+
+            # Check per-file size quota
+            result_quota = await db.execute(
+                select(TenantQuota).where(TenantQuota.tenant_id == user.tenant_id)
+            )
+            _quota = result_quota.scalar_one_or_none()
+            max_mb = _quota.max_file_size_mb if _quota else settings.MAX_UPLOAD_SIZE_MB
+
+            if file_size_mb > max_mb:
+                logger.warning(f"Scraped content from {url} exceeds {max_mb}MB limit")
+                raise HTTPException(
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    detail=f"Content from '{url}' exceeds the {max_mb}MB per-file limit after scraping.",
+                )
+
+            # Upload PDF to Cloudinary
+            public_id, secure_url = await upload_file_to_cloudinary(
+                file_content=pdf_content,
+                tenant_id=user.tenant_id,
+                original_filename=f"{page_title}.pdf",
+                content_type="application/pdf",
+            )
+
+            # Create document record
+            doc = Document(
+                tenant_id=user.tenant_id,
+                original_filename=page_title,
+                file_path=public_id,
+                file_url=secure_url,
+                file_size_mb=round(file_size_mb, 4),
+                mime_type="application/pdf",
+                source=DocumentSource.scraped,
+                source_url=url,
+                status=DocumentStatus.pending,
+            )
+            db.add(doc)
+            saved_documents.append(doc)
+
+            logger.info(f"Scraped and added document from {url} for tenant {user.tenant_id}")
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to scrape {url}: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Failed to scrape {url}: {str(e)}",
+            )
+
+    await db.flush()
+
+    # Update usage count
+    if usage and saved_documents:
+        total_storage = sum(d.file_size_mb for d in saved_documents)
+        usage.documents_count = (usage.documents_count or 0) + len(saved_documents)
+        usage.storage_used_mb = round((usage.storage_used_mb or 0.0) + total_storage, 4)
+
+    await db.commit()
+
+    for doc in saved_documents:
+        await db.refresh(doc)
+
+    logger.info("Scraped %d website(s) for tenant %s", len(saved_documents), user.tenant_id)
     return saved_documents

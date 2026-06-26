@@ -1,9 +1,11 @@
 import uuid
 from typing import List
 
-from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi import APIRouter, Depends, File, Request, UploadFile
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from app.database import get_db
 from app.schemas.document import (
@@ -11,6 +13,7 @@ from app.schemas.document import (
     DocumentResponse,
     DocumentsResponse,
     SelectSampleDocumentRequest,
+    ScrapWebsiteRequest,
 )
 from app.services import auth_service, document_service
 from app.services.auth_service import get_any_valid_user
@@ -20,6 +23,7 @@ class SelectPlatformSampleDocumentsRequest(BaseModel):
     sample_document_ids: List[uuid.UUID]
 
 router = APIRouter(prefix="/documents", tags=["documents"])
+limiter = Limiter(key_func=get_remote_address)
 
 
 @router.get(
@@ -43,9 +47,11 @@ async def list_sample_documents(
     "/upload",
     response_model=DocumentsResponse,
     status_code=201,
-    summary="Upload one or more documents (PDF, DOCX, TXT)",
+    summary="Upload one or more documents (PDF)",
 )
+@limiter.limit("10/minute")
 async def upload_documents(
+    request: Request,
     files: List[UploadFile] = File(...),
     user=Depends(get_any_valid_user),
     db: AsyncSession = Depends(get_db),
@@ -113,12 +119,43 @@ async def select_platform_sample_documents(
     )
 
 
+@router.post(
+    "/scrape",
+    response_model=DocumentsResponse,
+    status_code=201,
+    summary="Scrape websites and add as documents",
+)
+@limiter.limit("5/minute")
+async def scrape_websites(
+    request: Request,
+    body: ScrapWebsiteRequest,
+    user=Depends(get_any_valid_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Scrapes websites using Crawl4AI and adds them as PDF documents.
+    URLs are crawled, content extracted, and converted to PDF format.
+    Validates file sizes and document quotas before scraping.
+    Requires onboarding token.
+    """
+    saved = await document_service.scrape_and_add_documents(user, body.urls, db)
+    total_storage = round(sum(d.file_size_mb for d in saved), 4)
+    return DocumentsResponse(
+        message=f"{len(saved)} website(s) scraped and added successfully.",
+        documents=[DocumentResponse.model_validate(d) for d in saved],
+        total_count=len(saved),
+        total_storage_mb=total_storage,
+    )
+
+
 @router.get(
     "/",
     response_model=DocumentsResponse,
     summary="List all documents in your workspace",
 )
+@limiter.limit("30/minute")
 async def list_documents(
+    request: Request,
     user=Depends(get_any_valid_user),
     db: AsyncSession = Depends(get_db),
 ):

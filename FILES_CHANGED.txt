@@ -1,0 +1,334 @@
+═══════════════════════════════════════════════════════════════════════════════
+                        PDF UPLOAD & WEB SCRAPING
+                          FILES CHANGED SUMMARY
+═══════════════════════════════════════════════════════════════════════════════
+
+CREATED FILES (7 Total)
+═══════════════════════════════════════════════════════════════════════════════
+
+1. app/core/scraper.py
+   Purpose: Web scraping service using Crawl4AI
+   Lines: 120
+   Functions:
+     - scrape_website_to_pdf() - Async scraping
+     - _markdown_to_pdf() - Async PDF conversion wrapper
+     - _markdown_to_pdf_blocking() - Sync PDF generation
+
+2. migrations/add_documents_table.sql
+   Purpose: Database schema migration
+   Lines: 90
+   Creates:
+     - ENUM documentsource (uploaded, sample, scraped)
+     - ENUM documentstatus (pending, processing, ready, failed)
+     - TABLE documents (with source_url field)
+     - TABLE sample_documents
+     - Indexes and triggers
+
+3. FEATURE_DOCUMENT_UPLOAD_SCRAPING.md
+   Purpose: Comprehensive feature documentation
+   Lines: 400
+   Includes: API usage, quotas, error handling, configuration
+
+4. IMPLEMENTATION_SUMMARY.md
+   Purpose: Technical implementation details
+   Lines: 280
+   Includes: Code changes, database changes, dependencies, testing
+
+5. QUICK_START_WEB_SCRAPING.md
+   Purpose: Quick start guide
+   Lines: 200
+   Includes: 5-min setup, examples, troubleshooting
+
+6. DEPLOYMENT_CHECKLIST.md
+   Purpose: Complete deployment guide
+   Lines: 350+
+   Includes: Pre-deployment, deployment, post-deployment steps
+
+7. PDF_SCRAPING_FEATURE_INDEX.md
+   Purpose: Documentation navigation and index
+   Lines: 200+
+   Includes: Reading guide by role, quick navigation, file locations
+
+8. CHANGES_SUMMARY.txt
+   Purpose: Visual summary of changes
+   Lines: 150+
+   Includes: ASCII art, quick overview, status
+
+═══════════════════════════════════════════════════════════════════════════════
+
+MODIFIED FILES (8 Total)
+═══════════════════════════════════════════════════════════════════════════════
+
+1. requirements.txt
+   Changes:
+     + crawl4ai==0.4.243
+     + reportlab==4.1.5
+     + pypdf==4.3.1
+   Lines Added: 3
+   Reason: New dependencies for web scraping and PDF generation
+
+2. app/config.py
+   Changes:
+     • MAX_UPLOAD_SIZE_MB: 15 → 50
+     • ALLOWED_MIME_TYPES: Multiple → "application/pdf" only
+     + CRAWL4AI_ENABLED: bool = True
+     + CRAWL4AI_TIMEOUT: int = 30
+     + CRAWL4AI_MAX_CONTENT_SIZE_MB: int = 50
+   Lines Added: 6
+   Reason: Configuration for larger file limits and web scraping
+
+3. app/models/document.py
+   Changes:
+     • DocumentSource enum + "scraped" value
+     + source_url: Optional[str] field
+   Lines Added: 3
+   Reason: Support for tracking scraped documents and original URLs
+
+4. app/services/document_service.py
+   Changes:
+     • Import scraper module
+     + scrape_and_add_documents() function (130 lines)
+   Lines Added: 130+
+   Location: At end of file, before return statement
+   Reason: Web scraping business logic
+
+5. app/api/v1/endpoints/documents.py
+   Changes:
+     + Import ScrapWebsiteRequest
+     + POST /documents/scrape endpoint (40 lines)
+   Lines Added: 40+
+   Location: New endpoint before GET /documents/
+   Reason: API endpoint for web scraping
+
+6. app/schemas/document.py
+   Changes:
+     + ScrapWebsiteRequest schema (5 lines)
+     • DocumentResponse.source_url field
+   Lines Added: 10
+   Reason: Request/response models for scraping
+
+7. .env.example
+   Changes:
+     + CLOUDINARY_CLOUD_NAME example
+     + CLOUDINARY_API_KEY example
+     + CLOUDINARY_API_SECRET example
+     + CRAWL4AI_ENABLED=true
+     + CRAWL4AI_TIMEOUT=30
+     + CRAWL4AI_MAX_CONTENT_SIZE_MB=50
+     + MAX_UPLOAD_SIZE_MB=50
+     + ALLOWED_MIME_TYPES=application/pdf
+     + FRONTEND_URL=http://localhost:5173
+   Lines Added: 12
+   Reason: Configuration template for new features
+
+8. .env (if exists - not provided, use .env.example)
+   Changes: (User needs to update manually)
+     - Add Cloudinary credentials
+     - Add Crawl4AI settings
+     - Update file upload settings
+   Reason: Production secrets
+
+═══════════════════════════════════════════════════════════════════════════════
+
+DETAILED CHANGE BREAKDOWN
+═══════════════════════════════════════════════════════════════════════════════
+
+File: requirements.txt
+─────────────────────────────────────────────────────────────────────────────
+Added:
+  crawl4ai==0.4.243
+  reportlab==4.1.5
+  pypdf==4.3.1
+
+File: app/config.py
+─────────────────────────────────────────────────────────────────────────────
+Modified Line 33:
+  Before: MAX_UPLOAD_SIZE_MB: int = 15
+  After:  MAX_UPLOAD_SIZE_MB: int = 50
+
+Modified Line 34:
+  Before: ALLOWED_MIME_TYPES: str = "application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,application/msword"
+  After:  ALLOWED_MIME_TYPES: str = "application/pdf"
+
+Added Lines 35-37:
+  CRAWL4AI_ENABLED: bool = True
+  CRAWL4AI_TIMEOUT: int = 30
+  CRAWL4AI_MAX_CONTENT_SIZE_MB: int = 50
+
+File: app/models/document.py
+─────────────────────────────────────────────────────────────────────────────
+Modified DocumentSource enum:
+  Added: scraped = "scraped"
+
+Modified Document class:
+  Added Field: source_url (after sample_document_id field)
+
+File: app/services/document_service.py
+─────────────────────────────────────────────────────────────────────────────
+Modified Imports:
+  Added: from app.core.scraper import scrape_website_to_pdf
+
+Added Function:
+  scrape_and_add_documents() at line ~305-450
+  - Validates URLs
+  - Checks quotas
+  - Scrapes websites
+  - Generates PDFs
+  - Stores on Cloudinary
+  - Updates usage tracking
+
+File: app/api/v1/endpoints/documents.py
+─────────────────────────────────────────────────────────────────────────────
+Modified Imports:
+  Added: ScrapWebsiteRequest to schema imports
+
+Added Endpoint:
+  POST /scrape at line ~88-113
+  - Request: ScrapWebsiteRequest
+  - Response: DocumentsResponse
+  - Status: 201 Created
+
+File: app/schemas/document.py
+─────────────────────────────────────────────────────────────────────────────
+Added Class:
+  ScrapWebsiteRequest(BaseModel):
+    urls: List[str]
+
+Modified Class:
+  DocumentResponse:
+    Added: source_url: Optional[str] field
+
+File: .env.example
+─────────────────────────────────────────────────────────────────────────────
+Added:
+  # Cloudinary (for document storage)
+  CLOUDINARY_CLOUD_NAME=your_cloud_name
+  CLOUDINARY_API_KEY=your_api_key
+  CLOUDINARY_API_SECRET=your_api_secret
+  
+  # Web scraping with Crawl4AI
+  CRAWL4AI_ENABLED=true
+  CRAWL4AI_TIMEOUT=30
+  CRAWL4AI_MAX_CONTENT_SIZE_MB=50
+  
+  # File upload settings
+  MAX_UPLOAD_SIZE_MB=50
+  ALLOWED_MIME_TYPES=application/pdf
+  
+  # Frontend URL for CORS
+  FRONTEND_URL=http://localhost:5173
+
+═══════════════════════════════════════════════════════════════════════════════
+
+DATABASE MIGRATION REQUIRED
+═══════════════════════════════════════════════════════════════════════════════
+
+File: migrations/add_documents_table.sql
+
+Run before deploying:
+  psql -d securerag < migrations/add_documents_table.sql
+
+Creates:
+  1. documentsource ENUM type
+     Values: 'uploaded', 'sample', 'scraped'
+  
+  2. documentstatus ENUM type
+     Values: 'pending', 'processing', 'ready', 'failed'
+  
+  3. documents table
+     - id (UUID PK)
+     - tenant_id (UUID FK)
+     - original_filename (VARCHAR 500)
+     - file_path (VARCHAR 1000)
+     - file_url (VARCHAR 2000)
+     - file_size_mb (FLOAT)
+     - mime_type (VARCHAR 100)
+     - source (documentsource ENUM)
+     - source_url (VARCHAR 2048) ← NEW
+     - status (documentstatus ENUM)
+     - sample_document_id (UUID FK)
+     - is_active (BOOLEAN)
+     - created_at (TIMESTAMPTZ)
+     - updated_at (TIMESTAMPTZ)
+     
+     Indexes:
+       - idx_documents_tenant_id
+       - idx_documents_source
+       - idx_documents_status
+       - idx_documents_is_active
+  
+  4. sample_documents table
+     - id (UUID PK)
+     - business_category (VARCHAR 255)
+     - title (TEXT)
+     - description (TEXT)
+     - filename (VARCHAR 255)
+     - file_path (VARCHAR 1000)
+     - file_size_mb (FLOAT)
+     - is_active (BOOLEAN)
+     - created_at (TIMESTAMPTZ)
+     
+     Index:
+       - idx_sample_documents_category
+  
+  5. Triggers
+     - set_documents_updated_at (auto-update updated_at)
+
+═══════════════════════════════════════════════════════════════════════════════
+
+STATISTICS
+═══════════════════════════════════════════════════════════════════════════════
+
+Code Files Created:        2 files
+Code Lines Created:        210 lines
+Files Modified:            8 files
+Code Lines Modified:       ~200 lines
+Total Code Changes:        ~410 lines
+
+Documentation Created:     6 files
+Documentation Lines:       ~1400 lines
+
+Migration Created:         1 file
+Migration Lines:           ~90 lines
+
+Total New Files:           7
+Total Modified Files:      8
+Total Files Affected:      15
+
+Dependencies Added:        3 (crawl4ai, reportlab, pypdf)
+
+New API Endpoints:         1 (POST /documents/scrape)
+Modified API Endpoints:    2 (POST /documents/upload, GET /documents/)
+
+New Database Tables:       2 (documents, sample_documents)
+New Enum Types:            2 (documentsource, documentstatus)
+New Database Fields:       1 (documents.source_url)
+
+═══════════════════════════════════════════════════════════════════════════════
+
+WHAT TO DO NEXT
+═══════════════════════════════════════════════════════════════════════════════
+
+1. Review Files
+   ☐ Check QUICK_START_WEB_SCRAPING.md (5 min)
+   ☐ Read FEATURE_DOCUMENT_UPLOAD_SCRAPING.md (20 min)
+
+2. Install & Test
+   ☐ pip install -r requirements.txt
+   ☐ Test local PDF upload
+   ☐ Test local web scraping
+
+3. Prepare Deployment
+   ☐ Update .env with Cloudinary credentials
+   ☐ Backup production database
+   ☐ Review DEPLOYMENT_CHECKLIST.md
+
+4. Deploy
+   ☐ Run database migration
+   ☐ Restart application
+   ☐ Run smoke tests
+   ☐ Monitor logs for 30 minutes
+
+═══════════════════════════════════════════════════════════════════════════════
+
+END OF FILE CHANGES SUMMARY

@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 class DocumentSource(str, enum.Enum):
     uploaded = "uploaded"      # user uploaded their own file
     sample = "sample"          # user picked a platform sample doc
+    scraped = "scraped"        # web scraped from URL via Crawl4AI
 
 
 class DocumentStatus(str, enum.Enum):
@@ -69,6 +70,8 @@ class Document(Base):
         ForeignKey("sample_documents.id", ondelete="SET NULL"),
         nullable=True,
     )
+    # For scraped documents: original URL
+    source_url: Mapped[Optional[str]] = mapped_column(String(2048), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

@@ -35,7 +35,8 @@ class DocumentResponse(BaseModel):
     source: DocumentSource
     status: DocumentStatus
     sample_document_id: Optional[uuid.UUID]
-    file_url: Optional[str]   # Cloudinary secure URL
+    source_url: Optional[str]   # For scraped documents: original URL
+    file_url: Optional[str]     # Cloudinary secure URL
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -55,6 +56,14 @@ class DocumentPreferenceRequest(BaseModel):
 
 class SelectSampleDocumentRequest(BaseModel):
     document_id: uuid.UUID   # ID of a community-uploaded Document to copy into your workspace
+
+
+# ---------------------------------------------------------------------------
+# Web scraping request
+# ---------------------------------------------------------------------------
+
+class ScrapWebsiteRequest(BaseModel):
+    urls: List[str]   # URLs to scrape (must start with http:// or https://)
 
 
 # ---------------------------------------------------------------------------

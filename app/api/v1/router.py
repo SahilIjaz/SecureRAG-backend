@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api.v1.endpoints import auth, documents
+from app.api.v1.endpoints import auth, documents, rag
 
 router = APIRouter()
 
@@ -9,6 +9,9 @@ router.include_router(auth.router)
 
 # Documents
 router.include_router(documents.router)
+
+# RAG
+router.include_router(rag.router)
 
 
 @router.get("/ping", tags=["health"], summary="Liveness check")

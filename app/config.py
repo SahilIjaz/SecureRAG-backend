@@ -30,13 +30,33 @@ class Settings(BaseSettings):
 
     # File storage (local fallback)
     UPLOAD_DIR: str = "storage/uploads"
-    MAX_UPLOAD_SIZE_MB: int = 15
-    ALLOWED_MIME_TYPES: str = "application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,application/msword"
+    MAX_UPLOAD_SIZE_MB: int = 50
+    ALLOWED_MIME_TYPES: str = "application/pdf"
+
+    # Web scraping (Crawl4AI)
+    CRAWL4AI_ENABLED: bool = True
+    CRAWL4AI_TIMEOUT: int = 30
+    CRAWL4AI_MAX_CONTENT_SIZE_MB: int = 50
 
     # Cloudinary
     CLOUDINARY_CLOUD_NAME: str = ""
     CLOUDINARY_API_KEY: str = ""
     CLOUDINARY_API_SECRET: str = ""
+
+    # File Encryption (at rest)
+    FILE_ENCRYPTION_KEY: str = ""
+
+    # Vector Database (Pinecone) for RAG
+    PINECONE_API_KEY: str = ""
+    PINECONE_INDEX_NAME: str = "securerag-documents"
+
+    # Anthropic API for embeddings
+    ANTHROPIC_API_KEY: str = ""
+
+    # RAG Chunking settings
+    RAG_CHUNK_SIZE: int = 500  # tokens
+    RAG_CHUNK_OVERLAP: int = 50  # tokens
+    RAG_SEARCH_TOP_K: int = 5  # top results for Q&A
 
     model_config = SettingsConfigDict(
         env_file=".env",

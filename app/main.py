@@ -3,6 +3,10 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 from app.api.v1.router import router as v1_router
 from app.config import settings
@@ -47,24 +51,42 @@ app = FastAPI(
 )
 
 # ---------------------------------------------------------------------------
+# Rate Limiting & Security
+# ---------------------------------------------------------------------------
+
+# Initialize rate limiter
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+
+
+# Rate limit exception handler
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_handler(request, exc):
+    return JSONResponse(
+        status_code=429,
+        content={"detail": "Rate limit exceeded. Please try again later."}
+    )
+
+
+# ---------------------------------------------------------------------------
 # Middleware
 # ---------------------------------------------------------------------------
 
+# CORS (hardened - only allow specific origins)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:5173",
-        "http://localhost:5174",
-        "http://localhost:5175",
-        "http://localhost:3000",
-        "http://localhost:8000",
-        "http://localhost:8080",
-        "*",  # Allow all origins for development
+        "http://localhost:5173",     # Vite dev
+        "http://localhost:5174",     # Vite dev (alternate)
+        "http://localhost:5175",     # Vite dev (alternate)
+        "http://localhost:3000",     # Next.js dev
+        # Add production domain here:
+        # "https://yourdomain.com",
     ],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
-    allow_headers=["*"],
-    expose_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
+    allow_headers=["Authorization", "Content-Type"],
+    max_age=3600,  # Cache CORS preflight for 1 hour
 )
 
 # ---------------------------------------------------------------------------
