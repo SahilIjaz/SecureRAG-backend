@@ -29,11 +29,9 @@ def is_ip_blocked(hostname: str) -> bool:
         True if IP is blocked, False if safe
     """
     try:
-        # Resolve hostname to IP
         ip_str = socket.gethostbyname(hostname)
         ip = ip_address(ip_str)
 
-        # Check against blocked ranges
         for blocked_range in BLOCKED_IP_RANGES:
             if ip in blocked_range:
                 return True
@@ -41,10 +39,8 @@ def is_ip_blocked(hostname: str) -> bool:
         return False
 
     except socket.gaierror:
-        # DNS lookup failed - block it for safety
         return True
     except ValueError:
-        # Invalid IP format - block it for safety
         return True
 
 

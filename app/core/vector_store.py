@@ -59,6 +59,7 @@ async def upsert_chunks(
         }
 
         vectors_to_upsert.append((vector_id, embedding, metadata))
+
     batch_size = 100
     for i in range(0, len(vectors_to_upsert), batch_size):
         batch = vectors_to_upsert[i:i+batch_size]
@@ -86,7 +87,6 @@ async def search_chunks(
     """
     index = get_index()
 
-    # Query with tenant filter
     results = await asyncio.to_thread(
         index.query,
         vector=query_embedding,
@@ -121,7 +121,6 @@ async def delete_document_chunks(
     """
     index = get_index()
 
-    # Delete with filter
     await asyncio.to_thread(
         index.delete,
         filter={

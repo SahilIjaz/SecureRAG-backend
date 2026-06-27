@@ -6,7 +6,6 @@ import tiktoken
 
 logger = logging.getLogger(__name__)
 
-# Token encoding for Claude models
 ENCODING = tiktoken.encoding_for_model("gpt-3.5-turbo")
 
 
