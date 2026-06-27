@@ -4,9 +4,6 @@ from pydantic import BaseModel, EmailStr, Field, ValidationInfo, field_validator
 
 from app.models.subscription import BillingCycle, PlanName
 
-# ---------------------------------------------------------------------------
-# Step 1 — Register
-# ---------------------------------------------------------------------------
 
 class SignupStep1Request(BaseModel):
     full_name: str = Field(..., min_length=1, max_length=255, examples=["Jane Doe"])
@@ -37,9 +34,6 @@ class SignupStep1Request(BaseModel):
         return v
 
 
-# ---------------------------------------------------------------------------
-# Step 2 — Verify OTP
-# ---------------------------------------------------------------------------
 
 class OTPVerifyRequest(BaseModel):
     email: EmailStr = Field(..., examples=["jane@example.com"])
@@ -57,9 +51,6 @@ class ResendOTPRequest(BaseModel):
     email: EmailStr = Field(..., examples=["jane@example.com"])
 
 
-# ---------------------------------------------------------------------------
-# Step 3 — Organisation info
-# ---------------------------------------------------------------------------
 
 VALID_EMPLOYEE_RANGES = {"1-15", "16-49", "50-199", "200-1999", "2000-4999", "just-me"}
 VALID_BUSINESS_CATEGORIES = {
@@ -91,9 +82,6 @@ class OrganizationInfoRequest(BaseModel):
         return v
 
 
-# ---------------------------------------------------------------------------
-# Step 4 — Workspace setup
-# ---------------------------------------------------------------------------
 
 class WorkspaceSetupRequest(BaseModel):
     workspace_name: str = Field(..., min_length=2, max_length=100, examples=["Acme Corp"])
@@ -106,18 +94,12 @@ class WorkspaceSetupRequest(BaseModel):
         return v.strip()
 
 
-# ---------------------------------------------------------------------------
-# Step 5 — Plan selection
-# ---------------------------------------------------------------------------
 
 class PlanSelectionRequest(BaseModel):
     plan_name: PlanName = Field(..., examples=["free"])
     billing_cycle: Optional[BillingCycle] = Field(None, examples=["monthly"])
 
 
-# ---------------------------------------------------------------------------
-# Google social login
-# ---------------------------------------------------------------------------
 
 class GoogleLoginRequest(BaseModel):
     id_token: str = Field(..., description="Google ID token from the frontend")
@@ -131,26 +113,17 @@ class SocialLoginResponse(BaseModel):
     onboarding_token: Optional[str] = None
 
 
-# ---------------------------------------------------------------------------
-# Sign in
-# ---------------------------------------------------------------------------
 
 class SigninRequest(BaseModel):
     email: EmailStr = Field(..., examples=["jane@example.com"])
     password: str = Field(..., min_length=1, examples=["S3cur3P@ss!"])
 
 
-# ---------------------------------------------------------------------------
-# Refresh token
-# ---------------------------------------------------------------------------
 
 class RefreshTokenRequest(BaseModel):
     refresh_token: str = Field(..., examples=["eyJhbGciOi..."])
 
 
-# ---------------------------------------------------------------------------
-# Password reset flow
-# ---------------------------------------------------------------------------
 
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr = Field(..., examples=["jane@example.com"])
@@ -196,9 +169,6 @@ class ResetPasswordRequest(BaseModel):
         return v
 
 
-# ---------------------------------------------------------------------------
-# Responses
-# ---------------------------------------------------------------------------
 
 class MessageResponse(BaseModel):
     message: str
@@ -236,3 +206,4 @@ class OnboardingCompleteResponse(TokenResponse):
     message: str
     workspace_name: Optional[str] = None
     slug: Optional[str] = None
+

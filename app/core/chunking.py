@@ -39,17 +39,14 @@ def recursive_chunk(
 
     start_idx = 0
     while start_idx < len(tokens):
-        # Get next chunk_size tokens
         end_idx = min(start_idx + chunk_size, len(tokens))
         chunk_tokens = tokens[start_idx:end_idx]
         chunk_text = ENCODING.decode(chunk_tokens)
 
         chunks.append(chunk_text)
 
-        # Move start by (chunk_size - overlap_size) for next iteration
         start_idx = max(start_idx + chunk_size - overlap_size, start_idx + 1)
 
-        # Stop if we've reached the end
         if end_idx == len(tokens):
             break
 
@@ -90,3 +87,4 @@ def chunk_pdf_text(
         })
 
     return chunks_with_metadata
+

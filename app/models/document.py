@@ -16,17 +16,10 @@ if TYPE_CHECKING:
 
 
 class DocumentSource(str, enum.Enum):
-    uploaded = "uploaded"      # user uploaded their own file
-    sample = "sample"          # user picked a platform sample doc
-    scraped = "scraped"        # web scraped from URL via Crawl4AI
-
+    uploaded = "uploaded"          sample = "sample"              scraped = "scraped"        
 
 class DocumentStatus(str, enum.Enum):
-    pending = "pending"        # file received, not yet processed
-    processing = "processing"  # being chunked / embedded
-    ready = "ready"            # available for RAG queries
-    failed = "failed"          # processing error
-
+    pending = "pending"            processing = "processing"      ready = "ready"                failed = "failed"          
 
 class Document(Base):
     """
@@ -44,11 +37,8 @@ class Document(Base):
         nullable=False,
         index=True,
     )
-    # Original filename shown to user
     original_filename: Mapped[str] = mapped_column(String(500), nullable=False)
-    # Cloudinary public_id (used for deletion) or sample file path
     file_path: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
-    # Cloudinary secure_url — direct HTTPS link to the file
     file_url: Mapped[Optional[str]] = mapped_column(String(2000), nullable=True)
     file_size_mb: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     mime_type: Mapped[str] = mapped_column(String(100), nullable=False, default="application/pdf")
@@ -64,13 +54,11 @@ class Document(Base):
         default=DocumentStatus.pending,
         index=True,
     )
-    # If sourced from sample_documents table
     sample_document_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("sample_documents.id", ondelete="SET NULL"),
         nullable=True,
     )
-    # For scraped documents: original URL
     source_url: Mapped[Optional[str]] = mapped_column(String(2048), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -80,8 +68,8 @@ class Document(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
 
-    # Relationships
     tenant: Mapped["Tenant"] = relationship("Tenant", back_populates="documents")
 
     def __repr__(self) -> str:
         return f"<Document id={self.id} name={self.original_filename!r} source={self.source}>"
+

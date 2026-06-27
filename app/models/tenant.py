@@ -44,7 +44,6 @@ class Tenant(Base):
         nullable=False,
     )
 
-    # Relationships
     user: Mapped[Optional["User"]] = relationship(
         "User",
         back_populates="tenant",
@@ -72,3 +71,4 @@ class Tenant(Base):
 
     def __repr__(self) -> str:
         return f"<Tenant id={self.id} slug={self.slug!r}>"
+

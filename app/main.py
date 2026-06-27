@@ -18,9 +18,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Lifespan — replaces deprecated @app.on_event("startup")
-# ---------------------------------------------------------------------------
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -32,9 +29,6 @@ async def lifespan(app: FastAPI):
     yield
 
 
-# ---------------------------------------------------------------------------
-# Application factory
-# ---------------------------------------------------------------------------
 
 app = FastAPI(
     title="SecureRAG++ API",
@@ -50,16 +44,11 @@ app = FastAPI(
     openapi_url="/openapi.json",
 )
 
-# ---------------------------------------------------------------------------
-# Rate Limiting & Security
-# ---------------------------------------------------------------------------
 
-# Initialize rate limiter
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 
 
-# Rate limit exception handler
 @app.exception_handler(RateLimitExceeded)
 async def rate_limit_handler(request, exc):
     return JSONResponse(
@@ -68,39 +57,23 @@ async def rate_limit_handler(request, exc):
     )
 
 
-# ---------------------------------------------------------------------------
-# Middleware
-# ---------------------------------------------------------------------------
 
-# CORS (hardened - only allow specific origins)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:5173",     # Vite dev
-        "http://localhost:5174",     # Vite dev (alternate)
-        "http://localhost:5175",     # Vite dev (alternate)
-        "http://localhost:3000",     # Next.js dev
-        # Add production domain here:
-        # "https://yourdomain.com",
-    ],
+        "http://localhost:5173",             "http://localhost:5174",             "http://localhost:5175",             "http://localhost:3000",         ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
     allow_headers=["Authorization", "Content-Type"],
-    max_age=3600,  # Cache CORS preflight for 1 hour
-)
+    max_age=3600,  )
 
-# ---------------------------------------------------------------------------
-# Routers
-# ---------------------------------------------------------------------------
 
 app.include_router(v1_router, prefix="/api/v1")
 
-# ---------------------------------------------------------------------------
-# Root endpoints
-# ---------------------------------------------------------------------------
 
 
 @app.get("/health", tags=["health"], summary="Health check")
 async def health_check() -> dict:
     """Return application health status."""
     return {"status": "ok", "app": settings.APP_NAME, "version": "1.0.0"}
+

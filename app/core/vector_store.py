@@ -145,10 +145,10 @@ async def clear_tenant_data(tenant_id: str) -> None:
     """
     index = get_index()
 
-    # Delete all vectors for tenant
     await asyncio.to_thread(
         index.delete,
         filter={"tenant_id": {"$eq": tenant_id}}
     )
 
     logger.info(f"Cleared all data for tenant {tenant_id}")
+

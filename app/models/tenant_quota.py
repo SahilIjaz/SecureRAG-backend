@@ -57,7 +57,6 @@ class TenantQuota(Base):
         nullable=False,
     )
 
-    # Relationships
     tenant: Mapped["Tenant"] = relationship(
         "Tenant",
         back_populates="tenant_quota",
@@ -72,3 +71,4 @@ class TenantQuota(Base):
             f"<TenantQuota id={self.id} tenant_id={self.tenant_id} "
             f"max_docs={self.max_documents} max_q={self.max_questions_per_month}>"
         )
+

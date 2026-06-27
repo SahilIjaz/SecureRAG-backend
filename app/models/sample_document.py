@@ -21,7 +21,6 @@ class SampleDocument(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True
     )
-    # Matches the business_category values from tenant table
     business_category: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     title: Mapped[str] = mapped_column(String(500), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
@@ -35,3 +34,4 @@ class SampleDocument(Base):
 
     def __repr__(self) -> str:
         return f"<SampleDocument id={self.id} title={self.title!r} category={self.business_category!r}>"
+

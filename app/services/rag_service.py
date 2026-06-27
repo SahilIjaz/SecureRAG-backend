@@ -35,14 +35,12 @@ async def process_document_for_rag(
         Processing result with chunk count
     """
     try:
-        # Step 1: Extract text from PDF
         logger.info(f"Extracting text from PDF for document {document_id}")
         pdf_text = _extract_text_from_pdf(pdf_bytes)
 
         if not pdf_text.strip():
             raise ValueError("No text extracted from PDF")
 
-        # Step 2: Chunk the text
         logger.info(f"Chunking document into {settings.RAG_CHUNK_SIZE}-token chunks")
         chunks = chunk_pdf_text(
             pdf_text,
@@ -53,12 +51,10 @@ async def process_document_for_rag(
         if not chunks:
             raise ValueError("No chunks generated from PDF")
 
-        # Step 3: Generate embeddings
         logger.info(f"Generating embeddings for {len(chunks)} chunks")
         chunk_texts = [chunk["text"] for chunk in chunks]
         embeddings = await embed_chunks(chunk_texts)
 
-        # Step 4: Store in Pinecone
         logger.info(f"Storing {len(chunks)} chunks in Pinecone")
         await upsert_chunks(tenant_id, document_id, chunks, embeddings)
 
@@ -93,11 +89,9 @@ async def retrieve_context_for_query(
         List of relevant document chunks
     """
     try:
-        # Generate embedding for query
         logger.info(f"Generating embedding for query")
         query_embedding = await embed_text(query)
 
-        # Search for similar chunks
         logger.info(f"Searching for similar chunks (top {settings.RAG_SEARCH_TOP_K})")
         similar_chunks = await search_chunks(
             query_embedding,
@@ -105,7 +99,6 @@ async def retrieve_context_for_query(
             top_k=settings.RAG_SEARCH_TOP_K,
         )
 
-        # Extract text from results
         context_chunks = [chunk["text"] for chunk in similar_chunks]
 
         logger.info(f"Retrieved {len(context_chunks)} relevant chunks for query")
@@ -138,7 +131,6 @@ async def answer_question(
     from anthropic import Anthropic
 
     try:
-        # Step 1: Retrieve context
         context_chunks = await retrieve_context_for_query(tenant_id, query)
 
         if not context_chunks:
@@ -147,7 +139,6 @@ async def answer_question(
                 "sources": [],
             }
 
-        # Step 2: Build prompt with context
         context = "\n\n".join(context_chunks)
         prompt = f"""You are a helpful assistant answering questions based on provided documents.
 
@@ -158,7 +149,6 @@ QUESTION: {query}
 
 Please answer the question based on the context provided. If the answer is not in the context, say so."""
 
-        # Step 3: Send to Claude
         logger.info("Sending query to Claude for answer generation")
         client = Anthropic()
         response = client.messages.create(
@@ -209,3 +199,4 @@ def _extract_text_from_pdf(pdf_bytes: bytes) -> str:
     except Exception as e:
         logger.error(f"Failed to extract text from PDF: {str(e)}")
         raise
+

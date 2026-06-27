@@ -57,7 +57,6 @@ class EmailVerification(Base):
         nullable=False,
     )
 
-    # Relationships
     user: Mapped["User"] = relationship(
         "User",
         back_populates="email_verifications",
@@ -65,3 +64,4 @@ class EmailVerification(Base):
 
     def __repr__(self) -> str:
         return f"<EmailVerification id={self.id} user_id={self.user_id} is_used={self.is_used}>"
+

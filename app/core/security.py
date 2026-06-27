@@ -8,9 +8,6 @@ from passlib.context import CryptContext
 
 from app.config import settings
 
-# ---------------------------------------------------------------------------
-# Password hashing
-# ---------------------------------------------------------------------------
 
 _pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=10)
 
@@ -25,9 +22,6 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     return _pwd_context.verify(plain_password, hashed_password)
 
 
-# ---------------------------------------------------------------------------
-# JWT tokens
-# ---------------------------------------------------------------------------
 
 
 def create_access_token(
@@ -86,9 +80,6 @@ def decode_token(token: str) -> Dict[str, Any]:
     return jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
 
 
-# ---------------------------------------------------------------------------
-# OTP helpers
-# ---------------------------------------------------------------------------
 
 _otp_context = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=6)
 
@@ -106,3 +97,4 @@ def hash_otp(otp: str) -> str:
 def verify_otp(plain_otp: str, hashed_otp: str) -> bool:
     """Return True if *plain_otp* matches the stored *hashed_otp*."""
     return _otp_context.verify(plain_otp, hashed_otp)
+

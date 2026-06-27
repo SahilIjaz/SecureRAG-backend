@@ -119,7 +119,6 @@ async def send_otp_email(recipient_email: str, full_name: str, otp: str) -> None
     """
     loop = asyncio.get_event_loop()
 
-    # Priority 1: Brevo HTTP API (works on Render)
     if settings.BREVO_API_KEY:
         try:
             await loop.run_in_executor(None, _send_via_brevo, recipient_email, full_name, otp)
@@ -127,7 +126,6 @@ async def send_otp_email(recipient_email: str, full_name: str, otp: str) -> None
         except Exception as e:
             logger.error("[EMAIL] Brevo failed: %s", e)
 
-    # Priority 2: SMTP (works locally)
     if settings.SMTP_USERNAME and settings.SMTP_PASSWORD:
         try:
             await loop.run_in_executor(None, _send_via_smtp, recipient_email, full_name, otp)
@@ -136,5 +134,5 @@ async def send_otp_email(recipient_email: str, full_name: str, otp: str) -> None
         except Exception as e:
             logger.error("[EMAIL] SMTP failed: %s", e)
 
-    # Priority 3: Log OTP (dev fallback)
     logger.warning("[EMAIL] No email provider available — OTP for %s is: %s", recipient_email, otp)
+

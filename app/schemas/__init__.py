@@ -1,4 +1,3 @@
-# Pydantic schemas package
 from app.schemas.auth import (
     SignupStep1Request,
     OTPVerifyRequest,
@@ -35,3 +34,4 @@ __all__ = [
     "UserResponse",
     "UserWithTenantResponse",
 ]
+

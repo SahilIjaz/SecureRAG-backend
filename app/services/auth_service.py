@@ -53,14 +53,8 @@ from app.models.user import AuthProvider, User
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Bearer scheme (auto_error=False so we return a clean 401, not a 403)
-# ---------------------------------------------------------------------------
 _bearer_scheme = HTTPBearer(auto_error=False)
 
-# ---------------------------------------------------------------------------
-# Plan quota defaults — single source of truth
-# ---------------------------------------------------------------------------
 PLAN_QUOTAS: dict[PlanName, dict] = {
     PlanName.free: {
         "max_documents": 10,
@@ -80,9 +74,6 @@ PLAN_QUOTAS: dict[PlanName, dict] = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _slugify(text: str) -> str:
     """Convert workspace name to a URL-safe lowercase slug."""
@@ -990,3 +981,4 @@ async def get_sample_documents_by_category(
         }
         for doc in documents
     ]
+

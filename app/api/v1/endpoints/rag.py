@@ -59,7 +59,6 @@ async def process_document_for_rag(
     Chunks are automatically indexed and available for Q&A queries.
     """
     try:
-        # Get document from DB
         from app.models.document import Document
         from sqlalchemy import select
 
@@ -77,8 +76,6 @@ async def process_document_for_rag(
                 detail="Document not found",
             )
 
-        # TODO: Download encrypted file from Cloudinary and decrypt
-        # For now, returning placeholder
         raise HTTPException(
             status_code=status.HTTP_501_NOT_IMPLEMENTED,
             detail="Document processing integration with Cloudinary pending",
@@ -124,7 +121,6 @@ async def query_documents(
                 detail="Query must be at least 3 characters",
             )
 
-        # Generate answer using RAG pipeline
         result = await answer_question(
             tenant_id=str(user.tenant_id),
             query=body.query,
@@ -157,11 +153,9 @@ async def check_rag_health(
 ):
     """Check if Pinecone vector store is accessible."""
     try:
-        # Try a simple query to verify Pinecone connection
         from app.core.vector_store import get_index
 
         index = get_index()
-        # Check if we can access the index
         stats = index.describe_index_stats()
 
         return {
@@ -176,3 +170,4 @@ async def check_rag_health(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"RAG system unavailable: {str(e)}",
         )
+

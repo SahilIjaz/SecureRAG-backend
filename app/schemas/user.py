@@ -20,3 +20,4 @@ class UserResponse(BaseModel):
 class UserWithTenantResponse(UserResponse):
     workspace_name: Optional[str] = None
     slug: Optional[str] = None
+

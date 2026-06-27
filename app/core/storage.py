@@ -24,7 +24,6 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Initialize cipher (lazy-loaded)
 _cipher = None
 
 
@@ -57,8 +56,7 @@ def _upload_blocking(
     result = cloudinary.uploader.upload(
         file_content,
         public_id=public_id,
-        resource_type="raw",   # raw = non-image files (PDF, DOCX, TXT)
-        overwrite=False,
+        resource_type="raw",           overwrite=False,
         use_filename=False,
     )
     return result
@@ -85,7 +83,6 @@ async def upload_file_to_cloudinary(
 
     File is encrypted before upload for security.
     """
-    # Encrypt file content before uploading
     cipher = _get_cipher()
     encrypted_content = cipher.encrypt(file_content)
 
@@ -97,8 +94,7 @@ async def upload_file_to_cloudinary(
     result = await loop.run_in_executor(
         None,
         _upload_blocking,
-        encrypted_content,  # Upload encrypted content
-        public_id,
+        encrypted_content,          public_id,
         content_type,
     )
 
@@ -126,3 +122,4 @@ async def delete_file_from_cloudinary(public_id: str) -> None:
     """Deletes a file from Cloudinary by its public_id."""
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, _delete_blocking, public_id)
+

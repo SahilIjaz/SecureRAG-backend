@@ -30,9 +30,6 @@ logger = logging.getLogger(__name__)
 ALLOWED_MIME_TYPES = [m.strip() for m in settings.ALLOWED_MIME_TYPES.split(",")]
 
 
-# ---------------------------------------------------------------------------
-# Helper: attach business_category onto Document objects for the response
-# ---------------------------------------------------------------------------
 
 class DocumentWithCategory:
     """Wraps a Document and adds business_category from its owner's tenant."""
@@ -496,3 +493,4 @@ async def scrape_and_add_documents(
 
     logger.info("Scraped %d website(s) for tenant %s", len(saved_documents), user.tenant_id)
     return saved_documents
+

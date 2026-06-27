@@ -80,3 +80,4 @@ def validate_url_safe(url: str) -> None:
         raise
     except Exception as e:
         raise ValueError(f"URL validation failed: {str(e)}")
+

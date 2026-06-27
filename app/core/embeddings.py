@@ -6,9 +6,7 @@ import asyncio
 
 logger = logging.getLogger(__name__)
 
-# Using Claude's ability to understand and semantically encode text
-# We'll use text-embedding capabilities via Claude
-EMBEDDING_DIMENSION = 1536  # Standard embedding dimension
+EMBEDDING_DIMENSION = 1536
 
 
 async def embed_text(text: str) -> List[float]:
@@ -25,11 +23,6 @@ async def embed_text(text: str) -> List[float]:
         List of floats representing the embedding
     """
     try:
-        # For production RAG, use OpenAI embeddings or other specialized embedding models
-        # This is a placeholder that uses text length and simple hashing
-        # In production, integrate with proper embedding API
-
-        # Simple embedding for now (length-based + character frequency)
         embedding = await asyncio.to_thread(_simple_embedding, text)
         return embedding
 
@@ -74,45 +67,16 @@ def _simple_embedding(text: str) -> List[float]:
     """
     import hashlib
 
-    # Create a deterministic embedding based on text hash
     text_hash = hashlib.md5(text.encode()).hexdigest()
 
-    # Convert hash to floats
     embedding = []
     for i in range(0, 32, 2):
         hex_pair = text_hash[i:i+2]
         val = int(hex_pair, 16) / 255.0
         embedding.append(val)
 
-    # Pad to embedding dimension
     while len(embedding) < EMBEDDING_DIMENSION:
         embedding.append(0.0)
 
     return embedding[:EMBEDDING_DIMENSION]
 
-
-# TODO: For production, integrate with proper embedding API
-# Example with OpenAI embeddings:
-"""
-from openai import OpenAI
-
-client = OpenAI()
-
-async def embed_text_openai(text: str) -> List[float]:
-    response = client.embeddings.create(
-        model="text-embedding-3-small",
-        input=text
-    )
-    return response.data[0].embedding
-"""
-
-# Example with Hugging Face:
-"""
-from sentence_transformers import SentenceTransformer
-
-model = SentenceTransformer('all-MiniLM-L6-v2')
-
-async def embed_text_hf(text: str) -> List[float]:
-    embedding = model.encode(text)
-    return embedding.tolist()
-"""

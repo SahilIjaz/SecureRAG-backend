@@ -79,7 +79,6 @@ class Subscription(Base):
         nullable=False,
     )
 
-    # Relationships
     tenant: Mapped["Tenant"] = relationship(
         "Tenant",
         back_populates="subscription",
@@ -92,3 +91,4 @@ class Subscription(Base):
 
     def __repr__(self) -> str:
         return f"<Subscription id={self.id} tenant_id={self.tenant_id} plan={self.plan_name}>"
+

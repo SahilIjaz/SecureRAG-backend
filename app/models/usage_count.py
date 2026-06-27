@@ -48,7 +48,6 @@ class UsageCount(Base):
         nullable=False,
     )
 
-    # Relationships
     tenant: Mapped["Tenant"] = relationship(
         "Tenant",
         back_populates="usage_counts",
@@ -59,3 +58,4 @@ class UsageCount(Base):
             f"<UsageCount id={self.id} tenant_id={self.tenant_id} "
             f"period={self.period_month} questions={self.questions_used}>"
         )
+

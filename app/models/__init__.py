@@ -1,5 +1,3 @@
-# Import all models here so that Alembic's autogenerate can detect them
-# and SQLAlchemy's metadata is fully populated before migrations run.
 
 from app.models.tenant import Tenant
 from app.models.user import User
@@ -20,3 +18,4 @@ __all__ = [
     "SampleDocument",
     "Document",
 ]
+
