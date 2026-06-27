@@ -9,7 +9,6 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
 
-
 class SampleDocument(Base):
     """
     Platform-level sample documents seeded per business category.
@@ -34,4 +33,3 @@ class SampleDocument(Base):
 
     def __repr__(self) -> str:
         return f"<SampleDocument id={self.id} title={self.title!r} category={self.business_category!r}>"
-

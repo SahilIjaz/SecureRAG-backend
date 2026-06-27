@@ -1,9 +1,7 @@
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import declarative_base
 
-
 from app.config import settings
-
 
 def _build_database_url(raw_url: str) -> str:
     """
@@ -14,7 +12,6 @@ def _build_database_url(raw_url: str) -> str:
     if "?" in raw_url:
         raw_url = raw_url.split("?")[0]
     return raw_url
-
 
 _db_url = _build_database_url(settings.DATABASE_URL)
 
@@ -37,7 +34,6 @@ AsyncSessionLocal = async_sessionmaker(
 
 Base = declarative_base()
 
-
 async def get_db() -> AsyncSession:
     """Yield an async DB session with automatic commit/rollback."""
     async with AsyncSessionLocal() as session:
@@ -49,4 +45,3 @@ async def get_db() -> AsyncSession:
             raise
         finally:
             await session.close()
-

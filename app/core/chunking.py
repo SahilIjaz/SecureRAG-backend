@@ -8,11 +8,9 @@ logger = logging.getLogger(__name__)
 
 ENCODING = tiktoken.encoding_for_model("gpt-3.5-turbo")
 
-
 def count_tokens(text: str) -> int:
     """Count tokens in text using OpenAI tokenizer (compatible with Claude)."""
     return len(ENCODING.encode(text))
-
 
 def recursive_chunk(
     text: str,
@@ -57,7 +55,6 @@ def recursive_chunk(
     )
     return chunks
 
-
 def chunk_pdf_text(
     pdf_text: str,
     chunk_size: int = 500,
@@ -86,4 +83,3 @@ def chunk_pdf_text(
         })
 
     return chunks_with_metadata
-

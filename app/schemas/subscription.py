@@ -6,7 +6,6 @@ from pydantic import BaseModel, Field
 
 from app.models.subscription import BillingCycle, PlanName
 
-
 class PlanSelectionRequest(BaseModel):
     plan_name: PlanName = Field(..., examples=["free"])
     billing_cycle: Optional[BillingCycle] = Field(
@@ -14,7 +13,6 @@ class PlanSelectionRequest(BaseModel):
         examples=["monthly"],
         description="Required when plan_name is not 'free'",
     )
-
 
 class SubscriptionResponse(BaseModel):
     id: uuid.UUID
@@ -25,7 +23,6 @@ class SubscriptionResponse(BaseModel):
     expires_at: Optional[datetime]
 
     model_config = {"from_attributes": True}
-
 
 class TenantQuotaResponse(BaseModel):
     max_documents: int = Field(
@@ -39,4 +36,3 @@ class TenantQuotaResponse(BaseModel):
     )
 
     model_config = {"from_attributes": True}
-

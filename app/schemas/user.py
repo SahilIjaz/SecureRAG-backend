@@ -4,7 +4,6 @@ from typing import Optional
 
 from pydantic import BaseModel, EmailStr
 
-
 class UserResponse(BaseModel):
     id: uuid.UUID
     full_name: str
@@ -16,8 +15,6 @@ class UserResponse(BaseModel):
 
     model_config = {"from_attributes": True}
 
-
 class UserWithTenantResponse(UserResponse):
     workspace_name: Optional[str] = None
     slug: Optional[str] = None
-

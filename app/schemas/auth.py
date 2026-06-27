@@ -4,7 +4,6 @@ from pydantic import BaseModel, EmailStr, Field, ValidationInfo, field_validator
 
 from app.models.subscription import BillingCycle, PlanName
 
-
 class SignupStep1Request(BaseModel):
     full_name: str = Field(..., min_length=1, max_length=255, examples=["Jane Doe"])
     email: EmailStr = Field(..., examples=["jane@example.com"])
@@ -33,8 +32,6 @@ class SignupStep1Request(BaseModel):
             raise ValueError("Password must contain " + ", ".join(errors))
         return v
 
-
-
 class OTPVerifyRequest(BaseModel):
     email: EmailStr = Field(..., examples=["jane@example.com"])
     otp_code: str = Field(..., min_length=4, max_length=4, examples=["3821"])
@@ -46,11 +43,8 @@ class OTPVerifyRequest(BaseModel):
             raise ValueError("OTP must contain only digits")
         return v
 
-
 class ResendOTPRequest(BaseModel):
     email: EmailStr = Field(..., examples=["jane@example.com"])
-
-
 
 VALID_EMPLOYEE_RANGES = {"1-15", "16-49", "50-199", "200-1999", "2000-4999", "just-me"}
 VALID_BUSINESS_CATEGORIES = {
@@ -81,8 +75,6 @@ class OrganizationInfoRequest(BaseModel):
             raise ValueError(f"employee_count_range must be one of: {', '.join(sorted(VALID_EMPLOYEE_RANGES))}")
         return v
 
-
-
 class WorkspaceSetupRequest(BaseModel):
     workspace_name: str = Field(..., min_length=2, max_length=100, examples=["Acme Corp"])
 
@@ -93,17 +85,12 @@ class WorkspaceSetupRequest(BaseModel):
             raise ValueError("workspace_name must not be blank")
         return v.strip()
 
-
-
 class PlanSelectionRequest(BaseModel):
     plan_name: PlanName = Field(..., examples=["free"])
     billing_cycle: Optional[BillingCycle] = Field(None, examples=["monthly"])
 
-
-
 class GoogleLoginRequest(BaseModel):
     id_token: str = Field(..., description="Google ID token from the frontend")
-
 
 class SocialLoginResponse(BaseModel):
     access_token: str
@@ -112,22 +99,15 @@ class SocialLoginResponse(BaseModel):
     is_new_user: bool = False
     onboarding_token: Optional[str] = None
 
-
-
 class SigninRequest(BaseModel):
     email: EmailStr = Field(..., examples=["jane@example.com"])
     password: str = Field(..., min_length=1, examples=["S3cur3P@ss!"])
 
-
-
 class RefreshTokenRequest(BaseModel):
     refresh_token: str = Field(..., examples=["eyJhbGciOi..."])
 
-
-
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr = Field(..., examples=["jane@example.com"])
-
 
 class VerifyResetOTPRequest(BaseModel):
     email: EmailStr = Field(..., examples=["jane@example.com"])
@@ -139,7 +119,6 @@ class VerifyResetOTPRequest(BaseModel):
         if not v.isdigit():
             raise ValueError("OTP must contain only digits")
         return v
-
 
 class ResetPasswordRequest(BaseModel):
     new_password: str = Field(..., min_length=8, max_length=128)
@@ -168,23 +147,18 @@ class ResetPasswordRequest(BaseModel):
             raise ValueError("Passwords do not match")
         return v
 
-
-
 class MessageResponse(BaseModel):
     message: str
     email: Optional[str] = None
-
 
 class OTPVerifyResponse(BaseModel):
     message: str
     email: str
     onboarding_token: str
 
-
 class VerifyResetOTPResponse(BaseModel):
     message: str
     reset_token: str
-
 
 class OrganizationInfoResponse(BaseModel):
     message: str
@@ -193,7 +167,6 @@ class OrganizationInfoResponse(BaseModel):
     business_category: str
     employee_count_range: str
 
-
 class TokenResponse(BaseModel):
     access_token: Optional[str] = None
     refresh_token: Optional[str] = None
@@ -201,9 +174,7 @@ class TokenResponse(BaseModel):
     onboarding_token: Optional[str] = None
     needs_onboarding: Optional[bool] = None
 
-
 class OnboardingCompleteResponse(TokenResponse):
     message: str
     workspace_name: Optional[str] = None
     slug: Optional[str] = None
-

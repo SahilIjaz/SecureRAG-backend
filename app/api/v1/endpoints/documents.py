@@ -18,13 +18,11 @@ from app.schemas.document import (
 from app.services import auth_service, document_service
 from app.services.auth_service import get_any_valid_user
 
-
 class SelectPlatformSampleDocumentsRequest(BaseModel):
     sample_document_ids: List[uuid.UUID]
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 limiter = Limiter(key_func=get_remote_address)
-
 
 @router.get(
     "/samples",
@@ -41,7 +39,6 @@ async def list_sample_documents(
     """
     docs = await document_service.get_sample_documents(user, db)
     return docs
-
 
 @router.post(
     "/upload",
@@ -70,7 +67,6 @@ async def upload_documents(
         total_storage_mb=total_storage,
     )
 
-
 @router.post(
     "/select-sample",
     response_model=DocumentResponse,
@@ -89,7 +85,6 @@ async def select_sample_document(
     """
     doc = await document_service.select_sample_document(user, body.document_id, db)
     return DocumentResponse.model_validate(doc)
-
 
 @router.post(
     "/select-platform-samples",
@@ -117,7 +112,6 @@ async def select_platform_sample_documents(
         total_count=len(docs),
         total_storage_mb=total_storage,
     )
-
 
 @router.post(
     "/scrape",
@@ -147,7 +141,6 @@ async def scrape_websites(
         total_storage_mb=total_storage,
     )
 
-
 @router.get(
     "/",
     response_model=DocumentsResponse,
@@ -171,4 +164,3 @@ async def list_documents(
         total_count=len(docs),
         total_storage_mb=total_storage,
     )
-

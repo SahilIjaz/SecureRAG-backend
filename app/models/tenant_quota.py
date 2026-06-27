@@ -14,7 +14,6 @@ if TYPE_CHECKING:
     from app.models.tenant import Tenant
     from app.models.subscription import Subscription
 
-
 class TenantQuota(Base):
     """
     Stores per-tenant resource limits derived from their active subscription plan.
@@ -71,4 +70,3 @@ class TenantQuota(Base):
             f"<TenantQuota id={self.id} tenant_id={self.tenant_id} "
             f"max_docs={self.max_documents} max_q={self.max_questions_per_month}>"
         )
-

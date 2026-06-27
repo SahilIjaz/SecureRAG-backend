@@ -14,12 +14,11 @@ from app.database import Base
 if TYPE_CHECKING:
     from app.models.tenant import Tenant
 
-
 class DocumentSource(str, enum.Enum):
-    uploaded = "uploaded"          sample = "sample"              scraped = "scraped"        
+    uploaded = "uploaded"          sample = "sample"              scraped = "scraped"
 
 class DocumentStatus(str, enum.Enum):
-    pending = "pending"            processing = "processing"      ready = "ready"                failed = "failed"          
+    pending = "pending"            processing = "processing"      ready = "ready"                failed = "failed"
 
 class Document(Base):
     """
@@ -72,4 +71,3 @@ class Document(Base):
 
     def __repr__(self) -> str:
         return f"<Document id={self.id} name={self.original_filename!r} source={self.source}>"
-

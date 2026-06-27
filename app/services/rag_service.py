@@ -13,7 +13,6 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-
 async def process_document_for_rag(
     tenant_id: str,
     document_id: str,
@@ -73,7 +72,6 @@ async def process_document_for_rag(
         logger.error(f"Failed to process document for RAG: {str(e)}")
         raise
 
-
 async def retrieve_context_for_query(
     tenant_id: str,
     query: str,
@@ -107,7 +105,6 @@ async def retrieve_context_for_query(
     except Exception as e:
         logger.error(f"Failed to retrieve context: {str(e)}")
         raise
-
 
 async def answer_question(
     tenant_id: str,
@@ -173,7 +170,6 @@ Please answer the question based on the context provided. If the answer is not i
         logger.error(f"Failed to generate answer: {str(e)}")
         raise
 
-
 def _extract_text_from_pdf(pdf_bytes: bytes) -> str:
     """
     Extract text from PDF bytes.
@@ -199,4 +195,3 @@ def _extract_text_from_pdf(pdf_bytes: bytes) -> str:
     except Exception as e:
         logger.error(f"Failed to extract text from PDF: {str(e)}")
         raise
-

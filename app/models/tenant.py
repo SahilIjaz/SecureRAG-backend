@@ -17,7 +17,6 @@ if TYPE_CHECKING:
     from app.models.usage_count import UsageCount
     from app.models.document import Document
 
-
 class Tenant(Base):
     __tablename__ = "tenants"
 
@@ -71,4 +70,3 @@ class Tenant(Base):
 
     def __repr__(self) -> str:
         return f"<Tenant id={self.id} slug={self.slug!r}>"
-

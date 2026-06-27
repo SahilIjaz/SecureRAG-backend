@@ -4,19 +4,17 @@ import socket
 from ipaddress import ip_address, ip_network
 from urllib.parse import urlparse
 
-
 BLOCKED_IP_RANGES = [
-    ip_network("127.0.0.0/8"),       # Localhost
-    ip_network("10.0.0.0/8"),        # Private network
-    ip_network("172.16.0.0/12"),     # Private network
-    ip_network("192.168.0.0/16"),    # Private network
-    ip_network("169.254.0.0/16"),    # Link-local
-    ip_network("0.0.0.0/8"),         # This network
-    ip_network("224.0.0.0/4"),       # Multicast
-    ip_network("240.0.0.0/4"),       # Reserved
-    ip_network("255.255.255.255/32"), # Broadcast
+    ip_network("127.0.0.0/8"),
+    ip_network("10.0.0.0/8"),
+    ip_network("172.16.0.0/12"),
+    ip_network("192.168.0.0/16"),
+    ip_network("169.254.0.0/16"),
+    ip_network("0.0.0.0/8"),
+    ip_network("224.0.0.0/4"),
+    ip_network("240.0.0.0/4"),
+    ip_network("255.255.255.255/32"),
 ]
-
 
 def is_ip_blocked(hostname: str) -> bool:
     """
@@ -42,7 +40,6 @@ def is_ip_blocked(hostname: str) -> bool:
         return True
     except ValueError:
         return True
-
 
 def validate_url_safe(url: str) -> None:
     """
@@ -76,4 +73,3 @@ def validate_url_safe(url: str) -> None:
         raise
     except Exception as e:
         raise ValueError(f"URL validation failed: {str(e)}")
-

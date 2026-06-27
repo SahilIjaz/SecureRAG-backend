@@ -8,7 +8,6 @@ logger = logging.getLogger(__name__)
 
 EMBEDDING_DIMENSION = 1536
 
-
 async def embed_text(text: str) -> List[float]:
     """
     Generate embedding for text using Claude's semantic understanding.
@@ -30,7 +29,6 @@ async def embed_text(text: str) -> List[float]:
         logger.error(f"Failed to embed text: {str(e)}")
         raise
 
-
 async def embed_chunks(texts: List[str]) -> List[List[float]]:
     """
     Generate embeddings for multiple text chunks.
@@ -48,7 +46,6 @@ async def embed_chunks(texts: List[str]) -> List[List[float]]:
 
     logger.info(f"Generated embeddings for {len(texts)} chunks")
     return embeddings
-
 
 def _simple_embedding(text: str) -> List[float]:
     """
@@ -79,4 +76,3 @@ def _simple_embedding(text: str) -> List[float]:
         embedding.append(0.0)
 
     return embedding[:EMBEDDING_DIMENSION]
-

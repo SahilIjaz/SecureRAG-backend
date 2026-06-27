@@ -12,7 +12,6 @@ logger = logging.getLogger(__name__)
 
 BREVO_API_URL = "https://api.brevo.com/v3/smtp/email"
 
-
 def _build_otp_html(full_name: str, otp: str) -> str:
     return f"""
     <!DOCTYPE html>
@@ -54,7 +53,6 @@ def _build_otp_html(full_name: str, otp: str) -> str:
     </html>
     """
 
-
 def _build_plain_body(full_name: str, otp: str) -> str:
     return (
         f"Hi {full_name},\n\n"
@@ -62,7 +60,6 @@ def _build_plain_body(full_name: str, otp: str) -> str:
         f"It expires in {settings.OTP_EXPIRE_MINUTES} minutes.\n\n"
         f"If you did not request this, ignore this email."
     )
-
 
 def _send_via_brevo(recipient_email: str, full_name: str, otp: str) -> None:
     """Send OTP email using Brevo HTTP API (works on Render)."""
@@ -92,7 +89,6 @@ def _send_via_brevo(recipient_email: str, full_name: str, otp: str) -> None:
         logger.error("[EMAIL] Brevo error %s: %s", response.status_code, response.text)
         response.raise_for_status()
 
-
 def _send_via_smtp(recipient_email: str, full_name: str, otp: str) -> None:
     """Fallback: send OTP email via SMTP (for local development)."""
     smtp_password = settings.SMTP_PASSWORD.replace(" ", "")
@@ -110,7 +106,6 @@ def _send_via_smtp(recipient_email: str, full_name: str, otp: str) -> None:
         server.ehlo()
         server.login(settings.SMTP_USERNAME, smtp_password)
         server.sendmail(settings.EMAILS_FROM_EMAIL, recipient_email, msg.as_string())
-
 
 async def send_otp_email(recipient_email: str, full_name: str, otp: str) -> None:
     """
@@ -135,4 +130,3 @@ async def send_otp_email(recipient_email: str, full_name: str, otp: str) -> None
             logger.error("[EMAIL] SMTP failed: %s", e)
 
     logger.warning("[EMAIL] No email provider available — OTP for %s is: %s", recipient_email, otp)
-

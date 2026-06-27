@@ -50,8 +50,6 @@ from app.services import auth_service
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 limiter = Limiter(key_func=get_remote_address)
 
-
-
 @router.post(
     "/signup",
     response_model=MessageResponse,
@@ -77,8 +75,6 @@ async def signup(
     )
     return MessageResponse(**result)
 
-
-
 @router.post(
     "/verify-email",
     response_model=OTPVerifyResponse,
@@ -102,7 +98,6 @@ async def verify_email(
     )
     return OTPVerifyResponse(**result)
 
-
 @router.post(
     "/resend-otp",
     response_model=MessageResponse,
@@ -118,8 +113,6 @@ async def resend_otp(
 ) -> MessageResponse:
     result = await auth_service.resend_otp(email=body.email, db=db)
     return MessageResponse(**result)
-
-
 
 @router.post(
     "/organization",
@@ -144,8 +137,6 @@ async def organization_info(
     )
     return OrganizationInfoResponse(**result)
 
-
-
 @router.post(
     "/workspace",
     response_model=MessageResponse,
@@ -167,8 +158,6 @@ async def setup_workspace(
         db=db,
     )
     return MessageResponse(message=result["message"], email=current_user.email)
-
-
 
 @router.post(
     "/select-plan",
@@ -197,8 +186,6 @@ async def select_plan(
         refresh_token=result["refresh_token"],
     )
 
-
-
 @router.post(
     "/signin",
     response_model=TokenResponse,
@@ -223,8 +210,6 @@ async def signin(
     )
     return TokenResponse(**result)
 
-
-
 @router.post(
     "/social/google",
     response_model=SocialLoginResponse,
@@ -243,8 +228,6 @@ async def google_login(
 ) -> SocialLoginResponse:
     result = await auth_service.google_login(token=body.id_token, db=db)
     return SocialLoginResponse(**result)
-
-
 
 @router.post(
     "/refresh",
@@ -265,8 +248,6 @@ async def refresh_tokens(
         db=db,
     )
     return TokenResponse(**result)
-
-
 
 @router.get(
     "/me",
@@ -301,8 +282,6 @@ async def get_me(
         slug=user.tenant.slug if user.tenant else None,
     )
 
-
-
 @router.post(
     "/forgot-password",
     response_model=MessageResponse,
@@ -320,8 +299,6 @@ async def forgot_password(
 ) -> MessageResponse:
     result = await auth_service.forgot_password(email=body.email, db=db)
     return MessageResponse(**result)
-
-
 
 @router.post(
     "/verify-reset-otp",
@@ -344,8 +321,6 @@ async def verify_reset_otp(
         db=db,
     )
     return VerifyResetOTPResponse(**result)
-
-
 
 @router.post(
     "/reset-password",
@@ -370,7 +345,6 @@ async def reset_password(
     )
     return MessageResponse(message=result["message"])
 
-
 @router.get(
     "/sample-documents",
     response_model=dict,
@@ -388,4 +362,3 @@ async def get_sample_documents(
         "documents": documents,
         "count": len(documents),
     }
-

@@ -42,13 +42,11 @@ class Settings(BaseSettings):
 
     ANTHROPIC_API_KEY: str = ""
 
-    RAG_CHUNK_SIZE: int = 500      RAG_CHUNK_OVERLAP: int = 50      RAG_SEARCH_TOP_K: int = 5  
+    RAG_CHUNK_SIZE: int = 500      RAG_CHUNK_OVERLAP: int = 50      RAG_SEARCH_TOP_K: int = 5
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=True,
     )
 
-
 settings = Settings()
-

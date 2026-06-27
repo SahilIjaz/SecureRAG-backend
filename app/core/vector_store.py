@@ -12,7 +12,6 @@ logger = logging.getLogger(__name__)
 
 _pc = None
 
-
 def _get_pinecone():
     """Lazy-load Pinecone client."""
     global _pc
@@ -20,12 +19,10 @@ def _get_pinecone():
         _pc = Pinecone(api_key=settings.PINECONE_API_KEY)
     return _pc
 
-
 def get_index(index_name: str = "securerag-documents"):
     """Get Pinecone index."""
     pc = _get_pinecone()
     return pc.Index(index_name)
-
 
 async def upsert_chunks(
     tenant_id: str,
@@ -68,7 +65,6 @@ async def upsert_chunks(
 
     logger.info(f"Upserted {len(vectors_to_upsert)} chunks for document {document_id}")
 
-
 async def search_chunks(
     query_embedding: List[float],
     tenant_id: str,
@@ -107,7 +103,6 @@ async def search_chunks(
 
     return similar_chunks
 
-
 async def delete_document_chunks(
     tenant_id: str,
     document_id: str,
@@ -131,7 +126,6 @@ async def delete_document_chunks(
 
     logger.info(f"Deleted chunks for document {document_id}")
 
-
 async def clear_tenant_data(tenant_id: str) -> None:
     """
     Delete all data for a tenant (for GDPR/cleanup).
@@ -147,4 +141,3 @@ async def clear_tenant_data(tenant_id: str) -> None:
     )
 
     logger.info(f"Cleared all data for tenant {tenant_id}")
-

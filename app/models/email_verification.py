@@ -14,11 +14,9 @@ from app.database import Base
 if TYPE_CHECKING:
     from app.models.user import User
 
-
 class OTPPurpose(str, enum.Enum):
     email_verification = "email_verification"
     password_reset = "password_reset"
-
 
 class EmailVerification(Base):
     __tablename__ = "email_verifications"
@@ -64,4 +62,3 @@ class EmailVerification(Base):
 
     def __repr__(self) -> str:
         return f"<EmailVerification id={self.id} user_id={self.user_id} is_used={self.is_used}>"
-

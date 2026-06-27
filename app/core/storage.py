@@ -26,7 +26,6 @@ logger = logging.getLogger(__name__)
 
 _cipher = None
 
-
 def _get_cipher() -> Fernet:
     """Get or initialize the Fernet cipher for file encryption."""
     global _cipher
@@ -36,7 +35,6 @@ def _get_cipher() -> Fernet:
         _cipher = Fernet(settings.FILE_ENCRYPTION_KEY.encode())
     return _cipher
 
-
 def _configure_cloudinary() -> None:
     cloudinary.config(
         cloud_name=settings.CLOUDINARY_CLOUD_NAME,
@@ -44,7 +42,6 @@ def _configure_cloudinary() -> None:
         api_secret=settings.CLOUDINARY_API_SECRET,
         secure=True,
     )
-
 
 def _upload_blocking(
     file_content: bytes,
@@ -61,12 +58,10 @@ def _upload_blocking(
     )
     return result
 
-
 def _delete_blocking(public_id: str) -> None:
     _configure_cloudinary()
     cloudinary.uploader.destroy(public_id, resource_type="raw")
     logger.info("Deleted from Cloudinary: %s", public_id)
-
 
 async def upload_file_to_cloudinary(
     file_content: bytes,
@@ -103,7 +98,6 @@ async def upload_file_to_cloudinary(
     logger.info("Uploaded encrypted file to Cloudinary: %s", secure_url)
     return returned_public_id, secure_url
 
-
 async def decrypt_file(encrypted_content: bytes) -> bytes:
     """
     Decrypt file content retrieved from Cloudinary.
@@ -117,9 +111,7 @@ async def decrypt_file(encrypted_content: bytes) -> bytes:
     cipher = _get_cipher()
     return cipher.decrypt(encrypted_content)
 
-
 async def delete_file_from_cloudinary(public_id: str) -> None:
     """Deletes a file from Cloudinary by its public_id."""
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, _delete_blocking, public_id)
-

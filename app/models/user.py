@@ -15,11 +15,9 @@ if TYPE_CHECKING:
     from app.models.tenant import Tenant
     from app.models.email_verification import EmailVerification
 
-
 class AuthProvider(str, enum.Enum):
     email = "email"
     google = "google"
-
 
 class User(Base):
     __tablename__ = "users"
@@ -73,4 +71,3 @@ class User(Base):
 
     def __repr__(self) -> str:
         return f"<User id={self.id} email={self.email!r}>"
-

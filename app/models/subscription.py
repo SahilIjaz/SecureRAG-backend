@@ -15,24 +15,20 @@ if TYPE_CHECKING:
     from app.models.tenant import Tenant
     from app.models.tenant_quota import TenantQuota
 
-
 class PlanName(str, enum.Enum):
     free = "free"
     pro = "pro"
     pro_plus = "pro_plus"
 
-
 class BillingCycle(str, enum.Enum):
     monthly = "monthly"
     yearly = "yearly"
-
 
 class SubscriptionStatus(str, enum.Enum):
     active = "active"
     expired = "expired"
     cancelled = "cancelled"
     trial = "trial"
-
 
 class Subscription(Base):
     __tablename__ = "subscriptions"
@@ -91,4 +87,3 @@ class Subscription(Base):
 
     def __repr__(self) -> str:
         return f"<Subscription id={self.id} tenant_id={self.tenant_id} plan={self.plan_name}>"
-

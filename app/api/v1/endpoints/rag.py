@@ -13,11 +13,9 @@ from app.services.auth_service import get_any_valid_user
 router = APIRouter(prefix="/rag", tags=["RAG"])
 limiter = Limiter(key_func=get_remote_address)
 
-
 class QueryRequest(BaseModel):
     """Query request for RAG."""
     query: str
-
 
 class QueryResponse(BaseModel):
     """RAG query response."""
@@ -25,14 +23,12 @@ class QueryResponse(BaseModel):
     sources: list[str]
     model: str
 
-
 class DocumentProcessResponse(BaseModel):
     """Response from document processing."""
     document_id: str
     chunk_count: int
     total_tokens: int
     status: str
-
 
 @router.post(
     "/process-document/{document_id}",
@@ -89,7 +85,6 @@ async def process_document_for_rag(
             detail=f"Failed to process document: {str(e)}",
         )
 
-
 @router.post(
     "/query",
     response_model=QueryResponse,
@@ -140,7 +135,6 @@ async def query_documents(
             detail=f"Failed to answer question: {str(e)}",
         )
 
-
 @router.post(
     "/health",
     status_code=status.HTTP_200_OK,
@@ -170,4 +164,3 @@ async def check_rag_health(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"RAG system unavailable: {str(e)}",
         )
-

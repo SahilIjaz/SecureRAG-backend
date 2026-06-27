@@ -8,21 +8,15 @@ from passlib.context import CryptContext
 
 from app.config import settings
 
-
 _pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=10)
-
 
 def hash_password(password: str) -> str:
     """Return a bcrypt hash of *password*."""
     return _pwd_context.hash(password)
 
-
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Return True if *plain_password* matches the stored *hashed_password*."""
     return _pwd_context.verify(plain_password, hashed_password)
-
-
-
 
 def create_access_token(
     data: Dict[str, Any],
@@ -47,7 +41,6 @@ def create_access_token(
     to_encode.update({"exp": expire, "type": "access"})
     return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
-
 def create_refresh_token(data: Dict[str, Any]) -> str:
     """
     Create a signed JWT refresh token with a longer lifetime.
@@ -62,7 +55,6 @@ def create_refresh_token(data: Dict[str, Any]) -> str:
     expire = datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
     to_encode.update({"exp": expire, "type": "refresh"})
     return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
-
 
 def decode_token(token: str) -> Dict[str, Any]:
     """
@@ -79,22 +71,16 @@ def decode_token(token: str) -> Dict[str, Any]:
     """
     return jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
 
-
-
 _otp_context = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=6)
-
 
 def generate_otp() -> str:
     """Return a random 4-digit OTP string (zero-padded, e.g. '0391')."""
     return "".join(random.choices(string.digits, k=4))
 
-
 def hash_otp(otp: str) -> str:
     """Return a bcrypt hash of the plain OTP code for safe storage."""
     return _otp_context.hash(otp)
 
-
 def verify_otp(plain_otp: str, hashed_otp: str) -> bool:
     """Return True if *plain_otp* matches the stored *hashed_otp*."""
     return _otp_context.verify(plain_otp, hashed_otp)
-

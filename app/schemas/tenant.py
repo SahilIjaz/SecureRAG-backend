@@ -4,9 +4,7 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
-
 VALID_EMPLOYEE_RANGES = {"1-15", "16-49", "50-249", "250+"}
-
 
 class OrganizationInfoRequest(BaseModel):
     business_category: str = Field(
@@ -24,12 +22,10 @@ class OrganizationInfoRequest(BaseModel):
             )
         return v
 
-
 class WorkspaceSetupRequest(BaseModel):
     workspace_name: str = Field(
         ..., min_length=1, max_length=255, examples=["Acme Corp Workspace"]
     )
-
 
 class DocumentPreferenceRequest(BaseModel):
     use_sample_documents: bool = Field(
@@ -37,7 +33,6 @@ class DocumentPreferenceRequest(BaseModel):
         examples=[True],
         description="Whether to pre-load sample documents for the tenant workspace",
     )
-
 
 class TenantResponse(BaseModel):
     id: uuid.UUID
@@ -49,4 +44,3 @@ class TenantResponse(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
-

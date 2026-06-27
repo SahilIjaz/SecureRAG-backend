@@ -73,8 +73,6 @@ PLAN_QUOTAS: dict[PlanName, dict] = {
     },
 }
 
-
-
 def _slugify(text: str) -> str:
     """Convert workspace name to a URL-safe lowercase slug."""
     slug = text.lower().strip()
@@ -82,15 +80,9 @@ def _slugify(text: str) -> str:
     slug = slug.strip("-")
     return slug
 
-
 def _first_of_month() -> datetime:
     today = datetime.now(timezone.utc)
     return today.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-
-
-# ---------------------------------------------------------------------------
-# Step 1 — Register user (unverified) + send OTP
-# ---------------------------------------------------------------------------
 
 async def register_user(
     full_name: str,
@@ -102,7 +94,6 @@ async def register_user(
     Create an unverified user record and send a 4-digit OTP to the email.
     Returns {"message": ..., "email": ...}
     """
-    # Check duplicate email
     result = await db.execute(select(User).where(User.email == email))
     existing = result.scalar_one_or_none()
 
@@ -112,7 +103,6 @@ async def register_user(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="An account with this email already exists.",
             )
-        # Unverified duplicate — resend OTP and let them continue
         await _invalidate_old_otps(existing.id, db)
         await _create_and_send_otp(existing, db)
         return {
@@ -120,14 +110,12 @@ async def register_user(
             "email": email,
         }
 
-    # Create a placeholder tenant so FK constraint is satisfied;
-    # tenant details are filled in Steps 3 & 4.
     placeholder_tenant = Tenant(
         workspace_name="__pending__",
         slug=f"pending-{uuid.uuid4().hex[:8]}",
     )
     db.add(placeholder_tenant)
-    await db.flush()  # get tenant.id without committing
+    await db.flush()
 
     loop = asyncio.get_event_loop()
     pw_hash = await loop.run_in_executor(None, hash_password, password)
@@ -140,7 +128,7 @@ async def register_user(
         is_email_verified=False,
     )
     db.add(user)
-    await db.flush()  # get user.id
+    await db.flush()
 
     await _create_and_send_otp(user, db)
 
@@ -148,11 +136,6 @@ async def register_user(
         "message": "Account created. Please check your email for the verification code.",
         "email": email,
     }
-
-
-# ---------------------------------------------------------------------------
-# Step 2 — Verify OTP
-# ---------------------------------------------------------------------------
 
 async def verify_email(
     email: str,
@@ -171,13 +154,12 @@ async def verify_email(
             detail="Email is already verified.",
         )
 
-    # Get latest unused, non-expired signup OTP for this user
     result = await db.execute(
         select(EmailVerification)
         .where(
             EmailVerification.user_id == user.id,
             EmailVerification.purpose == OTPPurpose.email_verification,
-            EmailVerification.is_used == False,  # noqa: E712
+            EmailVerification.is_used == False,
             EmailVerification.expires_at > datetime.now(timezone.utc),
         )
         .order_by(EmailVerification.created_at.desc())
@@ -197,11 +179,9 @@ async def verify_email(
             detail="Invalid OTP code.",
         )
 
-    # Mark OTP used and user verified
     otp_record.is_used = True
     user.is_email_verified = True
 
-    # Issue a short-lived onboarding token — used to authenticate steps 3, 4, 5
     onboarding_token = create_access_token(
         data={"sub": str(user.id), "purpose": "onboarding"},
         expires_delta=timedelta(hours=1),
@@ -212,11 +192,6 @@ async def verify_email(
         "email": email,
         "onboarding_token": onboarding_token,
     }
-
-
-# ---------------------------------------------------------------------------
-# Step 3 — Save organisation info (business_category + employee_count_range)
-# ---------------------------------------------------------------------------
 
 async def save_organization_info(
     user: User,
@@ -248,11 +223,6 @@ async def save_organization_info(
         logger.error(f"Failed to save organization info: {err}")
         raise
 
-
-# ---------------------------------------------------------------------------
-# Step 4 — Set up workspace (workspace_name → update tenant slug + name)
-# ---------------------------------------------------------------------------
-
 async def setup_workspace(
     user: User,
     workspace_name: str,
@@ -266,7 +236,6 @@ async def setup_workspace(
 
         base_slug = _slugify(workspace_name)
 
-        # Ensure slug uniqueness
         slug = base_slug
         counter = 1
         while True:
@@ -293,11 +262,6 @@ async def setup_workspace(
         logger.error(f"Failed to setup workspace: {err}")
         raise
 
-
-# ---------------------------------------------------------------------------
-# Step 5 — Select subscription plan
-# ---------------------------------------------------------------------------
-
 async def select_plan(
     user: User,
     plan_name: PlanName,
@@ -310,14 +274,12 @@ async def select_plan(
     """
     tenant = await _get_tenant_for_user(user, db)
 
-    # Validate billing_cycle for paid plans
     if plan_name != PlanName.free and billing_cycle is None:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="billing_cycle is required for paid plans.",
         )
 
-    # Prevent duplicate subscription
     result = await db.execute(
         select(Subscription).where(Subscription.tenant_id == tenant.id)
     )
@@ -327,7 +289,6 @@ async def select_plan(
             detail="Subscription already exists for this tenant.",
         )
 
-    # Calculate expiry
     expires_at = None
     if plan_name != PlanName.free:
         delta = timedelta(days=30) if billing_cycle == BillingCycle.monthly else timedelta(days=365)
@@ -358,18 +319,12 @@ async def select_plan(
     db.add(usage)
     await db.flush()
 
-    # Issue JWT tokens — onboarding complete
     tokens = _issue_tokens(user)
 
     return {
         "message": "Onboarding complete. Welcome to SecureRAG++!",
         **tokens,
     }
-
-
-# ---------------------------------------------------------------------------
-# Google social login
-# ---------------------------------------------------------------------------
 
 async def google_login(token: str, db: AsyncSession) -> dict:
     """
@@ -403,12 +358,10 @@ async def google_login(token: str, db: AsyncSession) -> dict:
             detail="Google account does not have an email address.",
         )
 
-    # Check if user already exists by email
     result = await db.execute(select(User).where(User.email == email))
     user = result.scalar_one_or_none()
 
     if user is not None:
-        # Existing user — link Google if they signed up with email/password
         if user.auth_provider == AuthProvider.email:
             user.auth_provider = AuthProvider.google
             user.provider_uid = google_uid
@@ -420,7 +373,6 @@ async def google_login(token: str, db: AsyncSession) -> dict:
                 detail="Account is deactivated.",
             )
 
-        # Check if onboarding is complete (has a subscription)
         sub_result = await db.execute(
             select(Subscription).where(Subscription.tenant_id == user.tenant_id)
         )
@@ -429,8 +381,6 @@ async def google_login(token: str, db: AsyncSession) -> dict:
         if has_subscription:
             return {**_issue_tokens(user), "is_new_user": False}
 
-        # Onboarding incomplete — issue onboarding token so frontend can
-        # continue from where the user left off
         onboarding_token = create_access_token(
             data={"sub": str(user.id), "purpose": "onboarding"},
             expires_delta=timedelta(hours=1),
@@ -443,7 +393,6 @@ async def google_login(token: str, db: AsyncSession) -> dict:
             "onboarding_token": onboarding_token,
         }
 
-    # Brand-new user — create account with placeholder tenant
     placeholder_tenant = Tenant(
         workspace_name="__pending__",
         slug=f"pending-{uuid.uuid4().hex[:8]}",
@@ -463,7 +412,6 @@ async def google_login(token: str, db: AsyncSession) -> dict:
     db.add(user)
     await db.flush()
 
-    # New user needs to complete onboarding (steps 3-5)
     onboarding_token = create_access_token(
         data={"sub": str(user.id), "purpose": "onboarding"},
         expires_delta=timedelta(hours=1),
@@ -477,17 +425,11 @@ async def google_login(token: str, db: AsyncSession) -> dict:
         "onboarding_token": onboarding_token,
     }
 
-
-# ---------------------------------------------------------------------------
-# Sign in
-# ---------------------------------------------------------------------------
-
 async def signin(
     email: str,
     password: str,
     db: AsyncSession,
 ) -> dict:
-    # Eagerly load tenant relationship to avoid async lazy loading
     result = await db.execute(
         select(User)
         .where(User.email == email.lower().strip())
@@ -518,9 +460,7 @@ async def signin(
             detail="Invalid email or password.",
         )
 
-    # Check if user has completed onboarding (business_category set)
     if not user.tenant or not user.tenant.business_category:
-        # Return onboarding token instead of access token
         logger.info(f"User {user.id} ({user.email}) needs to complete onboarding")
         onboarding_token = create_access_token(
             data={"sub": str(user.id), "purpose": "onboarding"},
@@ -534,11 +474,6 @@ async def signin(
 
     logger.info(f"User {user.id} ({user.email}) signin successful")
     return _issue_tokens(user)
-
-
-# ---------------------------------------------------------------------------
-# Refresh tokens
-# ---------------------------------------------------------------------------
 
 async def refresh_tokens(
     refresh_token: str,
@@ -568,11 +503,6 @@ async def refresh_tokens(
         raise credentials_error
 
     return _issue_tokens(user)
-
-
-# ---------------------------------------------------------------------------
-# get_current_user dependency
-# ---------------------------------------------------------------------------
 
 async def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer_scheme),
@@ -621,11 +551,6 @@ async def get_current_user(
 
     return user
 
-
-# ---------------------------------------------------------------------------
-# get_onboarding_user dependency
-# ---------------------------------------------------------------------------
-
 async def get_onboarding_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer_scheme),
     db: AsyncSession = Depends(get_db),
@@ -666,12 +591,6 @@ async def get_onboarding_user(
         raise credentials_error
 
     return user
-
-
-# ---------------------------------------------------------------------------
-# get_any_valid_user dependency — accepts onboarding token OR access token
-# Use this on document endpoints so they work during and after onboarding
-# ---------------------------------------------------------------------------
 
 async def get_any_valid_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer_scheme),
@@ -718,11 +637,6 @@ async def get_any_valid_user(
 
     return user
 
-
-# ---------------------------------------------------------------------------
-# Resend OTP
-# ---------------------------------------------------------------------------
-
 async def resend_otp(email: str, db: AsyncSession) -> dict:
     user = await _get_user_by_email_or_404(email, db)
 
@@ -739,11 +653,6 @@ async def resend_otp(email: str, db: AsyncSession) -> dict:
         "message": "A new OTP has been sent to your email.",
         "email": email,
     }
-
-
-# ---------------------------------------------------------------------------
-# Private helpers
-# ---------------------------------------------------------------------------
 
 async def _create_and_send_otp(
     user: User,
@@ -766,9 +675,7 @@ async def _create_and_send_otp(
     db.add(otp_record)
     await db.flush()
 
-    # Fire-and-forget — don't block the response waiting for email delivery
     asyncio.create_task(send_otp_email(user.email, user.full_name, otp))
-
 
 async def _invalidate_old_otps(
     user_id: uuid.UUID,
@@ -779,12 +686,11 @@ async def _invalidate_old_otps(
         select(EmailVerification).where(
             EmailVerification.user_id == user_id,
             EmailVerification.purpose == purpose,
-            EmailVerification.is_used == False,  # noqa: E712
+            EmailVerification.is_used == False,
         )
     )
     for record in result.scalars().all():
         record.is_used = True
-
 
 async def _get_user_by_email_or_404(email: str, db: AsyncSession) -> User:
     result = await db.execute(select(User).where(User.email == email.lower().strip()))
@@ -796,7 +702,6 @@ async def _get_user_by_email_or_404(email: str, db: AsyncSession) -> User:
         )
     return user
 
-
 async def _get_verified_user_or_401(email: str, db: AsyncSession) -> User:
     user = await _get_user_by_email_or_404(email, db)
     if not user.is_email_verified:
@@ -805,7 +710,6 @@ async def _get_verified_user_or_401(email: str, db: AsyncSession) -> User:
             detail="Email is not verified. Complete Step 2 first.",
         )
     return user
-
 
 async def _get_tenant_for_user(user: User, db: AsyncSession) -> Tenant:
     result = await db.execute(select(Tenant).where(Tenant.id == user.tenant_id))
@@ -817,7 +721,6 @@ async def _get_tenant_for_user(user: User, db: AsyncSession) -> Tenant:
         )
     return tenant
 
-
 def _issue_tokens(user: User) -> dict:
     payload = {"sub": str(user.id)}
     return {
@@ -825,11 +728,6 @@ def _issue_tokens(user: User) -> dict:
         "refresh_token": create_refresh_token(payload),
         "token_type": "bearer",
     }
-
-
-# ---------------------------------------------------------------------------
-# Password reset — Step 1: request OTP
-# ---------------------------------------------------------------------------
 
 async def forgot_password(email: str, db: AsyncSession) -> dict:
     """
@@ -841,13 +739,11 @@ async def forgot_password(email: str, db: AsyncSession) -> dict:
     user = result.scalar_one_or_none()
 
     if user is None or not user.is_active:
-        # Generic response — don't leak whether the account exists
         return {
             "message": "If an account with that email exists, a reset code has been sent.",
             "email": email,
         }
 
-    # Invalidate any existing reset OTPs then issue a fresh one
     await _invalidate_old_otps(user.id, db, purpose=OTPPurpose.password_reset)
     await _create_and_send_otp(user, db, purpose=OTPPurpose.password_reset)
 
@@ -855,11 +751,6 @@ async def forgot_password(email: str, db: AsyncSession) -> dict:
         "message": "If an account with that email exists, a reset code has been sent.",
         "email": email,
     }
-
-
-# ---------------------------------------------------------------------------
-# Password reset — Step 2: verify OTP (returns a short-lived reset token)
-# ---------------------------------------------------------------------------
 
 async def verify_reset_otp(email: str, otp_code: str, db: AsyncSession) -> dict:
     """
@@ -874,7 +765,7 @@ async def verify_reset_otp(email: str, otp_code: str, db: AsyncSession) -> dict:
         .where(
             EmailVerification.user_id == user.id,
             EmailVerification.purpose == OTPPurpose.password_reset,
-            EmailVerification.is_used == False,  # noqa: E712
+            EmailVerification.is_used == False,
             EmailVerification.expires_at > datetime.now(timezone.utc),
         )
         .order_by(EmailVerification.created_at.desc())
@@ -894,10 +785,8 @@ async def verify_reset_otp(email: str, otp_code: str, db: AsyncSession) -> dict:
             detail="Invalid reset code.",
         )
 
-    # Mark OTP as used immediately — one-time use
     otp_record.is_used = True
 
-    # Issue a short-lived (15 min) reset token so the client can call reset_password
     reset_token = create_access_token(
         data={"sub": str(user.id), "purpose": "password_reset"},
         expires_delta=timedelta(minutes=15),
@@ -907,11 +796,6 @@ async def verify_reset_otp(email: str, otp_code: str, db: AsyncSession) -> dict:
         "message": "OTP verified. Use the reset_token to set your new password.",
         "reset_token": reset_token,
     }
-
-
-# ---------------------------------------------------------------------------
-# Password reset — Step 3: set new password
-# ---------------------------------------------------------------------------
 
 async def reset_password(
     reset_token: str,
@@ -948,11 +832,6 @@ async def reset_password(
 
     return {"message": "Password reset successfully. You can now sign in with your new password."}
 
-
-# ---------------------------------------------------------------------------
-# Sample documents — get documents for onboarding by category
-# ---------------------------------------------------------------------------
-
 async def get_sample_documents_by_category(
     business_category: str,
     db: AsyncSession,
@@ -975,10 +854,9 @@ async def get_sample_documents_by_category(
             "id": str(doc.id),
             "title": doc.title,
             "desc": doc.description,
-            "pages": 0,  # Page count not stored in DB, frontend can infer from file_size_mb
+            "pages": 0,
             "filename": doc.filename,
             "file_size_mb": doc.file_size_mb,
         }
         for doc in documents
     ]
-

@@ -17,8 +17,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info(
@@ -27,8 +25,6 @@ async def lifespan(app: FastAPI):
         settings.DEBUG,
     )
     yield
-
-
 
 app = FastAPI(
     title="SecureRAG++ API",
@@ -44,10 +40,8 @@ app = FastAPI(
     openapi_url="/openapi.json",
 )
 
-
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
-
 
 @app.exception_handler(RateLimitExceeded)
 async def rate_limit_handler(request, exc):
@@ -55,8 +49,6 @@ async def rate_limit_handler(request, exc):
         status_code=429,
         content={"detail": "Rate limit exceeded. Please try again later."}
     )
-
-
 
 app.add_middleware(
     CORSMiddleware,
@@ -67,13 +59,9 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type"],
     max_age=3600,  )
 
-
 app.include_router(v1_router, prefix="/api/v1")
-
-
 
 @app.get("/health", tags=["health"], summary="Health check")
 async def health_check() -> dict:
     """Return application health status."""
     return {"status": "ok", "app": settings.APP_NAME, "version": "1.0.0"}
-

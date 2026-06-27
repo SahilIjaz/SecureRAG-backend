@@ -19,7 +19,6 @@ from app.core.ip_validator import validate_url_safe
 
 logger = logging.getLogger(__name__)
 
-
 async def scrape_website_to_pdf(url: str, timeout: int = 30) -> Tuple[bytes, str]:
     """
     Scrapes a website using Crawl4AI and converts content to PDF.
@@ -62,7 +61,6 @@ async def scrape_website_to_pdf(url: str, timeout: int = 30) -> Tuple[bytes, str
         logger.error(f"Scraping failed for {url}: {str(e)}")
         raise ValueError(f"Failed to scrape {url}: {str(e)}")
 
-
 async def _markdown_to_pdf(content: str, title: str, url: str) -> bytes:
     """
     Converts markdown content to PDF using ReportLab.
@@ -70,7 +68,6 @@ async def _markdown_to_pdf(content: str, title: str, url: str) -> bytes:
     """
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, _markdown_to_pdf_blocking, content, title, url)
-
 
 def _markdown_to_pdf_blocking(content: str, title: str, url: str) -> bytes:
     """
@@ -114,4 +111,3 @@ def _markdown_to_pdf_blocking(content: str, title: str, url: str) -> bytes:
     pdf_buffer.close()
 
     return pdf_bytes
-

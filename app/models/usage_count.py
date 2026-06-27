@@ -13,7 +13,6 @@ from app.database import Base
 if TYPE_CHECKING:
     from app.models.tenant import Tenant
 
-
 class UsageCount(Base):
     """
     Tracks monthly resource consumption per tenant.
@@ -58,4 +57,3 @@ class UsageCount(Base):
             f"<UsageCount id={self.id} tenant_id={self.tenant_id} "
             f"period={self.period_month} questions={self.questions_used}>"
         )
-
