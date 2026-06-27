@@ -49,19 +49,16 @@ async def upsert_chunks(
     for chunk, embedding in zip(chunks, embeddings):
         vector_id = f"{tenant_id}#{document_id}#{chunk['chunk_id']}"
 
-        # Metadata for retrieval
         metadata = {
             "tenant_id": tenant_id,
             "document_id": document_id,
             "chunk_id": chunk["chunk_id"],
             "sequence": chunk["sequence"],
-            "text": chunk["text"][:200],  # Store first 200 chars for preview
+            "text": chunk["text"][:200],
             "token_count": chunk["token_count"],
         }
 
         vectors_to_upsert.append((vector_id, embedding, metadata))
-
-    # Upsert in batches
     batch_size = 100
     for i in range(0, len(vectors_to_upsert), batch_size):
         batch = vectors_to_upsert[i:i+batch_size]
