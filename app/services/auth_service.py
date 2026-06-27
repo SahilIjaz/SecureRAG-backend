@@ -2,14 +2,14 @@
 Auth Service — all authentication business logic.
 
 Signup flow (multi-step, matches Figma):
-  Step 1: register_user()         — create unverified user, send OTP
-  Step 2: verify_email()          — verify OTP, mark email verified
+  Step 1: register_user() — create unverified user, send OTP
+  Step 2: verify_email() — verify OTP, mark email verified
   Step 3: save_organization_info()— save business_category + employee_count_range
-  Step 4: setup_workspace()       — create tenant, link to user
-  Step 5: select_plan()           — create subscription + tenant_quota + usage_count row
+  Step 4: setup_workspace() — create tenant, link to user
+  Step 5: select_plan() — create subscription + tenant_quota + usage_count row
 
 Auth:
-  signin()         — validate credentials, return JWT pair
+  signin() — validate credentials, return JWT pair
   refresh_tokens() — validate refresh token, return new JWT pair
   get_current_user() — FastAPI dependency to extract + validate access token
 """

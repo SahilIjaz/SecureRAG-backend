@@ -1,16 +1,16 @@
 """
 Auth endpoints — complete signup flow + signin + refresh + me.
 
-POST /api/v1/auth/signup          — Step 1: register user, send OTP
-POST /api/v1/auth/verify-email    — Step 2: verify OTP
-POST /api/v1/auth/resend-otp      — Step 2: resend OTP
-POST /api/v1/auth/organization    — Step 3: save business category + employee count
-POST /api/v1/auth/workspace       — Step 4: set workspace name
-POST /api/v1/auth/select-plan     — Step 5: choose subscription plan (issues tokens)
-POST /api/v1/auth/signin          — Login with email + password
-POST /api/v1/auth/social/google   — Sign in or register with Google
-POST /api/v1/auth/refresh         — Exchange refresh token for new token pair
-GET  /api/v1/auth/me              — Get current authenticated user profile
+POST /api/v1/auth/signup — Step 1: register user, send OTP
+POST /api/v1/auth/verify-email — Step 2: verify OTP
+POST /api/v1/auth/resend-otp — Step 2: resend OTP
+POST /api/v1/auth/organization — Step 3: save business category + employee count
+POST /api/v1/auth/workspace — Step 4: set workspace name
+POST /api/v1/auth/select-plan — Step 5: choose subscription plan (issues tokens)
+POST /api/v1/auth/signin — Login with email + password
+POST /api/v1/auth/social/google — Sign in or register with Google
+POST /api/v1/auth/refresh — Exchange refresh token for new token pair
+GET /api/v1/auth/me — Get current authenticated user profile
 """
 
 from fastapi import APIRouter, Depends, Request, status

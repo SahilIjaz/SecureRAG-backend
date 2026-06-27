@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from app.models.document import DocumentSource, DocumentStatus
 
 class CommunityDocumentResponse(BaseModel):
-    id: uuid.UUID                      original_filename: str
+    id: uuid.UUID original_filename: str
     file_size_mb: float
     mime_type: str
     file_url: Optional[str]
@@ -22,7 +22,7 @@ class DocumentResponse(BaseModel):
     source: DocumentSource
     status: DocumentStatus
     sample_document_id: Optional[uuid.UUID]
-    source_url: Optional[str]       file_url: Optional[str]         created_at: datetime
+    source_url: Optional[str] file_url: Optional[str] created_at: datetime
 
     model_config = {"from_attributes": True}
 

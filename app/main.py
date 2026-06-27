@@ -53,11 +53,11 @@ async def rate_limit_handler(request, exc):
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:5173",             "http://localhost:5174",             "http://localhost:5175",             "http://localhost:3000",         ],
+        "http://localhost:5173", "http://localhost:5174", "http://localhost:5175", "http://localhost:3000", ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
     allow_headers=["Authorization", "Content-Type"],
-    max_age=3600,  )
+    max_age=3600, )
 
 app.include_router(v1_router, prefix="/api/v1")
 

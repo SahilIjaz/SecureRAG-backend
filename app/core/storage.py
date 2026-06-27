@@ -53,7 +53,7 @@ def _upload_blocking(
     result = cloudinary.uploader.upload(
         file_content,
         public_id=public_id,
-        resource_type="raw",           overwrite=False,
+        resource_type="raw", overwrite=False,
         use_filename=False,
     )
     return result
@@ -73,7 +73,7 @@ async def upload_file_to_cloudinary(
     Uploads a file to Cloudinary with encryption at rest.
     Returns (public_id, secure_url).
 
-    public_id  → stored as file_path in DB (used for deletion)
+    public_id → stored as file_path in DB (used for deletion)
     secure_url → the HTTPS URL to access the file
 
     File is encrypted before upload for security.
@@ -89,7 +89,7 @@ async def upload_file_to_cloudinary(
     result = await loop.run_in_executor(
         None,
         _upload_blocking,
-        encrypted_content,          public_id,
+        encrypted_content, public_id,
         content_type,
     )
 
