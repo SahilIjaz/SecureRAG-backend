@@ -85,7 +85,7 @@ def _first_of_month() -> datetime:
     return today.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
 async def register_user(
-    full_name: str,
+    company_name: str,
     email: str,
     password: str,
     db: AsyncSession,
@@ -122,7 +122,7 @@ async def register_user(
 
     user = User(
         tenant_id=placeholder_tenant.id,
-        full_name=full_name.strip(),
+        full_name=company_name.strip(),
         email=email.lower().strip(),
         password_hash=pw_hash,
         is_email_verified=False,
@@ -139,7 +139,7 @@ async def register_user(
 
 async def verify_email(
     email: str,
-    otp_code: str,
+    otp: str,
     db: AsyncSession,
 ) -> dict:
     """
@@ -173,7 +173,7 @@ async def verify_email(
             detail="OTP has expired or does not exist. Please request a new one.",
         )
 
-    if not verify_otp(otp_code, otp_record.otp_code):
+    if not verify_otp(otp, otp_record.otp_code):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid OTP code.",
@@ -323,6 +323,94 @@ async def select_plan(
 
     return {
         "message": "Onboarding complete. Welcome to SecureRAG++!",
+        **tokens,
+    }
+
+async def complete_onboarding(
+    user: User,
+    role: str,
+    team_size: str,
+    goal: str,
+    workspace_name: str,
+    plan_name: PlanName = PlanName.free,
+    billing_cycle: Optional[BillingCycle] = None,
+    db: AsyncSession = None,
+) -> dict:
+    """
+    Consolidated onboarding: save role, team size, goal, workspace name,
+    and create subscription in one call. Replaces steps 3, 4, 5.
+    """
+    tenant = await _get_tenant_for_user(user, db)
+
+    tenant.employee_count_range = team_size
+    tenant.workspace_name = workspace_name.strip()
+
+    base_slug = _slugify(workspace_name)
+    slug = base_slug
+    counter = 1
+    while True:
+        result = await db.execute(
+            select(Tenant).where(Tenant.slug == slug, Tenant.id != tenant.id)
+        )
+        if result.scalar_one_or_none() is None:
+            break
+        slug = f"{base_slug}-{counter}"
+        counter += 1
+
+    tenant.slug = slug
+
+    if plan_name != PlanName.free and billing_cycle is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="billing_cycle is required for paid plans.",
+        )
+
+    result = await db.execute(
+        select(Subscription).where(Subscription.tenant_id == tenant.id)
+    )
+    if result.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Subscription already exists for this tenant.",
+        )
+
+    expires_at = None
+    if plan_name != PlanName.free:
+        delta = timedelta(days=30) if billing_cycle == BillingCycle.monthly else timedelta(days=365)
+        expires_at = datetime.now(timezone.utc) + delta
+
+    subscription = Subscription(
+        tenant_id=tenant.id,
+        plan_name=plan_name,
+        billing_cycle=billing_cycle,
+        status=SubscriptionStatus.active,
+        expires_at=expires_at,
+    )
+    db.add(subscription)
+    await db.flush()
+
+    quotas = PLAN_QUOTAS[plan_name]
+    tenant_quota = TenantQuota(
+        tenant_id=tenant.id,
+        subscription_id=subscription.id,
+        **quotas,
+    )
+    db.add(tenant_quota)
+
+    usage = UsageCount(
+        tenant_id=tenant.id,
+        period_month=_first_of_month().date(),
+    )
+    db.add(usage)
+    await db.flush()
+    await db.commit()
+
+    tokens = _issue_tokens(user)
+
+    return {
+        "message": "Onboarding complete. Welcome to SecureRAG++!",
+        "workspace_name": tenant.workspace_name,
+        "slug": tenant.slug,
         **tokens,
     }
 
@@ -752,7 +840,7 @@ async def forgot_password(email: str, db: AsyncSession) -> dict:
         "email": email,
     }
 
-async def verify_reset_otp(email: str, otp_code: str, db: AsyncSession) -> dict:
+async def verify_reset_otp(email: str, otp: str, db: AsyncSession) -> dict:
     """
     Validates the password-reset OTP.
     On success returns a short-lived reset token the client must send
@@ -779,7 +867,7 @@ async def verify_reset_otp(email: str, otp_code: str, db: AsyncSession) -> dict:
             detail="Reset code has expired or does not exist. Please request a new one.",
         )
 
-    if not verify_otp(otp_code, otp_record.otp_code):
+    if not verify_otp(otp, otp_record.otp_code):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid reset code.",
@@ -798,37 +886,47 @@ async def verify_reset_otp(email: str, otp_code: str, db: AsyncSession) -> dict:
     }
 
 async def reset_password(
-    reset_token: str,
+    email: str,
+    otp: str,
     new_password: str,
     db: AsyncSession,
 ) -> dict:
     """
-    Validates the reset token and updates the user's password.
+    Reset password with email, OTP, and new password in a single call.
     """
-    credentials_error = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Invalid or expired reset token.",
+    user = await _get_user_by_email_or_404(email, db)
+
+    result = await db.execute(
+        select(EmailVerification)
+        .where(
+            EmailVerification.user_id == user.id,
+            EmailVerification.purpose == OTPPurpose.password_reset,
+            EmailVerification.is_used == False,
+            EmailVerification.expires_at > datetime.now(timezone.utc),
+        )
+        .order_by(EmailVerification.created_at.desc())
+        .limit(1)
     )
+    otp_record = result.scalar_one_or_none()
 
-    try:
-        payload = decode_token(reset_token)
-    except JWTError:
-        raise credentials_error
+    if otp_record is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Reset code has expired or does not exist. Please request a new one.",
+        )
 
-    if payload.get("purpose") != "password_reset":
-        raise credentials_error
+    if not verify_otp(otp, otp_record.otp_code):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid reset code.",
+        )
 
-    user_id: Optional[str] = payload.get("sub")
-    if not user_id:
-        raise credentials_error
+    otp_record.is_used = True
 
-    result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
-    user = result.scalar_one_or_none()
-
-    if user is None or not user.is_active:
-        raise credentials_error
-
-    user.password_hash = hash_password(new_password)
+    loop = asyncio.get_event_loop()
+    pw_hash = await loop.run_in_executor(None, hash_password, new_password)
+    user.password_hash = pw_hash
+    await db.commit()
 
     return {"message": "Password reset successfully. You can now sign in with your new password."}
 

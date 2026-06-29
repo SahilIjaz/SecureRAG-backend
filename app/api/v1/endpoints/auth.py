@@ -22,8 +22,10 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 
 from app.database import get_db
+from app.models.subscription import PlanName
 from app.models.user import User
 from app.schemas.auth import (
+    ConsolidatedOnboardingRequest,
     ForgotPasswordRequest,
     GoogleLoginRequest,
     MessageResponse,
@@ -40,7 +42,6 @@ from app.schemas.auth import (
     SignupStep1Request,
     SocialLoginResponse,
     TokenResponse,
-    VerifyResetOTPRequest,
     VerifyResetOTPResponse,
     WorkspaceSetupRequest,
 )
@@ -68,7 +69,7 @@ async def signup(
     db: AsyncSession = Depends(get_db),
 ) -> MessageResponse:
     result = await auth_service.register_user(
-        full_name=body.full_name,
+        company_name=body.companyName,
         email=body.email,
         password=body.password,
         db=db,
@@ -93,7 +94,7 @@ async def verify_email(
 ) -> OTPVerifyResponse:
     result = await auth_service.verify_email(
         email=body.email,
-        otp_code=body.otp_code,
+        otp=body.otp,
         db=db,
     )
     return OTPVerifyResponse(**result)
@@ -184,6 +185,41 @@ async def select_plan(
     return TokenResponse(
         access_token=result["access_token"],
         refresh_token=result["refresh_token"],
+    )
+
+@router.post(
+    "/onboarding/complete",
+    response_model=OnboardingCompleteResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Consolidated onboarding — complete all steps in one call",
+    description=(
+        "Complete onboarding in a single API call with role, teamSize, goal, and workspaceName. "
+        "Saves onboarding info and creates subscription with free plan. "
+        "Returns access + refresh token pair. "
+        "Requires Authorization: Bearer <onboarding_token> from Step 2."
+    ),
+)
+async def complete_onboarding(
+    body: ConsolidatedOnboardingRequest,
+    current_user: User = Depends(auth_service.get_onboarding_user),
+    db: AsyncSession = Depends(get_db),
+) -> OnboardingCompleteResponse:
+    result = await auth_service.complete_onboarding(
+        user=current_user,
+        role=body.role,
+        team_size=body.teamSize,
+        goal=body.goal,
+        workspace_name=body.workspaceName,
+        plan_name=PlanName.free,
+        billing_cycle=None,
+        db=db,
+    )
+    return OnboardingCompleteResponse(
+        access_token=result["access_token"],
+        refresh_token=result["refresh_token"],
+        message=result["message"],
+        workspace_name=result.get("workspace_name"),
+        slug=result.get("slug"),
     )
 
 @router.post(
@@ -301,7 +337,7 @@ async def forgot_password(
     return MessageResponse(**result)
 
 @router.post(
-    "/verify-reset-otp",
+    "/verify-otp",
     response_model=VerifyResetOTPResponse,
     status_code=status.HTTP_200_OK,
     summary="Step 2 — Verify reset OTP",
@@ -312,12 +348,12 @@ async def forgot_password(
     ),
 )
 async def verify_reset_otp(
-    body: VerifyResetOTPRequest,
+    body: ResetPasswordRequest,
     db: AsyncSession = Depends(get_db),
 ) -> VerifyResetOTPResponse:
     result = await auth_service.verify_reset_otp(
         email=body.email,
-        otp_code=body.otp_code,
+        otp=body.otp,
         db=db,
     )
     return VerifyResetOTPResponse(**result)
@@ -326,21 +362,20 @@ async def verify_reset_otp(
     "/reset-password",
     response_model=MessageResponse,
     status_code=status.HTTP_200_OK,
-    summary="Step 3 — Set new password",
+    summary="Reset password",
     description=(
-        "Pass the reset_token from Step 2 as a Bearer token in the Authorization header. "
-        "Body only needs new_password and confirm_password. "
-        "The reset_token expires after 15 minutes."
+        "Reset password with email, OTP, and new password. "
+        "Body must include email, otp, and newPassword."
     ),
 )
 async def reset_password(
     body: ResetPasswordRequest,
-    credentials: HTTPAuthorizationCredentials = Depends(HTTPBearer()),
     db: AsyncSession = Depends(get_db),
 ) -> MessageResponse:
     result = await auth_service.reset_password(
-        reset_token=credentials.credentials,
-        new_password=body.new_password,
+        email=body.email,
+        otp=body.otp,
+        new_password=body.newPassword,
         db=db,
     )
     return MessageResponse(message=result["message"])

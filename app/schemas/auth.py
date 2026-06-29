@@ -5,15 +5,15 @@ from pydantic import BaseModel, EmailStr, Field, ValidationInfo, field_validator
 from app.models.subscription import BillingCycle, PlanName
 
 class SignupStep1Request(BaseModel):
-    full_name: str = Field(..., min_length=1, max_length=255, examples=["Jane Doe"])
+    companyName: str = Field(..., min_length=1, max_length=255, examples=["Acme Corp"])
     email: EmailStr = Field(..., examples=["jane@example.com"])
     password: str = Field(..., min_length=8, max_length=128, examples=["S3cur3P@ss!"])
 
-    @field_validator("full_name")
+    @field_validator("companyName")
     @classmethod
-    def full_name_not_blank(cls, v: str) -> str:
+    def company_name_not_blank(cls, v: str) -> str:
         if not v.strip():
-            raise ValueError("full_name must not be blank")
+            raise ValueError("companyName must not be blank")
         return v.strip()
 
     @field_validator("password")
@@ -34,9 +34,9 @@ class SignupStep1Request(BaseModel):
 
 class OTPVerifyRequest(BaseModel):
     email: EmailStr = Field(..., examples=["jane@example.com"])
-    otp_code: str = Field(..., min_length=4, max_length=4, examples=["3821"])
+    otp: str = Field(..., min_length=4, max_length=4, examples=["3821"])
 
-    @field_validator("otp_code")
+    @field_validator("otp")
     @classmethod
     def otp_must_be_digits(cls, v: str) -> str:
         if not v.isdigit():
@@ -109,22 +109,19 @@ class RefreshTokenRequest(BaseModel):
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr = Field(..., examples=["jane@example.com"])
 
-class VerifyResetOTPRequest(BaseModel):
+class ResetPasswordRequest(BaseModel):
     email: EmailStr = Field(..., examples=["jane@example.com"])
-    otp_code: str = Field(..., min_length=4, max_length=4, examples=["8472"])
+    otp: str = Field(..., min_length=4, max_length=4, examples=["8472"])
+    newPassword: str = Field(..., min_length=8, max_length=128)
 
-    @field_validator("otp_code")
+    @field_validator("otp")
     @classmethod
     def otp_digits_only(cls, v: str) -> str:
         if not v.isdigit():
             raise ValueError("OTP must contain only digits")
         return v
 
-class ResetPasswordRequest(BaseModel):
-    new_password: str = Field(..., min_length=8, max_length=128)
-    confirm_password: str = Field(..., min_length=8, max_length=128)
-
-    @field_validator("new_password")
+    @field_validator("newPassword")
     @classmethod
     def password_complexity(cls, v: str) -> str:
         errors = []
@@ -138,13 +135,6 @@ class ResetPasswordRequest(BaseModel):
             errors.append("at least one digit")
         if errors:
             raise ValueError("Password must contain " + ", ".join(errors))
-        return v
-
-    @field_validator("confirm_password")
-    @classmethod
-    def passwords_match(cls, v: str, info: ValidationInfo) -> str:
-        if "new_password" in info.data and v != info.data["new_password"]:
-            raise ValueError("Passwords do not match")
         return v
 
 class MessageResponse(BaseModel):
@@ -178,3 +168,16 @@ class OnboardingCompleteResponse(TokenResponse):
     message: str
     workspace_name: Optional[str] = None
     slug: Optional[str] = None
+
+class ConsolidatedOnboardingRequest(BaseModel):
+    role: str = Field(..., min_length=1, max_length=100, examples=["Manager"])
+    teamSize: str = Field(..., min_length=1, max_length=100, examples=["1-15"])
+    goal: str = Field(..., min_length=1, max_length=500, examples=["Improve RAG capabilities"])
+    workspaceName: str = Field(..., min_length=2, max_length=100, examples=["Acme Corp"])
+
+    @field_validator("workspaceName")
+    @classmethod
+    def workspace_name_not_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("workspaceName must not be blank")
+        return v.strip()
