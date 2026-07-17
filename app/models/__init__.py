@@ -6,6 +6,9 @@ from app.models.tenant_quota import TenantQuota
 from app.models.usage_count import UsageCount
 from app.models.sample_document import SampleDocument
 from app.models.document import Document
+from app.models.chatbot_config import ChatbotConfig
+from app.models.conversation import Conversation, ConversationMessage
+from app.models.tenant_settings import ApiKey, NotificationSetting, PaymentMethod
 
 __all__ = [
     "Tenant",
@@ -16,4 +19,10 @@ __all__ = [
     "UsageCount",
     "SampleDocument",
     "Document",
+    "ChatbotConfig",
+    "Conversation",
+    "ConversationMessage",
+    "ApiKey",
+    "NotificationSetting",
+    "PaymentMethod",
 ]

@@ -8,6 +8,9 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
+from sqlalchemy import text
+
+from app.api.frontend.router import router as frontend_router
 from app.api.v1.router import router as v1_router
 from app.config import settings
 
@@ -17,8 +20,37 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+async def ensure_frontend_schema() -> None:
+    """
+    Idempotently apply the frontend-compat schema additions
+    (mirrors migrations/add_frontend_compat.sql): new tables via
+    metadata.create_all + ADD COLUMN IF NOT EXISTS for existing tables.
+    """
+    import app.models  # noqa: F401 — register all models on Base.metadata
+    from app.database import Base, async_engine
+
+    alter_statements = [
+        "ALTER TABLE documents ADD COLUMN IF NOT EXISTS chunk_count INTEGER",
+        "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS has_documents BOOLEAN",
+        "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS onboarding_completed_at TIMESTAMPTZ",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT",
+        # The dashboard sends free-form team sizes ("Just me", "2–10", ...) and
+        # business categories ("SaaS", ...) that predate-constraint sets reject.
+        "ALTER TABLE tenants DROP CONSTRAINT IF EXISTS tenants_employee_count_range_check",
+        "ALTER TABLE tenants DROP CONSTRAINT IF EXISTS tenants_business_category_check",
+    ]
+    async with async_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+        for stmt in alter_statements:
+            await conn.execute(text(stmt))
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    try:
+        await ensure_frontend_schema()
+        logger.info("Frontend-compat schema is up to date")
+    except Exception as e:
+        logger.error("Failed to apply frontend-compat schema: %s", e)
     logger.info(
         "%s API is running (debug=%s)",
         settings.APP_NAME,
@@ -60,6 +92,9 @@ app.add_middleware(
     max_age=3600, )
 
 app.include_router(v1_router, prefix="/api/v1")
+
+# Frontend-compat API — paths/shapes match Nexus-frontend/src/api/*.api.ts.
+app.include_router(frontend_router, prefix="/api")
 
 @app.get("/health", tags=["health"], summary="Health check")
 async def health_check() -> dict:

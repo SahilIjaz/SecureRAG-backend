@@ -111,6 +111,31 @@ async def decrypt_file(encrypted_content: bytes) -> bytes:
     cipher = _get_cipher()
     return cipher.decrypt(encrypted_content)
 
+def _upload_image_blocking(file_content: bytes, public_id: str) -> dict:
+    _configure_cloudinary()
+    return cloudinary.uploader.upload(
+        file_content,
+        public_id=public_id,
+        resource_type="image",
+        overwrite=True,
+    )
+
+async def upload_image_to_cloudinary(
+    file_content: bytes,
+    owner_id: uuid.UUID,
+    kind: str = "avatar",
+) -> str:
+    """
+    Uploads a display image (chatbot avatar, profile photo) UNENCRYPTED as a
+    Cloudinary image resource, so the returned URL can be rendered directly in
+    the UI. Returns the secure URL. Overwrites the previous image of the same kind.
+    """
+    public_id = f"securerag/{kind}s/{owner_id}"
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, _upload_image_blocking, file_content, public_id)
+    logger.info("Uploaded %s image to Cloudinary for %s", kind, owner_id)
+    return result["secure_url"]
+
 async def delete_file_from_cloudinary(public_id: str) -> None:
     """Deletes a file from Cloudinary by its public_id."""
     loop = asyncio.get_event_loop()

@@ -120,7 +120,8 @@ async def upload_documents(
         _quota = result_quota.scalar_one_or_none()
         max_mb = _quota.max_file_size_mb if _quota else settings.MAX_UPLOAD_SIZE_MB
 
-        if file_size_mb > max_mb:
+        # -1 means unlimited (see TenantQuota docstring)
+        if max_mb != -1 and file_size_mb > max_mb:
             raise HTTPException(
                 status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                 detail=f"'{file.filename}' exceeds the {max_mb}MB per-file limit.",
@@ -378,7 +379,8 @@ async def scrape_and_add_documents(
             _quota = result_quota.scalar_one_or_none()
             max_mb = _quota.max_file_size_mb if _quota else settings.MAX_UPLOAD_SIZE_MB
 
-            if file_size_mb > max_mb:
+            # -1 means unlimited (see TenantQuota docstring)
+            if max_mb != -1 and file_size_mb > max_mb:
                 logger.warning(f"Scraped content from {url} exceeds {max_mb}MB limit")
                 raise HTTPException(
                     status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,

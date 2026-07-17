@@ -58,8 +58,52 @@ async def scrape_website_to_pdf(url: str, timeout: int = 30) -> Tuple[bytes, str
             return pdf_bytes, page_title
 
     except Exception as e:
-        logger.error(f"Scraping failed for {url}: {str(e)}")
-        raise ValueError(f"Failed to scrape {url}: {str(e)}")
+        # Crawl4AI's extraction pipeline crashes on some sites (bot-protected
+        # or nonstandard HTML with no parseable body). Fall back to a plain
+        # HTTP fetch + BeautifulSoup text extraction before giving up.
+        logger.warning(f"Crawl4AI failed for {url} ({e}); trying plain-HTTP fallback")
+        try:
+            return await _scrape_fallback(url, timeout)
+        except Exception as fallback_error:
+            logger.error(f"Scraping failed for {url}: {str(fallback_error)}")
+            raise ValueError(f"Failed to scrape {url}: {str(fallback_error)}")
+
+async def _scrape_fallback(url: str, timeout: int) -> Tuple[bytes, str]:
+    """Plain httpx GET + BeautifulSoup text extraction, converted to PDF."""
+    import html as html_lib
+
+    import httpx
+    from bs4 import BeautifulSoup
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    async with httpx.AsyncClient(follow_redirects=True, timeout=timeout, headers=headers) as client:
+        resp = await client.get(url)
+        resp.raise_for_status()
+        # Redirects may land on a different host — re-run SSRF validation.
+        validate_url_safe(str(resp.url))
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    for tag in soup(["script", "style", "noscript", "iframe", "svg"]):
+        tag.decompose()
+
+    page_title = (soup.title.string or "").strip() if soup.title and soup.title.string else url
+    text = soup.get_text(separator="\n")
+    paragraphs = [line.strip() for line in text.splitlines() if line.strip()]
+    content = "\n\n".join(html_lib.escape(p) for p in paragraphs)
+
+    if not content.strip():
+        raise ValueError(f"No content extracted from {url}")
+
+    logger.info(f"Scraped {url} via fallback - Title: {page_title}")
+    pdf_bytes = await _markdown_to_pdf(content, html_lib.escape(page_title), url)
+    return pdf_bytes, page_title
 
 async def _markdown_to_pdf(content: str, title: str, url: str) -> bytes:
     """

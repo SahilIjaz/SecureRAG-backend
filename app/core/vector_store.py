@@ -19,10 +19,29 @@ def _get_pinecone():
         _pc = Pinecone(api_key=settings.PINECONE_API_KEY)
     return _pc
 
-def get_index(index_name: str = "securerag-documents"):
-    """Get Pinecone index."""
+def ensure_index(index_name: str = None) -> None:
+    """Create the serverless index if it doesn't exist (idempotent)."""
+    from app.core.embeddings import EMBEDDING_DIMENSION
+
+    from pinecone import ServerlessSpec
+
+    name = index_name or settings.PINECONE_INDEX_NAME
     pc = _get_pinecone()
-    return pc.Index(index_name)
+    if not pc.has_index(name):
+        logger.info("Creating Pinecone index %s (dim=%d)", name, EMBEDDING_DIMENSION)
+        pc.create_index(
+            name=name,
+            dimension=EMBEDDING_DIMENSION,
+            metric="cosine",
+            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+        )
+
+def get_index(index_name: str = None):
+    """Get Pinecone index (creating it on first use)."""
+    name = index_name or settings.PINECONE_INDEX_NAME
+    ensure_index(name)
+    pc = _get_pinecone()
+    return pc.Index(name)
 
 async def upsert_chunks(
     tenant_id: str,
@@ -51,7 +70,9 @@ async def upsert_chunks(
             "document_id": document_id,
             "chunk_id": chunk["chunk_id"],
             "sequence": chunk["sequence"],
-            "text": chunk["text"][:200],
+            # Full chunk text (capped well under Pinecone's 40KB metadata limit)
+            # — this is the context handed to the LLM at answer time.
+            "text": chunk["text"][:8000],
             "token_count": chunk["token_count"],
         }
 

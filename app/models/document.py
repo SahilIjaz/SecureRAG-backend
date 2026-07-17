@@ -64,6 +64,7 @@ class Document(Base):
         nullable=True,
     )
     source_url: Mapped[Optional[str]] = mapped_column(String(2048), nullable=True)
+    chunk_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

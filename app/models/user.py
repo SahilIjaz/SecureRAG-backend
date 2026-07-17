@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, List, Optional
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, func, Enum as SAEnum
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, func, Enum as SAEnum
 import enum
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -45,6 +45,7 @@ class User(Base):
         nullable=False,
     )
     provider_uid: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
+    avatar_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     is_email_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(

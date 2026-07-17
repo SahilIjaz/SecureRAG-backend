@@ -1,78 +1,43 @@
-"""Embedding service using Anthropic's Claude model."""
+"""Embedding service backed by Pinecone Inference (multilingual-e5-large).
 
+Uses Pinecone's hosted embedding model, so no separate embedding-provider key
+is needed — the PINECONE_API_KEY covers both embedding and vector storage.
+"""
+
+import asyncio
 import logging
 from typing import List
-import asyncio
 
 logger = logging.getLogger(__name__)
 
-EMBEDDING_DIMENSION = 1536
+# multilingual-e5-large produces 1024-dim vectors; the Pinecone index must match.
+EMBEDDING_MODEL = "multilingual-e5-large"
+EMBEDDING_DIMENSION = 1024
+
+# Pinecone inference accepts at most 96 inputs per request.
+_BATCH_SIZE = 96
+
+def _embed_batch_blocking(texts: List[str], input_type: str) -> List[List[float]]:
+    from app.core.vector_store import _get_pinecone
+
+    pc = _get_pinecone()
+    result = pc.inference.embed(
+        model=EMBEDDING_MODEL,
+        inputs=texts,
+        parameters={"input_type": input_type, "truncate": "END"},
+    )
+    return [item["values"] for item in result.data]
 
 async def embed_text(text: str) -> List[float]:
-    """
-    Generate embedding for text using Claude's semantic understanding.
-
-    Uses a simple approach: convert text to vector via Claude's model.
-    For production, consider using OpenAI embeddings API which is more optimized.
-
-    Args:
-        text: Text to embed
-
-    Returns:
-        List of floats representing the embedding
-    """
-    try:
-        embedding = await asyncio.to_thread(_simple_embedding, text)
-        return embedding
-
-    except Exception as e:
-        logger.error(f"Failed to embed text: {str(e)}")
-        raise
+    """Embed a search query (input_type='query' — e5 models are asymmetric)."""
+    embeddings = await asyncio.to_thread(_embed_batch_blocking, [text], "query")
+    return embeddings[0]
 
 async def embed_chunks(texts: List[str]) -> List[List[float]]:
-    """
-    Generate embeddings for multiple text chunks.
-
-    Args:
-        texts: List of text chunks to embed
-
-    Returns:
-        List of embeddings (one per chunk)
-    """
-    embeddings = []
-    for text in texts:
-        embedding = await embed_text(text)
-        embeddings.append(embedding)
-
-    logger.info(f"Generated embeddings for {len(texts)} chunks")
+    """Embed document chunks for indexing (input_type='passage')."""
+    embeddings: List[List[float]] = []
+    for i in range(0, len(texts), _BATCH_SIZE):
+        batch = texts[i : i + _BATCH_SIZE]
+        embeddings.extend(await asyncio.to_thread(_embed_batch_blocking, batch, "passage"))
+    logger.info("Generated embeddings for %d chunks", len(texts))
     return embeddings
-
-def _simple_embedding(text: str) -> List[float]:
-    """
-    Simple embedding function for development.
-
-    In production, use:
-    - OpenAI's text-embedding-3-small
-    - Hugging Face sentence-transformers
-    - Cohere embeddings API
-
-    Args:
-        text: Text to embed
-
-    Returns:
-        Vector embedding
-    """
-    import hashlib
-
-    text_hash = hashlib.md5(text.encode()).hexdigest()
-
-    embedding = []
-    for i in range(0, 32, 2):
-        hex_pair = text_hash[i:i+2]
-        val = int(hex_pair, 16) / 255.0
-        embedding.append(val)
-
-    while len(embedding) < EMBEDDING_DIMENSION:
-        embedding.append(0.0)
-
-    return embedding[:EMBEDDING_DIMENSION]

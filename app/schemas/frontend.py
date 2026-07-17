@@ -1,0 +1,347 @@
+"""
+Wire-format schemas for the Nexus dashboard frontend.
+
+These mirror Nexus-frontend/src/types/api.types.ts + entities.types.ts EXACTLY
+(field names are camelCase, enum values match the display strings the UI
+renders). Keep the two files in sync — the frontend is the source of truth.
+"""
+
+from typing import List, Literal, Optional
+
+from pydantic import BaseModel, EmailStr, Field
+
+# ── Auth ──────────────────────────────────────────────────────────────────────
+
+class FEUser(BaseModel):
+    id: str
+    email: EmailStr
+    companyName: str
+    onboardingCompleted: Optional[bool] = None
+
+class FESignupRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(..., min_length=8, max_length=128)
+    companyName: str = Field(..., min_length=1, max_length=255)
+
+class FESignupResponse(BaseModel):
+    success: bool
+    message: str
+
+class FELoginRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(..., min_length=1)
+
+class FELoginResponse(BaseModel):
+    success: bool
+    token: str
+    user: FEUser
+
+class FEOtpVerifyRequest(BaseModel):
+    email: EmailStr
+    otp: str = Field(..., min_length=4, max_length=4)
+
+class FEOtpVerifyResponse(BaseModel):
+    success: bool
+    token: Optional[str] = None
+    user: Optional[FEUser] = None
+
+class FEForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+class FEResetPasswordRequest(BaseModel):
+    email: EmailStr
+    otp: str = Field(..., min_length=4, max_length=4)
+    newPassword: str = Field(..., min_length=8, max_length=128)
+
+class FESuccessResponse(BaseModel):
+    success: bool = True
+
+class FEChangePasswordRequest(BaseModel):
+    currentPassword: str
+    newPassword: str = Field(..., min_length=8, max_length=128)
+
+# ── Onboarding ────────────────────────────────────────────────────────────────
+
+class FEOnboardingStep1(BaseModel):
+    businessCategory: str
+    teamSize: str
+
+class FEOnboardingStep2(BaseModel):
+    workspaceName: str = Field(..., min_length=2, max_length=100)
+
+class FEOnboardingStep3(BaseModel):
+    plan: Literal["free", "pro", "premium"]
+
+class FEOnboardingStep4(BaseModel):
+    hasDocuments: bool
+
+class FECompleteOnboardingRequest(BaseModel):
+    businessCategory: str
+    teamSize: str
+    workspaceName: str = Field(..., min_length=2, max_length=100)
+    plan: Literal["free", "pro", "premium"]
+    hasDocuments: bool
+    uploadedFiles: Optional[int] = 0
+    uploadedUrls: Optional[int] = 0
+
+class FEOnboardingSummary(BaseModel):
+    businessCategory: str
+    teamSize: str
+    workspaceName: str
+    plan: Literal["free", "pro", "premium"]
+    hasDocuments: bool
+    uploadedFiles: int
+    uploadedUrls: int
+    completedAt: str
+
+class FECompleteOnboardingResponse(BaseModel):
+    success: bool
+    summary: FEOnboardingSummary
+
+class FEUploadDocumentsResponse(BaseModel):
+    success: bool
+    uploadedFiles: int
+    uploadedUrls: int
+
+class FESaveOnboardingDetailsRequest(BaseModel):
+    businessCategory: str
+    teamSize: str
+
+# ── Dashboard ─────────────────────────────────────────────────────────────────
+
+class FEOverviewStats(BaseModel):
+    totalConversations: int
+    totalConversationsDelta: float
+    resolutionRate: float
+    resolutionRateDelta: float
+    unresolved: int
+    unresolvedDelta: float
+    avgResponseSeconds: float
+    avgResponseDelta: float
+
+class FEVolumePoint(BaseModel):
+    date: str
+    count: int
+
+class FESentimentData(BaseModel):
+    positive: int
+    neutral: int
+    negative: int
+    csatScore: float
+
+class FEUnresolvedQuestion(BaseModel):
+    id: str
+    question: str
+    askedCount: int
+    reason: str
+    lastAsked: str
+
+class FEKnowledgeGap(BaseModel):
+    id: str
+    topic: str
+    queryCount: int
+    priority: Literal["High", "Medium", "Low"]
+
+class FEConversationTopic(BaseModel):
+    label: str
+    percentage: int
+
+class FERecentConversation(BaseModel):
+    id: str
+    initials: str
+    name: str
+    preview: str
+    timeAgo: str
+    status: Literal["Resolved", "Open", "Handed off"]
+    sentiment: Literal["Positive", "Neutral", "Negative"]
+
+class FEPlanUsage(BaseModel):
+    plan: str
+    messagesUsed: int
+    messagesTotal: int
+    docsUsed: int
+    docsTotal: int
+    urlsUsed: int
+    urlsTotal: int
+    resetsOn: str
+
+# ── Chatbot config ────────────────────────────────────────────────────────────
+
+class FEChatbotIdentity(BaseModel):
+    name: str
+    avatarUrl: Optional[str] = None
+    welcomeMessage: str
+    persona: str
+    language: str
+    fallbackMessage: str
+
+class FEChatbotBehavior(BaseModel):
+    handoffToHuman: bool
+    confidenceThreshold: int = Field(..., ge=0, le=100)
+    collectEmailBeforeChat: bool
+    showSources: bool
+    stayOnTopic: bool
+    tone: str
+    maxResponseLength: Literal["short", "medium", "long"]
+
+class FEChatbotAppearance(BaseModel):
+    accentColor: str
+    bubblePosition: Literal["bottom-right", "bottom-left"]
+    showPoweredBy: bool
+    widgetTheme: Literal["light", "dark", "auto"]
+    fontSize: Literal["small", "medium", "large"]
+
+class FEChatbotDeploy(BaseModel):
+    status: Literal["live", "draft"]
+    deployedDomain: str
+    allowedDomains: str
+    botSlug: str
+    apiKey: str
+
+class FEChatbotConfig(BaseModel):
+    identity: FEChatbotIdentity
+    behavior: FEChatbotBehavior
+    appearance: FEChatbotAppearance
+    deploy: FEChatbotDeploy
+
+class FESaveChatbotConfigResponse(BaseModel):
+    success: bool
+    config: FEChatbotConfig
+
+class FERegenerateApiKeyResponse(BaseModel):
+    apiKey: str
+
+# ── Conversations ─────────────────────────────────────────────────────────────
+
+class FEConversationListItem(BaseModel):
+    id: str
+    name: str
+    initials: str
+    preview: str
+    timeAgo: str
+    createdAt: str
+    status: Literal["Open", "Handed off", "Resolved"]
+    sentiment: Literal["Positive", "Neutral", "Negative"]
+    channel: Literal["Widget", "API"]
+
+class FEConversationMessage(BaseModel):
+    id: str
+    role: Literal["user", "agent", "bot"]
+    text: str
+    time: str
+
+class FEConversationDetail(FEConversationListItem):
+    messages: List[FEConversationMessage]
+
+class FESendReplyRequest(BaseModel):
+    text: str = Field(..., min_length=1)
+
+class FESendReplyResponse(BaseModel):
+    message: FEConversationMessage
+
+# ── Knowledge base ────────────────────────────────────────────────────────────
+
+class FEKnowledgeDocument(BaseModel):
+    id: str
+    name: str
+    status: Literal["Indexed", "Processing", "Failed"]
+    chunks: Optional[int] = None
+    sizeLabel: str
+    addedLabel: str
+
+class FEKnowledgeUrl(BaseModel):
+    id: str
+    url: str
+    status: Literal["Indexed", "Processing", "Failed"]
+    chunks: Optional[int] = None
+    addedLabel: str
+
+class FEKnowledgeStats(BaseModel):
+    documentsUsed: int
+    documentsLimit: int
+    urlsUsed: int
+    urlsLimit: int
+    totalChunks: int
+    chunksLimit: int
+
+class FEAddUrlRequest(BaseModel):
+    url: str
+
+class FEAddUrlResponse(BaseModel):
+    url: FEKnowledgeUrl
+
+# ── Settings ──────────────────────────────────────────────────────────────────
+
+class FEWorkspaceSettings(BaseModel):
+    name: str
+    urlSlug: str
+    industry: str
+
+class FESaveWorkspaceSettingsResponse(BaseModel):
+    success: bool
+    settings: FEWorkspaceSettings
+
+class FENotificationSettings(BaseModel):
+    unresolvedConversations: bool
+    weeklySummary: bool
+    knowledgeGapsDetected: bool
+    planUsageWarnings: bool
+    productUpdates: bool
+
+class FENotificationSettingsPatch(BaseModel):
+    unresolvedConversations: Optional[bool] = None
+    weeklySummary: Optional[bool] = None
+    knowledgeGapsDetected: Optional[bool] = None
+    planUsageWarnings: Optional[bool] = None
+    productUpdates: Optional[bool] = None
+
+class FEPaymentMethod(BaseModel):
+    brand: str
+    last4: str
+    expiry: str
+
+class FEBillingInfo(BaseModel):
+    planId: Literal["free", "pro", "premium"]
+    status: Literal["Active", "Canceled"]
+    priceLabel: str
+    renewsOn: str
+    paymentMethod: FEPaymentMethod
+
+class FEChangePlanRequest(BaseModel):
+    planId: Literal["free", "pro", "premium"]
+
+class FEUpdatePaymentMethodRequest(BaseModel):
+    last4: str = Field(..., min_length=4, max_length=4)
+    expiry: str = Field(..., min_length=4, max_length=7)
+
+class FEApiKey(BaseModel):
+    id: str
+    label: str
+    maskedKey: str
+    createdLabel: str
+
+class FECreateApiKeyRequest(BaseModel):
+    label: str = Field(..., min_length=1, max_length=100)
+
+class FECreateApiKeyResponse(BaseModel):
+    key: FEApiKey
+    rawKey: str
+
+# ── Profile ───────────────────────────────────────────────────────────────────
+
+class FEUserProfile(BaseModel):
+    name: str
+    email: EmailStr
+    companyName: str
+    avatarUrl: Optional[str] = None
+    role: str
+
+class FESaveProfileRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    email: EmailStr
+    companyName: str = Field(..., min_length=1, max_length=255)
+    avatarUrl: Optional[str] = None
+
+class FESaveProfileResponse(BaseModel):
+    success: bool
+    profile: FEUserProfile

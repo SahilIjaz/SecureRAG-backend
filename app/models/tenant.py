@@ -30,6 +30,10 @@ class Tenant(Base):
     slug: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
     business_category: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     employee_count_range: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    has_documents: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    onboarding_completed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
