@@ -10,6 +10,12 @@ ALTER TABLE tenants   ADD COLUMN IF NOT EXISTS has_documents BOOLEAN;
 ALTER TABLE tenants   ADD COLUMN IF NOT EXISTS onboarding_completed_at TIMESTAMPTZ;
 ALTER TABLE users     ADD COLUMN IF NOT EXISTS avatar_url TEXT;
 
+
+
+
+
+
+
 -- The dashboard sends free-form team sizes ("Just me", "2–10", ...) and business
 -- categories ("SaaS", ...) — drop the old fixed-set constraints.
 ALTER TABLE tenants DROP CONSTRAINT IF EXISTS tenants_employee_count_range_check;
