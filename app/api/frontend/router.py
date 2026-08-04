@@ -15,6 +15,7 @@ from app.api.frontend import (
     dashboard,
     knowledge,
     onboarding,
+    public_bot,
     settings,
     user,
 )
@@ -29,3 +30,4 @@ router.include_router(chatbot.router)
 router.include_router(conversations.router)
 router.include_router(knowledge.router)
 router.include_router(settings.router)
+router.include_router(public_bot.router)
