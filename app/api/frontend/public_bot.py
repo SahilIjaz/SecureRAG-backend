@@ -31,6 +31,7 @@ from app.models.conversation import Conversation, ConversationMessage
 from app.models.document import Document
 from app.models.tenant import Tenant
 from app.schemas.frontend import FEChatbotAppearance, FEChatbotIdentity
+from app.services.classification_service import schedule_classification
 
 logger = logging.getLogger(__name__)
 
@@ -208,6 +209,11 @@ async def public_chat(
 
     db.add(ConversationMessage(conversation_id=conversation.id, role="bot", text=reply))
     await db.flush()
+    await db.commit()
+
+    # Classify in the background so the dashboard's topic/sentiment/resolution
+    # cards get real data without delaying the visitor's reply.
+    schedule_classification(conversation.id)
 
     return FEPublicChatResponse(
         reply=reply, conversationId=str(conversation.id), handoff=handoff

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, List, Optional
 
 from sqlalchemy import DateTime, ForeignKey, String, Text, func
@@ -87,8 +87,12 @@ class ConversationMessage(Base):
     )
     role: Mapped[str] = mapped_column(String(10), nullable=False, default="user")
     text: Mapped[str] = mapped_column(Text, nullable=False)
+    # Python-side default (not just server_default): Postgres now() returns the
+    # TRANSACTION start time, so a user message and its bot reply written in one
+    # transaction would share a timestamp and make response time compute to 0.
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
         server_default=func.now(),
         nullable=False,
         index=True,
