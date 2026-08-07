@@ -14,10 +14,9 @@ from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from slowapi import Limiter
-from slowapi.util import get_remote_address
 
 from app.api.frontend import helpers
+from app.core.rate_limit import limiter
 from app.core.security import hash_password, verify_password
 from app.database import get_db
 from app.models.user import User
@@ -34,7 +33,6 @@ from app.services.auth_service import get_current_user
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/user", tags=["Frontend — User"])
-limiter = Limiter(key_func=get_remote_address)
 
 MAX_AVATAR_MB = 2
 ALLOWED_AVATAR_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif"}

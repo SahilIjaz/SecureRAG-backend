@@ -4,8 +4,6 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from slowapi import Limiter
-from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
 from sqlalchemy import text
@@ -13,6 +11,7 @@ from sqlalchemy import text
 from app.api.frontend.router import router as frontend_router
 from app.api.v1.router import router as v1_router
 from app.config import settings
+from app.core.rate_limit import limiter
 
 logging.basicConfig(
     level=logging.INFO,
@@ -29,8 +28,21 @@ async def ensure_frontend_schema() -> None:
     import app.models  # noqa: F401 — register all models on Base.metadata
     from app.database import Base, async_engine
 
+    # Must run in its own transaction, committed before anything else below
+    # (including create_all) touches the `documentsource` enum — Postgres
+    # will not let a newly-added enum value be read or written until the
+    # ALTER TYPE that added it has actually committed. Keep this separate
+    # from `alter_statements`, which all run inside one shared transaction;
+    # bundling this in there too would make the enum value's availability
+    # depend on that whole batch committing first, which is exactly the
+    # fragile-by-accident ordering this split avoids.
+    async with async_engine.begin() as conn:
+        await conn.execute(text("ALTER TYPE documentsource ADD VALUE IF NOT EXISTS 'faq'"))
+
     alter_statements = [
         "ALTER TABLE documents ADD COLUMN IF NOT EXISTS chunk_count INTEGER",
+        "ALTER TABLE documents ADD COLUMN IF NOT EXISTS question TEXT",
+        "ALTER TABLE documents ADD COLUMN IF NOT EXISTS answer TEXT",
         "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS has_documents BOOLEAN",
         "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS onboarding_completed_at TIMESTAMPTZ",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT",
@@ -51,6 +63,13 @@ async def lifespan(app: FastAPI):
         logger.info("Frontend-compat schema is up to date")
     except Exception as e:
         logger.error("Failed to apply frontend-compat schema: %s", e)
+
+    try:
+        from app.services.indexing_service import recover_stuck_documents
+        await recover_stuck_documents()
+    except Exception as e:
+        logger.error("Startup indexing-recovery sweep failed: %s", e)
+
     logger.info(
         "%s API is running (debug=%s)",
         settings.APP_NAME,
@@ -72,7 +91,6 @@ app = FastAPI(
     openapi_url="/openapi.json",
 )
 
-limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 
 @app.exception_handler(RateLimitExceeded)

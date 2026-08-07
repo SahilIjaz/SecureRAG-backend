@@ -16,10 +16,9 @@ from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from slowapi import Limiter
-from slowapi.util import get_remote_address
 
 from app.api.frontend import helpers
+from app.core.rate_limit import limiter
 from app.database import get_db
 from app.models.chatbot_config import ChatbotConfig
 from app.models.user import User
@@ -33,7 +32,6 @@ from app.services.auth_service import get_current_user
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/chatbot", tags=["Frontend — Chatbot"])
-limiter = Limiter(key_func=get_remote_address)
 
 def _default_config(workspace_name: str, slug: str) -> dict:
     return {

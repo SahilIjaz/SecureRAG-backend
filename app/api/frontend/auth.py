@@ -22,10 +22,9 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from slowapi import Limiter
-from slowapi.util import get_remote_address
 
 from app.api.frontend import helpers
+from app.core.rate_limit import limiter
 from app.core.security import create_access_token, hash_password, verify_otp, verify_password
 from app.database import get_db
 from app.models.email_verification import EmailVerification, OTPPurpose
@@ -45,7 +44,6 @@ from app.schemas.frontend import (
 from app.services import auth_service
 
 router = APIRouter(prefix="/auth", tags=["Frontend — Auth"])
-limiter = Limiter(key_func=get_remote_address)
 
 async def _fe_user(user: User, db: AsyncSession) -> FEUser:
     tenant = await helpers.get_tenant(user, db)
@@ -92,7 +90,7 @@ async def login(
     if not user.password_hash or not verify_password(body.password, user.password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password.")
 
-    token = create_access_token({"sub": str(user.id)})
+    token = create_access_token({"sub": str(user.id), "tenant_id": str(user.tenant_id)})
     return FELoginResponse(success=True, token=token, user=await _fe_user(user, db))
 
 async def _latest_valid_otp(
@@ -142,7 +140,7 @@ async def verify_otp_endpoint(
         user.is_email_verified = True
         await db.flush()
 
-        token = create_access_token({"sub": str(user.id)})
+        token = create_access_token({"sub": str(user.id), "tenant_id": str(user.tenant_id)})
         return FEOtpVerifyResponse(success=True, token=token, user=await _fe_user(user, db))
 
     # Verified account — this is the forgot-password flow.
