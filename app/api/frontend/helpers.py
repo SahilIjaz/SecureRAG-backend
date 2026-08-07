@@ -165,11 +165,17 @@ async def get_active_documents(tenant_id: uuid.UUID, db: AsyncSession) -> list[D
     )
     return list(result.scalars().all())
 
-def split_docs_and_urls(docs: list[Document]) -> tuple[list[Document], list[Document]]:
-    """Scraped documents show up in the Knowledge page's URLs tab; everything else in Documents."""
+def split_docs_and_urls(
+    docs: list[Document],
+) -> tuple[list[Document], list[Document], list[Document]]:
+    """
+    Scraped documents show up in the Knowledge page's URLs tab, FAQ entries
+    in the FAQs tab, everything else (uploaded/sample) in Documents.
+    """
     url_docs = [d for d in docs if d.source == DocumentSource.scraped]
-    file_docs = [d for d in docs if d.source != DocumentSource.scraped]
-    return file_docs, url_docs
+    faq_docs = [d for d in docs if d.source == DocumentSource.faq]
+    file_docs = [d for d in docs if d.source not in (DocumentSource.scraped, DocumentSource.faq)]
+    return file_docs, url_docs, faq_docs
 
 def fe_plan_for_subscription(subscription: Optional[Subscription]) -> str:
     if subscription is None:

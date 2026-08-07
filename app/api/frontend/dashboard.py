@@ -254,7 +254,7 @@ async def get_usage(
     quota = await helpers.get_quota(current_user.tenant_id, db)
     usage = await helpers.get_current_usage(current_user.tenant_id, db)
     docs = await helpers.get_active_documents(current_user.tenant_id, db)
-    file_docs, url_docs = helpers.split_docs_and_urls(docs)
+    file_docs, url_docs, faq_docs = helpers.split_docs_and_urls(docs)
 
     fe_plan = helpers.fe_plan_for_subscription(subscription)
     display = helpers.PLAN_DISPLAY_LIMITS[fe_plan]
@@ -270,7 +270,9 @@ async def get_usage(
         plan=helpers.PLAN_DISPLAY_NAMES[fe_plan],
         messagesUsed=usage.questions_used if usage else 0,
         messagesTotal=messages_total,
-        docsUsed=len(file_docs),
+        # FAQ entries share the same document quota as files/URLs, so they
+        # count toward the displayed usage too.
+        docsUsed=len(file_docs) + len(faq_docs),
         docsTotal=docs_total,
         urlsUsed=len(url_docs),
         urlsTotal=display["urls"],
