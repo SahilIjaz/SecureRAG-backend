@@ -18,6 +18,7 @@ requests==2.32.3
 crawl4ai==0.4.243
 pypdf==4.3.1
 PyPDF2==3.0.1
+python-docx==1.1.2
 reportlab==5.0.0
 slowapi==0.1.9
 pinecone-client==5.0.1

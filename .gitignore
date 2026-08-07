@@ -56,3 +56,7 @@ logs/
 
 # Alembic (keep migrations but ignore pycache)
 migrations/__pycache__/
+
+# Markdown docs (local-only, not for the repo)
+*.md
+*.txt
