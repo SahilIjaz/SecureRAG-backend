@@ -10,15 +10,17 @@ Web scraping: URLs are scraped using Crawl4AI and converted to PDF before storag
 
 import logging
 import uuid
-from typing import List
+from typing import List, Optional
 
 from fastapi import HTTPException, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.core import vector_store
 from app.core.scraper import scrape_website_to_pdf
-from app.core.storage import upload_file_to_cloudinary
+from app.core.storage import delete_file_from_cloudinary, upload_file_to_cloudinary
+from app.core.validation import safe_filename, sniff_mime_or_raise
 from app.models.document import Document, DocumentSource, DocumentStatus
 from app.models.tenant import Tenant
 from app.models.tenant_quota import TenantQuota
@@ -28,6 +30,19 @@ from app.models.user import User
 logger = logging.getLogger(__name__)
 
 ALLOWED_MIME_TYPES = [m.strip() for m in settings.ALLOWED_MIME_TYPES.split(",")]
+
+async def lock_quota_row(tenant_id: uuid.UUID, db: AsyncSession) -> Optional[TenantQuota]:
+    """
+    SELECT ... FOR UPDATE on the tenant's quota row. Must be the first DB
+    operation in any function that reads a document/URL count and then
+    decides whether a new batch fits under quota — otherwise two concurrent
+    requests can both read the same pre-write count, both pass the check,
+    and both commit, exceeding the limit (TOCTOU).
+    """
+    result = await db.execute(
+        select(TenantQuota).where(TenantQuota.tenant_id == tenant_id).with_for_update()
+    )
+    return result.scalar_one_or_none()
 
 class DocumentWithCategory:
     """Wraps a Document and adds business_category from its owner's tenant."""
@@ -81,10 +96,7 @@ async def upload_documents(
             detail="No files provided.",
         )
 
-    result = await db.execute(
-        select(TenantQuota).where(TenantQuota.tenant_id == user.tenant_id)
-    )
-    quota = result.scalar_one_or_none()
+    quota = await lock_quota_row(user.tenant_id, db)
 
     result = await db.execute(
         select(UsageCount).where(UsageCount.tenant_id == user.tenant_id)
@@ -101,6 +113,8 @@ async def upload_documents(
     existing_docs = result.scalars().all()
     existing_count = len(existing_docs)
 
+    max_mb = quota.max_file_size_mb if quota else settings.MAX_UPLOAD_SIZE_MB
+
     file_data = []
     total_new_storage = 0.0
 
@@ -108,70 +122,96 @@ async def upload_documents(
         if file.content_type not in ALLOWED_MIME_TYPES:
             raise HTTPException(
                 status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-                detail=f"File type '{file.content_type}' is not allowed. Allowed: PDF, DOCX, DOC, TXT.",
+                detail=f"File type '{file.content_type}' is not allowed. Allowed: PDF, DOCX, TXT, MD.",
             )
 
         content = await file.read()
-        file_size_mb = len(content) / (1024 * 1024)
+        if len(content) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"'{file.filename}' is empty.",
+            )
+        sniff_mime_or_raise(content, file.content_type)
 
-        result_quota = await db.execute(
-            select(TenantQuota).where(TenantQuota.tenant_id == user.tenant_id)
-        )
-        _quota = result_quota.scalar_one_or_none()
-        max_mb = _quota.max_file_size_mb if _quota else settings.MAX_UPLOAD_SIZE_MB
+        filename = safe_filename(file.filename or "document")
+        file_size_mb = len(content) / (1024 * 1024)
 
         # -1 means unlimited (see TenantQuota docstring)
         if max_mb != -1 and file_size_mb > max_mb:
             raise HTTPException(
                 status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                detail=f"'{file.filename}' exceeds the {max_mb}MB per-file limit.",
+                detail=f"'{filename}' exceeds the {max_mb}MB per-file limit.",
             )
 
         total_new_storage += file_size_mb
-        file_data.append((content, file_size_mb, file.filename or "document", file.content_type))
+        file_data.append((content, file_size_mb, filename, file.content_type))
 
-    if quota:
-        if quota.max_documents != -1 and (existing_count + len(files)) > quota.max_documents:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Document quota exceeded. Your plan allows {quota.max_documents} documents.",
-            )
+    if quota and quota.max_documents != -1 and (existing_count + len(files)) > quota.max_documents:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Document quota exceeded. Your plan allows {quota.max_documents} documents.",
+        )
 
     saved_documents: List[Document] = []
+    failures: List[str] = []
 
     for content, file_size_mb, filename, content_type in file_data:
-        public_id, secure_url = await upload_file_to_cloudinary(
-            file_content=content,
-            tenant_id=user.tenant_id,
-            original_filename=filename,
-            content_type=content_type,
-        )
+        public_id = None
+        try:
+            public_id, secure_url = await upload_file_to_cloudinary(
+                file_content=content,
+                tenant_id=user.tenant_id,
+                original_filename=filename,
+                content_type=content_type,
+            )
 
-        doc = Document(
-            tenant_id=user.tenant_id,
-            original_filename=filename,
-            file_path=public_id,
-            file_url=secure_url,
-            file_size_mb=round(file_size_mb, 4),
-            mime_type=content_type,
-            source=DocumentSource.uploaded,
-            status=DocumentStatus.pending,
-        )
-        db.add(doc)
-        saved_documents.append(doc)
+            doc = Document(
+                tenant_id=user.tenant_id,
+                original_filename=filename,
+                file_path=public_id,
+                file_url=secure_url,
+                file_size_mb=round(file_size_mb, 4),
+                mime_type=content_type,
+                source=DocumentSource.uploaded,
+                status=DocumentStatus.pending,
+            )
+            db.add(doc)
+            saved_documents.append(doc)
+        except Exception as e:
+            # Don't let one bad file abort the whole batch — but if a blob
+            # already landed in Cloudinary before the failure, purge it so
+            # nothing orphaned survives (no Document row will ever reference it).
+            logger.error("Upload failed for '%s': %s", filename, e)
+            if public_id:
+                try:
+                    await delete_file_from_cloudinary(public_id)
+                except Exception:
+                    logger.exception("Failed to clean up orphaned blob %s", public_id)
+            failures.append(filename)
 
     await db.flush()
 
-    if usage:
+    if usage and saved_documents:
+        actual_storage = sum(d.file_size_mb for d in saved_documents)
         usage.documents_count = (usage.documents_count or 0) + len(saved_documents)
-        usage.storage_used_mb = round((usage.storage_used_mb or 0.0) + total_new_storage, 4)
+        usage.storage_used_mb = round((usage.storage_used_mb or 0.0) + actual_storage, 4)
 
     await db.commit()
 
     for doc in saved_documents:
         await db.refresh(doc)
 
-    logger.info("Uploaded %d file(s) to Cloudinary for tenant %s", len(saved_documents), user.tenant_id)
+    if failures and not saved_documents:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"All uploads failed: {', '.join(failures)}",
+        )
+
+    logger.info(
+        "Uploaded %d/%d file(s) to Cloudinary for tenant %s%s",
+        len(saved_documents), len(files), user.tenant_id,
+        f" ({len(failures)} failed)" if failures else "",
+    )
     return saved_documents
 
 async def select_sample_document(
@@ -230,6 +270,21 @@ async def select_sample_document(
             detail="You have already added this document to your workspace.",
         )
 
+    quota = await lock_quota_row(user.tenant_id, db)
+    if quota and quota.max_documents != -1:
+        result = await db.execute(
+            select(Document).where(
+                Document.tenant_id == user.tenant_id,
+                Document.is_active == True,
+            )
+        )
+        existing_count = len(result.scalars().all())
+        if existing_count + 1 > quota.max_documents:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Document quota exceeded. Your plan allows {quota.max_documents} documents.",
+            )
+
     doc = Document(
         tenant_id=user.tenant_id,
         original_filename=source_doc.original_filename,
@@ -283,6 +338,21 @@ async def select_platform_sample_documents(
             detail="No sample documents found.",
         )
 
+    quota = await lock_quota_row(user.tenant_id, db)
+    if quota and quota.max_documents != -1:
+        result = await db.execute(
+            select(Document).where(
+                Document.tenant_id == user.tenant_id,
+                Document.is_active == True,
+            )
+        )
+        existing_count = len(result.scalars().all())
+        if existing_count + len(sample_docs) > quota.max_documents:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Document quota exceeded. Your plan allows {quota.max_documents} documents.",
+            )
+
     saved_documents = []
     for sample_doc in sample_docs:
         doc = Document(
@@ -299,7 +369,10 @@ async def select_platform_sample_documents(
         db.add(doc)
         saved_documents.append(doc)
 
+    await db.flush()
     await db.commit()
+    for doc in saved_documents:
+        await db.refresh(doc)
     return saved_documents
 
 async def scrape_and_add_documents(
@@ -336,10 +409,7 @@ async def scrape_and_add_documents(
                 detail=f"Invalid URL: {url}. Must start with http:// or https://",
             )
 
-    result = await db.execute(
-        select(TenantQuota).where(TenantQuota.tenant_id == user.tenant_id)
-    )
-    quota = result.scalar_one_or_none()
+    quota = await lock_quota_row(user.tenant_id, db)
 
     result = await db.execute(
         select(UsageCount).where(UsageCount.tenant_id == user.tenant_id)
@@ -363,9 +433,23 @@ async def scrape_and_add_documents(
                 detail=f"Document quota exceeded. Your plan allows {quota.max_documents} documents.",
             )
 
+    max_mb = quota.max_file_size_mb if quota else settings.MAX_UPLOAD_SIZE_MB
+
     saved_documents: List[Document] = []
 
     for url in urls:
+        # Tolerant like onboarding._scrape_urls_tolerant: one bad URL
+        # shouldn't abort the rest of the batch — record it as `failed`
+        # instead, so the dashboard still shows it and the good ones succeed.
+        doc = Document(
+            tenant_id=user.tenant_id,
+            original_filename=url,
+            file_size_mb=0.0,
+            mime_type="application/pdf",
+            source=DocumentSource.scraped,
+            source_url=url,
+            status=DocumentStatus.pending,
+        )
         try:
             pdf_content, page_title = await scrape_website_to_pdf(
                 url, timeout=settings.CRAWL4AI_TIMEOUT
@@ -373,20 +457,11 @@ async def scrape_and_add_documents(
 
             file_size_mb = len(pdf_content) / (1024 * 1024)
 
-            result_quota = await db.execute(
-                select(TenantQuota).where(TenantQuota.tenant_id == user.tenant_id)
-            )
-            _quota = result_quota.scalar_one_or_none()
-            max_mb = _quota.max_file_size_mb if _quota else settings.MAX_UPLOAD_SIZE_MB
-
             # -1 means unlimited (see TenantQuota docstring)
             if max_mb != -1 and file_size_mb > max_mb:
-                logger.warning(f"Scraped content from {url} exceeds {max_mb}MB limit")
-                raise HTTPException(
-                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                    detail=f"Content from '{url}' exceeds the {max_mb}MB per-file limit after scraping.",
-                )
+                raise ValueError(f"content exceeds the {max_mb}MB per-file limit after scraping")
 
+            page_title = safe_filename(page_title)
             public_id, secure_url = await upload_file_to_cloudinary(
                 file_content=pdf_content,
                 tenant_id=user.tenant_id,
@@ -394,30 +469,96 @@ async def scrape_and_add_documents(
                 content_type="application/pdf",
             )
 
-            doc = Document(
-                tenant_id=user.tenant_id,
-                original_filename=page_title,
-                file_path=public_id,
-                file_url=secure_url,
-                file_size_mb=round(file_size_mb, 4),
-                mime_type="application/pdf",
-                source=DocumentSource.scraped,
-                source_url=url,
-                status=DocumentStatus.pending,
-            )
-            db.add(doc)
-            saved_documents.append(doc)
+            doc.original_filename = page_title
+            doc.file_path = public_id
+            doc.file_url = secure_url
+            doc.file_size_mb = round(file_size_mb, 4)
 
             logger.info(f"Scraped and added document from {url} for tenant {user.tenant_id}")
-
-        except HTTPException:
-            raise
         except Exception as e:
             logger.error(f"Failed to scrape {url}: {str(e)}")
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Failed to scrape {url}: {str(e)}",
-            )
+            doc.status = DocumentStatus.failed
+
+        db.add(doc)
+        saved_documents.append(doc)
+
+    await db.flush()
+
+    ready_documents = [d for d in saved_documents if d.status != DocumentStatus.failed]
+    if usage and ready_documents:
+        total_storage = sum(d.file_size_mb for d in ready_documents)
+        usage.documents_count = (usage.documents_count or 0) + len(ready_documents)
+        usage.storage_used_mb = round((usage.storage_used_mb or 0.0) + total_storage, 4)
+
+    await db.commit()
+
+    for doc in saved_documents:
+        await db.refresh(doc)
+
+    logger.info(
+        "Scraped %d/%d website(s) for tenant %s",
+        len(ready_documents), len(urls), user.tenant_id,
+    )
+    return saved_documents
+
+async def add_faq_entries(
+    user: User, entries: List[tuple[str, str]], db: AsyncSession
+) -> List[Document]:
+    """
+    Adds one or more FAQ (question, answer) pairs as Document rows with
+    source=faq — no file upload involved. Counts toward the same shared
+    max_documents quota as PDFs/URLs (one document quota, not a separate
+    FAQ quota). `entries` is expected to already be validated/sanitized at
+    the API layer (FEAddFaqRequest handles empty/whitespace/length checks).
+    """
+    if not entries:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No FAQ entries provided.",
+        )
+
+    quota = await lock_quota_row(user.tenant_id, db)
+
+    result = await db.execute(
+        select(UsageCount).where(UsageCount.tenant_id == user.tenant_id)
+        .order_by(UsageCount.period_month.desc())
+    )
+    usage = result.scalar_one_or_none()
+
+    result = await db.execute(
+        select(Document).where(
+            Document.tenant_id == user.tenant_id,
+            Document.is_active == True,
+        )
+    )
+    existing_count = len(result.scalars().all())
+
+    if quota and quota.max_documents != -1 and (existing_count + len(entries)) > quota.max_documents:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Document quota exceeded. Your plan allows {quota.max_documents} documents.",
+        )
+
+    saved_documents: List[Document] = []
+    for question, answer in entries:
+        # Negligible size (a few hundred bytes to a few KB), but still flows
+        # through the same UsageCount accounting path as everything else
+        # rather than being special-cased out of it.
+        size_mb = round(len((question + answer).encode("utf-8")) / (1024 * 1024), 6)
+        doc = Document(
+            tenant_id=user.tenant_id,
+            original_filename=safe_filename(question, max_len=500),
+            file_path=None,
+            file_url=None,
+            file_size_mb=size_mb,
+            mime_type="text/plain",
+            source=DocumentSource.faq,
+            status=DocumentStatus.pending,
+            question=question,
+            answer=answer,
+        )
+        db.add(doc)
+        saved_documents.append(doc)
 
     await db.flush()
 
@@ -431,5 +572,59 @@ async def scrape_and_add_documents(
     for doc in saved_documents:
         await db.refresh(doc)
 
-    logger.info("Scraped %d website(s) for tenant %s", len(saved_documents), user.tenant_id)
+    logger.info(
+        "Added %d FAQ entr%s for tenant %s",
+        len(saved_documents), "y" if len(saved_documents) == 1 else "ies", user.tenant_id,
+    )
     return saved_documents
+
+async def update_faq_entry(
+    user: User, faq_id: uuid.UUID, question: str, answer: str, db: AsyncSession
+) -> Document:
+    """
+    Edits an existing FAQ entry and re-schedules it for indexing. Purges its
+    old Pinecone vectors first — otherwise, if the new content produces
+    fewer chunks than the old content did, the extra old chunk vectors are
+    never overwritten and stay searchable even though they no longer match
+    what the FAQ actually says.
+    """
+    result = await db.execute(
+        select(Document).where(
+            Document.id == faq_id,
+            Document.tenant_id == user.tenant_id,
+            Document.source == DocumentSource.faq,
+            Document.is_active == True,
+        )
+    )
+    doc = result.scalar_one_or_none()
+    if doc is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="FAQ entry not found.")
+
+    try:
+        await vector_store.delete_document_chunks(str(user.tenant_id), str(doc.id))
+    except Exception:
+        logger.exception("Failed to purge old vectors before re-indexing FAQ %s", doc.id)
+
+    old_size_mb = doc.file_size_mb or 0.0
+    new_size_mb = round(len((question + answer).encode("utf-8")) / (1024 * 1024), 6)
+
+    doc.question = question
+    doc.answer = answer
+    doc.original_filename = safe_filename(question, max_len=500)
+    doc.file_size_mb = new_size_mb
+    doc.status = DocumentStatus.pending
+    doc.chunk_count = None
+
+    result = await db.execute(
+        select(UsageCount).where(UsageCount.tenant_id == user.tenant_id)
+        .order_by(UsageCount.period_month.desc())
+    )
+    usage = result.scalar_one_or_none()
+    if usage is not None:
+        usage.storage_used_mb = round(
+            max(0.0, (usage.storage_used_mb or 0.0) - old_size_mb + new_size_mb), 4
+        )
+
+    await db.commit()
+    await db.refresh(doc)
+    return doc
