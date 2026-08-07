@@ -27,7 +27,7 @@ def ensure_index(index_name: str = None) -> None:
 
     name = index_name or settings.PINECONE_INDEX_NAME
     pc = _get_pinecone()
-    if not pc.has_index(name):
+    if name not in pc.list_indexes().names():
         logger.info("Creating Pinecone index %s (dim=%d)", name, EMBEDDING_DIMENSION)
         pc.create_index(
             name=name,
@@ -75,6 +75,14 @@ async def upsert_chunks(
             "text": chunk["text"][:8000],
             "token_count": chunk["token_count"],
         }
+        # Best-effort citation metadata (PDF page number / char offset within
+        # the extracted text) — only present when the source document had a
+        # page_map (see chunk_pdf_text). Pinecone metadata can't hold `None`,
+        # so omit the key entirely rather than sending a null.
+        if chunk.get("page") is not None:
+            metadata["page"] = chunk["page"]
+        if chunk.get("char_offset") is not None:
+            metadata["char_offset"] = chunk["char_offset"]
 
         vectors_to_upsert.append((vector_id, embedding, metadata))
 
@@ -120,6 +128,7 @@ async def search_chunks(
             "document_id": match["metadata"].get("document_id"),
             "chunk_id": match["metadata"].get("chunk_id"),
             "sequence": match["metadata"].get("sequence"),
+            "page": match["metadata"].get("page"),
         })
 
     return similar_chunks
