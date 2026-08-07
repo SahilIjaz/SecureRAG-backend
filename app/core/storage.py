@@ -12,7 +12,6 @@ The public_id is also returned so files can be deleted later.
 
 import asyncio
 import logging
-import os
 import uuid
 from typing import Tuple
 
@@ -21,6 +20,7 @@ import cloudinary.uploader
 from cryptography.fernet import Fernet
 
 from app.config import settings
+from app.core.validation import safe_extension
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +81,10 @@ async def upload_file_to_cloudinary(
     cipher = _get_cipher()
     encrypted_content = cipher.encrypt(file_content)
 
-    ext = os.path.splitext(original_filename)[1].lower()
+    # Only ever trust an allow-listed extension in the storage key — anything
+    # else (including path-like junk smuggled through a crafted filename)
+    # is dropped rather than concatenated in raw.
+    ext = safe_extension(original_filename)
     unique_name = f"{uuid.uuid4()}{ext}"
     public_id = f"securerag/uploads/{tenant_id}/{unique_name}"
 
