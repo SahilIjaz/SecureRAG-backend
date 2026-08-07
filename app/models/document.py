@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import Boolean, DateTime, Enum, Float, ForeignKey, Integer, String, func
+from sqlalchemy import Boolean, DateTime, Enum, Float, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -18,6 +18,7 @@ class DocumentSource(str, enum.Enum):
     uploaded = "uploaded"
     sample = "sample"
     scraped = "scraped"
+    faq = "faq"
 
 class DocumentStatus(str, enum.Enum):
     pending = "pending"
@@ -64,6 +65,10 @@ class Document(Base):
         nullable=True,
     )
     source_url: Mapped[Optional[str]] = mapped_column(String(2048), nullable=True)
+    # Only populated for source == faq — the manually-entered Q&A text
+    # itself, since a FAQ document has no file to download/extract from.
+    question: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    answer: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     chunk_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(

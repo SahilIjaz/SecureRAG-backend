@@ -8,7 +8,9 @@ renders). Keep the two files in sync — the frontend is the source of truth.
 
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
+
+from app.config import settings
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
@@ -269,6 +271,53 @@ class FEAddUrlRequest(BaseModel):
 
 class FEAddUrlResponse(BaseModel):
     url: FEKnowledgeUrl
+
+class FEFaqEntry(BaseModel):
+    id: str
+    question: str
+    answer: str
+    status: Literal["Indexed", "Processing", "Failed"]
+    chunks: Optional[int] = None
+    addedLabel: str
+
+def _non_blank(v: str, field_name: str) -> str:
+    # Pydantic's plain min_length counts raw characters, so "   " passes it —
+    # strip first, then check, so whitespace-only input is actually rejected.
+    v = v.strip()
+    if not v:
+        raise ValueError(f"{field_name} cannot be empty.")
+    return v
+
+class FEAddFaqRequest(BaseModel):
+    question: str = Field(..., max_length=settings.FAQ_QUESTION_MAX_LEN)
+    answer: str = Field(..., max_length=settings.FAQ_ANSWER_MAX_LEN)
+
+    @field_validator("question")
+    @classmethod
+    def _question_not_blank(cls, v: str) -> str:
+        return _non_blank(v, "question")
+
+    @field_validator("answer")
+    @classmethod
+    def _answer_not_blank(cls, v: str) -> str:
+        return _non_blank(v, "answer")
+
+class FEAddFaqResponse(BaseModel):
+    faq: FEFaqEntry
+
+class FEUpdateFaqRequest(BaseModel):
+    question: str = Field(..., max_length=settings.FAQ_QUESTION_MAX_LEN)
+    answer: str = Field(..., max_length=settings.FAQ_ANSWER_MAX_LEN)
+
+    @field_validator("question")
+    @classmethod
+    def _question_not_blank(cls, v: str) -> str:
+        return _non_blank(v, "question")
+
+    @field_validator("answer")
+    @classmethod
+    def _answer_not_blank(cls, v: str) -> str:
+        return _non_blank(v, "answer")
 
 # ── Settings ──────────────────────────────────────────────────────────────────
 
