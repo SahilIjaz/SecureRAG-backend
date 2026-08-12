@@ -8,6 +8,7 @@ in the same business category.
 Web scraping: URLs are scraped using Crawl4AI and converted to PDF before storage.
 """
 
+import hashlib
 import logging
 import uuid
 from typing import List, Optional
@@ -115,6 +116,13 @@ async def upload_documents(
 
     max_mb = quota.max_file_size_mb if quota else settings.MAX_UPLOAD_SIZE_MB
 
+    # Content-hash dedup: reject a byte-identical re-upload before it burns a
+    # Cloudinary + Pinecone cost creating a second full set of chunks/vectors
+    # for content that's already indexed. Same 409 precedent as the
+    # duplicate-file_url check in select_sample_document.
+    existing_hashes = {d.content_hash for d in existing_docs if d.content_hash}
+    seen_hashes_in_batch: dict[str, str] = {}
+
     file_data = []
     total_new_storage = 0.0
 
@@ -136,6 +144,19 @@ async def upload_documents(
         filename = safe_filename(file.filename or "document")
         file_size_mb = len(content) / (1024 * 1024)
 
+        content_hash = hashlib.sha256(content).hexdigest()
+        if content_hash in existing_hashes:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"'{filename}' is identical to a document already in your workspace.",
+            )
+        if content_hash in seen_hashes_in_batch:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"'{filename}' is identical to '{seen_hashes_in_batch[content_hash]}' in this upload.",
+            )
+        seen_hashes_in_batch[content_hash] = filename
+
         # -1 means unlimited (see TenantQuota docstring)
         if max_mb != -1 and file_size_mb > max_mb:
             raise HTTPException(
@@ -144,7 +165,7 @@ async def upload_documents(
             )
 
         total_new_storage += file_size_mb
-        file_data.append((content, file_size_mb, filename, file.content_type))
+        file_data.append((content, file_size_mb, filename, file.content_type, content_hash))
 
     if quota and quota.max_documents != -1 and (existing_count + len(files)) > quota.max_documents:
         raise HTTPException(
@@ -155,7 +176,7 @@ async def upload_documents(
     saved_documents: List[Document] = []
     failures: List[str] = []
 
-    for content, file_size_mb, filename, content_type in file_data:
+    for content, file_size_mb, filename, content_type, content_hash in file_data:
         public_id = None
         try:
             public_id, secure_url = await upload_file_to_cloudinary(
@@ -174,6 +195,7 @@ async def upload_documents(
                 mime_type=content_type,
                 source=DocumentSource.uploaded,
                 status=DocumentStatus.pending,
+                content_hash=content_hash,
             )
             db.add(doc)
             saved_documents.append(doc)
@@ -293,11 +315,19 @@ async def select_sample_document(
         file_size_mb=source_doc.file_size_mb,
         mime_type=source_doc.mime_type,
         source=DocumentSource.sample,
-        status=DocumentStatus.ready,
+        status=DocumentStatus.pending,
     )
     db.add(doc)
     await db.commit()
     await db.refresh(doc)
+
+    # Pinecone vectors are tenant-scoped (per-tenant namespace + tenant_id
+    # metadata) — copying the Document row alone doesn't give this tenant
+    # any searchable vectors, since the original vectors belong to
+    # source_doc's tenant. Actually index it for the copying tenant, even
+    # though it downloads/embeds the same shared file_url a second time.
+    from app.services.indexing_service import schedule_document_processing
+    schedule_document_processing([doc.id])
 
     logger.info(
         "Tenant %s selected community doc %s from tenant %s",
@@ -362,7 +392,7 @@ async def select_platform_sample_documents(
             file_size_mb=sample_doc.file_size_mb,
             mime_type="application/pdf",
             source=DocumentSource.sample,
-            status=DocumentStatus.ready,
+            status=DocumentStatus.pending,
             file_url=sample_doc.file_path,
             sample_document_id=sample_doc.id,
         )
@@ -373,6 +403,13 @@ async def select_platform_sample_documents(
     await db.commit()
     for doc in saved_documents:
         await db.refresh(doc)
+
+    # Same reasoning as select_sample_document: these Document rows point at
+    # a shared platform file, but need their own vectors indexed under this
+    # tenant's Pinecone namespace before the chatbot can ever retrieve them.
+    from app.services.indexing_service import schedule_document_processing
+    schedule_document_processing([doc.id for doc in saved_documents])
+
     return saved_documents
 
 async def scrape_and_add_documents(
