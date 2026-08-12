@@ -36,13 +36,25 @@ async def ensure_frontend_schema() -> None:
     # bundling this in there too would make the enum value's availability
     # depend on that whole batch committing first, which is exactly the
     # fragile-by-accident ordering this split avoids.
+    #
+    # Only applies to an *existing* database being upgraded — `ALTER TYPE`
+    # requires the type to already exist. On a genuinely fresh database
+    # (nothing created yet), skip it entirely: create_all() below creates
+    # `documentsource` from the Python enum, which already includes 'faq'
+    # as a member, so there's nothing to alter.
     async with async_engine.begin() as conn:
-        await conn.execute(text("ALTER TYPE documentsource ADD VALUE IF NOT EXISTS 'faq'"))
+        type_exists = await conn.scalar(
+            text("SELECT 1 FROM pg_type WHERE typname = 'documentsource'")
+        )
+        if type_exists:
+            await conn.execute(text("ALTER TYPE documentsource ADD VALUE IF NOT EXISTS 'faq'"))
 
     alter_statements = [
         "ALTER TABLE documents ADD COLUMN IF NOT EXISTS chunk_count INTEGER",
         "ALTER TABLE documents ADD COLUMN IF NOT EXISTS question TEXT",
         "ALTER TABLE documents ADD COLUMN IF NOT EXISTS answer TEXT",
+        "ALTER TABLE documents ADD COLUMN IF NOT EXISTS content_hash VARCHAR(64)",
+        "CREATE INDEX IF NOT EXISTS ix_documents_content_hash ON documents (content_hash)",
         "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS has_documents BOOLEAN",
         "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS onboarding_completed_at TIMESTAMPTZ",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT",
@@ -64,11 +76,10 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error("Failed to apply frontend-compat schema: %s", e)
 
-    try:
-        from app.services.indexing_service import recover_stuck_documents
-        await recover_stuck_documents()
-    except Exception as e:
-        logger.error("Startup indexing-recovery sweep failed: %s", e)
+    import asyncio
+
+    from app.services.indexing_service import stale_document_sweep_loop
+    asyncio.create_task(stale_document_sweep_loop())
 
     logger.info(
         "%s API is running (debug=%s)",
