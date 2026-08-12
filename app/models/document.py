@@ -70,6 +70,10 @@ class Document(Base):
     question: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     answer: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     chunk_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # SHA-256 hex digest of the raw file bytes — lets upload_documents() detect
+    # a byte-identical re-upload before it burns a Cloudinary + Pinecone cost.
+    # Only populated for source == uploaded (see document_service.upload_documents).
+    content_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
