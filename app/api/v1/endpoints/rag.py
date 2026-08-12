@@ -7,7 +7,7 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 
 from app.database import get_db
-from app.services.rag_service import process_document_for_rag, retrieve_context_for_query, answer_question
+from app.services.rag_service import retrieve_context_for_query, answer_question
 from app.services.auth_service import get_any_valid_user
 
 router = APIRouter(prefix="/rag", tags=["RAG"])
@@ -22,68 +22,6 @@ class QueryResponse(BaseModel):
     answer: str
     sources: list[str]
     model: str
-
-class DocumentProcessResponse(BaseModel):
-    """Response from document processing."""
-    document_id: str
-    chunk_count: int
-    total_tokens: int
-    status: str
-
-@router.post(
-    "/process-document/{document_id}",
-    response_model=DocumentProcessResponse,
-    status_code=status.HTTP_202_ACCEPTED,
-    summary="Process document for RAG",
-)
-@limiter.limit("5/minute")
-async def process_document_for_rag(
-    request: Request,
-    document_id: str,
-    user=Depends(get_any_valid_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """
-    Process a document for RAG indexing.
-
-    This endpoint:
-    1. Extracts text from the PDF
-    2. Chunks into ~500 token pieces with 50 token overlap
-    3. Generates embeddings for each chunk
-    4. Stores chunks in Pinecone for retrieval
-
-    Chunks are automatically indexed and available for Q&A queries.
-    """
-    try:
-        from app.models.document import Document
-        from sqlalchemy import select
-
-        result = await db.execute(
-            select(Document).where(
-                Document.id == document_id,
-                Document.tenant_id == user.tenant_id,
-            )
-        )
-        doc = result.scalar_one_or_none()
-
-        if not doc:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Document not found",
-            )
-
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail="Document processing integration with Cloudinary pending",
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Failed to process document: {str(e)}",
-        )
 
 @router.post(
     "/query",

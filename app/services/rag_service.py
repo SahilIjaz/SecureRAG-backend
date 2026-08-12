@@ -3,74 +3,12 @@
 import logging
 import uuid
 from typing import List
-from PyPDF2 import PdfReader
-import io
 
-from app.core.chunking import chunk_pdf_text
-from app.core.embeddings import embed_text, embed_chunks
-from app.core.vector_store import upsert_chunks, search_chunks
+from app.core.embeddings import embed_text
+from app.core.vector_store import search_chunks
 from app.config import settings
 
 logger = logging.getLogger(__name__)
-
-async def process_document_for_rag(
-    tenant_id: str,
-    document_id: str,
-    pdf_bytes: bytes,
-) -> dict:
-    """
-    Process a PDF document for RAG:
-    1. Extract text from PDF
-    2. Chunk into overlapping segments
-    3. Generate embeddings
-    4. Store in Pinecone
-
-    Args:
-        tenant_id: Tenant ID
-        document_id: Document ID
-        pdf_bytes: Raw PDF content
-
-    Returns:
-        Processing result with chunk count
-    """
-    try:
-        logger.info(f"Extracting text from PDF for document {document_id}")
-        pdf_text = _extract_text_from_pdf(pdf_bytes)
-
-        if not pdf_text.strip():
-            raise ValueError("No text extracted from PDF")
-
-        logger.info(f"Chunking document into {settings.RAG_CHUNK_SIZE}-token chunks")
-        chunks = chunk_pdf_text(
-            pdf_text,
-            chunk_size=settings.RAG_CHUNK_SIZE,
-            overlap_size=settings.RAG_CHUNK_OVERLAP,
-        )
-
-        if not chunks:
-            raise ValueError("No chunks generated from PDF")
-
-        logger.info(f"Generating embeddings for {len(chunks)} chunks")
-        chunk_texts = [chunk["text"] for chunk in chunks]
-        embeddings = await embed_chunks(chunk_texts)
-
-        logger.info(f"Storing {len(chunks)} chunks in Pinecone")
-        await upsert_chunks(tenant_id, document_id, chunks, embeddings)
-
-        logger.info(
-            f"Successfully processed document {document_id} with {len(chunks)} chunks"
-        )
-
-        return {
-            "document_id": document_id,
-            "chunk_count": len(chunks),
-            "total_tokens": sum(c["token_count"] for c in chunks),
-            "status": "success",
-        }
-
-    except Exception as e:
-        logger.error(f"Failed to process document for RAG: {str(e)}")
-        raise
 
 async def retrieve_context_for_query(
     tenant_id: str,
@@ -212,9 +150,13 @@ async def answer_question(
     Returns:
         {"answer", "sources", "model", "confidence", "handoff"}
     """
-    from anthropic import AsyncAnthropic
+    # --- Anthropic (previous provider) — kept, commented, as a rollback path.
+    # from anthropic import AsyncAnthropic
+    # ANSWER_MODEL = "claude-sonnet-5"
+    from google import genai
+    from google.genai import types as genai_types
 
-    ANSWER_MODEL = "claude-opus-4-8"
+    ANSWER_MODEL = "gemini-2.5-flash"
 
     try:
         query_embedding = await embed_text(query)
@@ -253,20 +195,29 @@ QUESTION: {query}
 
 Please answer the question based on the context provided. If the answer is not in the context, say so."""
 
-        logger.info("Sending query to Claude for answer generation")
-        client = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
-        response = await client.messages.create(
+        logger.info("Sending query to Gemini for answer generation")
+        # --- Anthropic (previous provider) — kept, commented, as a rollback path.
+        # client = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+        # response = await client.messages.create(
+        #     model=ANSWER_MODEL,
+        #     max_tokens=response_max_tokens + (50 if handoff_enabled else 0),
+        #     thinking={"type": "adaptive"},
+        #     messages=[
+        #         {"role": "user", "content": prompt}
+        #     ],
+        # )
+        # answer = next(
+        #     (block.text for block in response.content if block.type == "text"), ""
+        # )
+        client = genai.Client(api_key=settings.GEMINI_API_KEY)
+        response = await client.aio.models.generate_content(
             model=ANSWER_MODEL,
-            max_tokens=response_max_tokens + (50 if handoff_enabled else 0),
-            thinking={"type": "adaptive"},
-            messages=[
-                {"role": "user", "content": prompt}
-            ],
+            contents=prompt,
+            config=genai_types.GenerateContentConfig(
+                max_output_tokens=response_max_tokens + (50 if handoff_enabled else 0),
+            ),
         )
-
-        answer = next(
-            (block.text for block in response.content if block.type == "text"), ""
-        )
+        answer = response.text or ""
 
         confidence = None
         if handoff_enabled:
@@ -284,30 +235,4 @@ Please answer the question based on the context provided. If the answer is not i
 
     except Exception as e:
         logger.error(f"Failed to generate answer: {str(e)}")
-        raise
-
-def _extract_text_from_pdf(pdf_bytes: bytes) -> str:
-    """
-    Extract text from PDF bytes.
-
-    Args:
-        pdf_bytes: Raw PDF content
-
-    Returns:
-        Extracted text
-    """
-    try:
-        pdf_file = io.BytesIO(pdf_bytes)
-        pdf_reader = PdfReader(pdf_file)
-
-        text_parts = []
-        for page_num, page in enumerate(pdf_reader.pages):
-            page_text = page.extract_text()
-            if page_text.strip():
-                text_parts.append(f"--- Page {page_num + 1} ---\n{page_text}")
-
-        return "\n\n".join(text_parts)
-
-    except Exception as e:
-        logger.error(f"Failed to extract text from PDF: {str(e)}")
         raise

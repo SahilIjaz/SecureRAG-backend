@@ -46,7 +46,11 @@ class Settings(BaseSettings):
     PINECONE_API_KEY: str = ""
     PINECONE_INDEX_NAME: str = "securerag-documents"
 
+    # Kept even though the active answer_question() call now uses Gemini —
+    # the Anthropic call is commented out in rag_service.py, not deleted, so
+    # this setting stays valid if it's ever restored.
     ANTHROPIC_API_KEY: str = ""
+    GEMINI_API_KEY: str = ""
 
     RAG_CHUNK_SIZE: int = 500
     RAG_CHUNK_OVERLAP: int = 50
