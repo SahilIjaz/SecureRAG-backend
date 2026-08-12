@@ -37,14 +37,30 @@ def schedule_document_processing(document_ids: list[uuid.UUID]) -> None:
     for doc_id in document_ids:
         asyncio.create_task(_process_document_safe(doc_id))
 
+async def stale_document_sweep_loop() -> None:
+    """
+    Recurring background sweep, started once from the app lifespan (as a
+    fire-and-forget task, not awaited inline). A single startup-only sweep
+    means a document stuck mid-index only recovers on the *next process
+    restart*, which could be arbitrarily far away — this loop instead
+    re-checks every INDEXING_STALE_MINUTES for the life of the process, so
+    recovery doesn't depend on a restart ever happening.
+    """
+    while True:
+        try:
+            await recover_stuck_documents()
+        except Exception:
+            logger.exception("Stale-document sweep iteration failed")
+        await asyncio.sleep(settings.INDEXING_STALE_MINUTES * 60)
+
 async def recover_stuck_documents() -> None:
     """
-    Startup self-heal, called once from the app lifespan. Indexing runs as
-    an in-process asyncio task with no durable queue behind it, so a process
-    restart/crash while a document is mid-index leaves it stuck in
-    `processing` forever — nothing else would ever pick it back up. Reset
-    anything stuck past INDEXING_STALE_MINUTES back to `pending` and
-    reschedule it.
+    Self-heal sweep (see stale_document_sweep_loop for the recurring
+    caller). Indexing runs as an in-process asyncio task with no durable
+    queue behind it, so a process restart/crash — or, absent this recurring
+    loop, simply time passing — while a document is mid-index leaves it
+    stuck in `processing` forever unless something resets it. Reset anything
+    stuck past INDEXING_STALE_MINUTES back to `pending` and reschedule it.
 
     This is a lightweight, appropriately-scoped substitute for a durable job
     queue (Celery/Redis, or a Postgres `SELECT ... FOR UPDATE SKIP LOCKED`
@@ -155,16 +171,28 @@ async def _process_document(document_id: uuid.UUID) -> None:
         raise ValueError("No chunks generated")
 
     if settings.PINECONE_API_KEY:
-        try:
-            from app.core.embeddings import embed_chunks
-            from app.core.vector_store import upsert_chunks
+        from app.core.embeddings import embed_chunks
+        from app.core.vector_store import delete_document_chunks, upsert_chunks
 
-            embeddings = await embed_chunks([c["text"] for c in chunks])
-            await upsert_chunks(tenant_id, str(document_id), chunks, embeddings)
-            logger.info("Upserted %d chunks to Pinecone for %s", len(chunks), document_id)
+        # Best-effort purge of any vectors from a previous index of this same
+        # document before writing the new set — otherwise a re-index that
+        # produces fewer chunks than last time leaves old higher-sequence
+        # vectors behind as permanently-orphaned stale search results.
+        try:
+            await delete_document_chunks(tenant_id, str(document_id))
         except Exception as e:
-            # Vector search is an enhancement — chunk counting still succeeds.
-            logger.warning("Pinecone upsert failed for %s: %s", document_id, e)
+            logger.warning("Pre-reindex vector purge failed for %s: %s", document_id, e)
+
+        # Deliberately NOT caught here: a failed embed/upsert must fail the
+        # whole document (propagates to _process_document_safe's except
+        # block, which marks status=failed) rather than being downgraded to
+        # a warning — otherwise the document is marked "ready" with a
+        # chunk_count but zero vectors ever reached Pinecone, and the
+        # chatbot silently returns "no relevant documents" forever with no
+        # visible error anywhere.
+        embeddings = await embed_chunks([c["text"] for c in chunks])
+        await upsert_chunks(tenant_id, str(document_id), chunks, embeddings)
+        logger.info("Upserted %d chunks to Pinecone for %s", len(chunks), document_id)
     else:
         logger.info("PINECONE_API_KEY not set — skipping vector upsert for %s", document_id)
 
