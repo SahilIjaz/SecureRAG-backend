@@ -47,6 +47,8 @@ def _default_config(workspace_name: str, slug: str) -> dict:
             "handoffToHuman": True,
             "confidenceThreshold": 60,
             "collectEmailBeforeChat": False,
+            "collectNameBeforeChat": False,
+            "collectPhoneBeforeChat": False,
             "showSources": True,
             "stayOnTopic": True,
             "tone": "balanced",
@@ -185,8 +187,7 @@ async def test_chat(
     """
     from app.services.rag_service import answer_question
 
-    quota = await helpers.get_quota(current_user.tenant_id, db)
-    usage = await helpers.get_current_usage(current_user.tenant_id, db)
+    quota, usage = await helpers.get_quota_and_usage(current_user.tenant_id, db)
     if (
         quota is not None
         and usage is not None
@@ -198,8 +199,14 @@ async def test_chat(
             detail="Monthly message quota reached. Upgrade your plan to continue.",
         )
 
-    record = await _get_or_create_config(current_user, db)
-    config = body.config.model_dump() if body.config else record.config
+    # The dashboard always sends its current draft — skip the DB round trip
+    # for the saved config entirely when it did (this is the hot path behind
+    # every Test Chatbot message).
+    if body.config:
+        config = body.config.model_dump()
+    else:
+        record = await _get_or_create_config(current_user, db)
+        config = record.config
     identity = config.get("identity", {})
     behavior = config.get("behavior", {})
     fallback = identity.get("fallbackMessage", "I'm not sure about that yet.")

@@ -1,5 +1,6 @@
 """RAG (Retrieval-Augmented Generation) service."""
 
+import asyncio
 import logging
 import uuid
 from typing import List
@@ -9,6 +10,16 @@ from app.core.vector_store import search_chunks
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+_genai_client = None
+
+def _get_genai_client():
+    """Lazy-cached Gemini client — was previously reconstructed on every chat request."""
+    global _genai_client
+    if _genai_client is None:
+        from google import genai
+        _genai_client = genai.Client(api_key=settings.GEMINI_API_KEY)
+    return _genai_client
 
 async def retrieve_context_for_query(
     tenant_id: str,
@@ -153,10 +164,13 @@ async def answer_question(
     # --- Anthropic (previous provider) — kept, commented, as a rollback path.
     # from anthropic import AsyncAnthropic
     # ANSWER_MODEL = "claude-sonnet-5"
-    from google import genai
+    from google.genai import errors as genai_errors
     from google.genai import types as genai_types
 
-    ANSWER_MODEL = "gemini-2.5-flash"
+    # "gemini-2.5-flash" was retired for new API keys (404 NOT_FOUND) — using
+    # the "-latest" alias instead of a dated model name so Google can move
+    # what it points to without this breaking again.
+    ANSWER_MODEL = "gemini-flash-latest"
 
     try:
         query_embedding = await embed_text(query)
@@ -209,14 +223,40 @@ Please answer the question based on the context provided. If the answer is not i
         # answer = next(
         #     (block.text for block in response.content if block.type == "text"), ""
         # )
-        client = genai.Client(api_key=settings.GEMINI_API_KEY)
-        response = await client.aio.models.generate_content(
-            model=ANSWER_MODEL,
-            contents=prompt,
-            config=genai_types.GenerateContentConfig(
-                max_output_tokens=response_max_tokens + (50 if handoff_enabled else 0),
-            ),
-        )
+        # "-latest" points at whatever model Google currently recommends,
+        # which is also the one everyone else's traffic defaults to — so
+        # it's the most likely to be under 503 pressure. A pinned, less
+        # popular model is a genuinely different capacity pool, not just a
+        # cosmetic fallback, so trying it beats retrying the same
+        # overloaded endpoint again.
+        FALLBACK_MODEL = "gemini-2.0-flash"
+
+        client = _get_genai_client()
+
+        async def _generate(model: str):
+            return await client.aio.models.generate_content(
+                model=model,
+                contents=prompt,
+                config=genai_types.GenerateContentConfig(
+                    max_output_tokens=response_max_tokens + (50 if handoff_enabled else 0),
+                ),
+            )
+
+        response = None
+        used_model = ANSWER_MODEL
+        last_error: Exception | None = None
+        for model, delay in ((ANSWER_MODEL, 0), (FALLBACK_MODEL, 0), (FALLBACK_MODEL, 1.2)):
+            if delay:
+                await asyncio.sleep(delay)
+            try:
+                response = await _generate(model)
+                used_model = model
+                break
+            except genai_errors.ServerError as e:
+                last_error = e
+                logger.warning("Gemini model %s returned a server error: %s", model, e)
+        if response is None:
+            raise last_error
         answer = response.text or ""
 
         confidence = None
@@ -228,7 +268,7 @@ Please answer the question based on the context provided. If the answer is not i
         return {
             "answer": answer,
             "sources": [c["text"] for c in chunks],
-            "model": ANSWER_MODEL,
+            "model": used_model,
             "confidence": confidence,
             "handoff": False,
         }
