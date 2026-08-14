@@ -18,10 +18,9 @@ import uuid
 from typing import List
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.frontend import helpers
-from app.api.frontend.onboarding import _scrape_urls_tolerant
 from app.core import vector_store
 from app.core.rate_limit import limiter
 from app.core.storage import delete_file_from_cloudinary
@@ -42,7 +41,7 @@ from app.schemas.frontend import (
 )
 from app.services import document_service
 from app.services.auth_service import get_current_user
-from app.services.indexing_service import schedule_document_processing
+from app.services.indexing_service import schedule_document_processing, schedule_url_scrape
 
 logger = logging.getLogger(__name__)
 
@@ -195,16 +194,49 @@ async def add_url(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> FEAddUrlResponse:
+    """
+    Creates the Document row immediately (status=pending) and returns —
+    the actual scrape (headless browser, up to CRAWL4AI_TIMEOUT seconds)
+    and chunk/embed both run in the background via schedule_url_scrape.
+    Previously the scrape ran synchronously here, so this endpoint could
+    take up to ~30-60s to respond; it now responds as fast as a DB insert.
+    """
     url = body.url.strip()
     if not url:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="url is required.")
+    if not url.startswith(("http://", "https://")):
+        url = f"https://{url}"
 
-    saved = await _scrape_urls_tolerant(current_user, [url], db)
-    if not saved:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Could not add URL.")
+    quota = await document_service.lock_quota_row(current_user.tenant_id, db)
+    if quota and quota.max_documents != -1:
+        result = await db.execute(
+            select(func.count()).select_from(Document).where(
+                Document.tenant_id == current_user.tenant_id,
+                Document.is_active == True,
+            )
+        )
+        existing_count = result.scalar_one()
+        if existing_count + 1 > quota.max_documents:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Document quota exceeded. Your plan allows {quota.max_documents} documents.",
+            )
+
+    doc = Document(
+        tenant_id=current_user.tenant_id,
+        original_filename=url,
+        file_size_mb=0.0,
+        mime_type="application/pdf",
+        source=DocumentSource.scraped,
+        source_url=url,
+        status=DocumentStatus.pending,
+    )
+    db.add(doc)
     await db.commit()
-    schedule_document_processing([d.id for d in saved if d.status != DocumentStatus.failed])
-    return FEAddUrlResponse(url=_fe_url(saved[0]))
+    await db.refresh(doc)
+
+    schedule_url_scrape([doc.id])
+    return FEAddUrlResponse(url=_fe_url(doc))
 
 @router.get("/faqs", response_model=List[FEFaqEntry])
 async def list_faqs(

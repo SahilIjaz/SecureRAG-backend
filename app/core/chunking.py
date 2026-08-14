@@ -29,25 +29,28 @@ def recursive_chunk(
     Returns:
         List of text chunks with overlap
     """
-    return [text for text, _offset in _chunk_with_offsets(text, chunk_size, overlap_size)]
+    return [text for text, _offset, _count in _chunk_with_offsets(text, chunk_size, overlap_size)]
 
 def _chunk_with_offsets(
     text: str,
     chunk_size: int,
     overlap_size: int,
-) -> List[Tuple[str, int]]:
+) -> List[Tuple[str, int, int]]:
     """
     Same chunking as recursive_chunk, but also returns each chunk's
     approximate starting character offset in `text` (cheap, O(1) extra work
     per chunk via incremental decode — not an exact substring index, since
     BPE token boundaries don't always align with character boundaries, but
-    close enough for page/citation lookups).
+    close enough for page/citation lookups) and its token count — already
+    known from the slice length, so callers don't need to re-encode the
+    chunk text just to count it.
     """
-    if count_tokens(text) <= chunk_size:
-        return [(text, 0)]
+    all_tokens = ENCODING.encode(text)
+    if len(all_tokens) <= chunk_size:
+        return [(text, 0, len(all_tokens))]
 
-    results: List[Tuple[str, int]] = []
-    tokens = ENCODING.encode(text)
+    results: List[Tuple[str, int, int]] = []
+    tokens = all_tokens
 
     start_idx = 0
     char_offset = 0
@@ -56,7 +59,7 @@ def _chunk_with_offsets(
         chunk_tokens = tokens[start_idx:end_idx]
         chunk_text = ENCODING.decode(chunk_tokens)
 
-        results.append((chunk_text, char_offset))
+        results.append((chunk_text, char_offset, len(chunk_tokens)))
 
         next_start_idx = max(start_idx + chunk_size - overlap_size, start_idx + 1)
         char_offset += len(ENCODING.decode(tokens[start_idx:next_start_idx]))
@@ -106,11 +109,11 @@ def chunk_pdf_text(
     chunks_with_offsets = _chunk_with_offsets(pdf_text, chunk_size, overlap_size)
 
     chunks_with_metadata = []
-    for i, (chunk_text, char_offset) in enumerate(chunks_with_offsets):
+    for i, (chunk_text, char_offset, token_count) in enumerate(chunks_with_offsets):
         chunks_with_metadata.append({
             "chunk_id": i,
             "text": chunk_text,
-            "token_count": count_tokens(chunk_text),
+            "token_count": token_count,
             "sequence": i,
             "char_offset": char_offset,
             "page": _page_for_offset(page_map, char_offset) if page_map else None,

@@ -16,12 +16,11 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Request, UploadFile, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.frontend import helpers
 from app.core.rate_limit import limiter
-from app.core.validation import safe_filename
 from app.database import get_db
 from app.models.document import Document, DocumentSource, DocumentStatus
 from app.models.subscription import BillingCycle, PlanName, Subscription, SubscriptionStatus
@@ -39,7 +38,7 @@ from app.schemas.frontend import (
 )
 from app.services import document_service
 from app.services.auth_service import PLAN_QUOTAS, get_any_valid_user, _first_of_month, _slugify
-from app.services.indexing_service import schedule_document_processing
+from app.services.indexing_service import schedule_document_processing, schedule_url_scrape
 
 logger = logging.getLogger(__name__)
 
@@ -102,8 +101,7 @@ async def _ensure_baseline_quota(tenant: Tenant, db: AsyncSession) -> TenantQuot
     return quota
 
 async def _build_summary(user: User, db: AsyncSession) -> Optional[FEOnboardingSummary]:
-    tenant = await helpers.get_tenant(user, db)
-    subscription = await helpers.get_subscription(user.tenant_id, db)
+    tenant, subscription = await helpers.get_tenant_and_subscription(user, db)
     if subscription is None:
         return None
 
@@ -190,15 +188,15 @@ async def upload(
         uploaded_files = len(saved)
         to_index.extend(saved)
 
+    url_docs: List[Document] = []
     if urls:
-        saved_urls = await _scrape_urls_tolerant(current_user, urls, db, quota=quota)
-        uploaded_urls = len(saved_urls)
-        to_index.extend(saved_urls)
+        url_docs = await _create_pending_url_documents(current_user, urls, db, quota=quota)
+        uploaded_urls = len(url_docs)
+        to_index.extend(url_docs)
 
     await db.commit()
-    schedule_document_processing(
-        [d.id for d in to_index if d.status != DocumentStatus.failed and d.file_url]
-    )
+    schedule_document_processing([d.id for d in to_index if d.file_url])
+    schedule_url_scrape([d.id for d in url_docs])
 
     return FEUploadDocumentsResponse(
         success=True,
@@ -206,45 +204,39 @@ async def upload(
         uploadedUrls=uploaded_urls,
     )
 
-async def _scrape_urls_tolerant(
+async def _create_pending_url_documents(
     user: User,
     urls: List[str],
     db: AsyncSession,
     quota: Optional[TenantQuota] = None,
 ) -> List[Document]:
     """
-    Scrape each URL into a document like document_service.scrape_and_add_documents,
-    but never fail the whole request: a URL that can't be scraped is recorded as a
-    Failed document so the dashboard still shows it.
+    Creates one pending Document per URL and returns immediately — the actual
+    scrape (headless browser, up to CRAWL4AI_TIMEOUT seconds each) runs in the
+    background via schedule_url_scrape. Previously this scraped every URL
+    synchronously and sequentially before responding, so onboarding with N
+    URLs could block for up to N x ~60s; a failed scrape is caught there and
+    marks that document Failed, same tolerant behavior as before.
 
     `quota` (if provided — callers outside onboarding may not have one yet)
-    is enforced as a hard document-count cap before scraping starts, and a
-    per-item file-size cap inside the loop (which, being a policy limit
-    rather than a scrape-technical failure, still just marks that one item
-    `failed` rather than aborting the batch).
+    is enforced as a hard document-count cap before any rows are created.
     """
-    from app.config import settings
-    from app.core.scraper import scrape_website_to_pdf
-    from app.core.storage import upload_file_to_cloudinary
-
     if quota is None:
         quota = await document_service.lock_quota_row(user.tenant_id, db)
 
     if quota and quota.max_documents != -1:
         result = await db.execute(
-            select(Document).where(
+            select(func.count()).select_from(Document).where(
                 Document.tenant_id == user.tenant_id,
                 Document.is_active == True,
             )
         )
-        existing_count = len(result.scalars().all())
+        existing_count = result.scalar_one()
         if existing_count + len(urls) > quota.max_documents:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Document quota exceeded. Your plan allows {quota.max_documents} documents.",
             )
-
-    max_mb = quota.max_file_size_mb if quota else settings.MAX_UPLOAD_SIZE_MB
 
     saved: List[Document] = []
     for url in urls:
@@ -263,27 +255,6 @@ async def _scrape_urls_tolerant(
             source_url=url,
             status=DocumentStatus.pending,
         )
-        try:
-            pdf_content, page_title = await scrape_website_to_pdf(url, timeout=settings.CRAWL4AI_TIMEOUT)
-            file_size_mb = len(pdf_content) / (1024 * 1024)
-            if max_mb != -1 and file_size_mb > max_mb:
-                raise ValueError(f"content exceeds the {max_mb}MB per-file limit after scraping")
-
-            page_title = safe_filename(page_title)
-            public_id, secure_url = await upload_file_to_cloudinary(
-                file_content=pdf_content,
-                tenant_id=user.tenant_id,
-                original_filename=f"{page_title}.pdf",
-                content_type="application/pdf",
-            )
-            doc.original_filename = page_title
-            doc.file_path = public_id
-            doc.file_url = secure_url
-            doc.file_size_mb = round(file_size_mb, 4)
-        except Exception as e:
-            logger.warning("Scrape failed for %s: %s", url, e)
-            doc.status = DocumentStatus.failed
-
         db.add(doc)
         saved.append(doc)
 

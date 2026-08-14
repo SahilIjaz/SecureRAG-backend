@@ -29,6 +29,7 @@ from app.core.chunking import chunk_pdf_text
 from app.core.storage import decrypt_file
 from app.database import AsyncSessionLocal
 from app.models.document import Document, DocumentSource, DocumentStatus
+from app.models.tenant_quota import TenantQuota
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,88 @@ def schedule_document_processing(document_ids: list[uuid.UUID]) -> None:
     """Kick off background processing for the given documents (non-blocking)."""
     for doc_id in document_ids:
         asyncio.create_task(_process_document_safe(doc_id))
+
+def schedule_url_scrape(document_ids: list[uuid.UUID]) -> None:
+    """
+    Kick off background scrape + index for freshly-created URL documents
+    (non-blocking). Unlike schedule_document_processing, these documents
+    have no file_url yet — the scrape itself (headless browser, up to
+    CRAWL4AI_TIMEOUT seconds) used to run synchronously inside the HTTP
+    request that created them; it now runs here instead, off the request
+    path, same as the chunk/embed step already did.
+    """
+    for doc_id in document_ids:
+        asyncio.create_task(_scrape_and_process_url_safe(doc_id))
+
+async def _scrape_and_process_url_safe(document_id: uuid.UUID) -> None:
+    try:
+        scraped = await _scrape_url_into_document(document_id)
+    except Exception:
+        logger.exception("Scrape failed for document %s", document_id)
+        try:
+            async with AsyncSessionLocal() as db:
+                doc = (
+                    await db.execute(select(Document).where(Document.id == document_id))
+                ).scalar_one_or_none()
+                if doc is not None:
+                    doc.status = DocumentStatus.failed
+                    await db.commit()
+        except Exception:
+            logger.error("Could not mark document %s failed after scrape error", document_id)
+        return
+    if scraped:
+        await _process_document_safe(document_id)
+
+async def _scrape_url_into_document(document_id: uuid.UUID) -> bool:
+    """Scrapes doc.source_url to a PDF, uploads it to Cloudinary, and fills
+    in file_url/file_path/file_size_mb. Returns False (document left as-is)
+    if the document has vanished or has no source_url to scrape."""
+    from app.core.scraper import scrape_website_to_pdf
+    from app.core.storage import upload_file_to_cloudinary
+    from app.core.validation import safe_filename
+
+    async with AsyncSessionLocal() as db:
+        doc = (
+            await db.execute(select(Document).where(Document.id == document_id))
+        ).scalar_one_or_none()
+        if doc is None or not doc.source_url:
+            return False
+        url = doc.source_url
+        tenant_id = doc.tenant_id
+
+        quota_result = await db.execute(
+            select(TenantQuota).where(TenantQuota.tenant_id == tenant_id)
+        )
+        quota = quota_result.scalar_one_or_none()
+        max_mb = quota.max_file_size_mb if quota else settings.MAX_UPLOAD_SIZE_MB
+
+    pdf_content, page_title = await scrape_website_to_pdf(url, timeout=settings.CRAWL4AI_TIMEOUT)
+    file_size_mb = len(pdf_content) / (1024 * 1024)
+    # -1 means unlimited (see TenantQuota docstring)
+    if max_mb != -1 and file_size_mb > max_mb:
+        raise ValueError(f"content exceeds the {max_mb}MB per-file limit after scraping")
+
+    page_title = safe_filename(page_title)
+    public_id, secure_url = await upload_file_to_cloudinary(
+        file_content=pdf_content,
+        tenant_id=tenant_id,
+        original_filename=f"{page_title}.pdf",
+        content_type="application/pdf",
+    )
+
+    async with AsyncSessionLocal() as db:
+        doc = (
+            await db.execute(select(Document).where(Document.id == document_id))
+        ).scalar_one_or_none()
+        if doc is None:
+            return False
+        doc.original_filename = page_title
+        doc.file_path = public_id
+        doc.file_url = secure_url
+        doc.file_size_mb = round(file_size_mb, 4)
+        await db.commit()
+
+    return True
 
 async def stale_document_sweep_loop() -> None:
     """
@@ -140,6 +223,11 @@ async def _process_document(document_id: uuid.UUID) -> None:
         tenant_id = str(doc.tenant_id)
         question = doc.question
         answer = doc.answer
+        # chunk_count is only ever set after a successful index, so None
+        # here means this document has never reached Pinecone before —
+        # skip the purge below rather than paying for a delete call with
+        # nothing to delete.
+        previously_indexed = doc.chunk_count is not None
 
     if source == DocumentSource.faq:
         # No file to download/decrypt/extract — the Q&A text itself is
@@ -178,10 +266,12 @@ async def _process_document(document_id: uuid.UUID) -> None:
         # document before writing the new set — otherwise a re-index that
         # produces fewer chunks than last time leaves old higher-sequence
         # vectors behind as permanently-orphaned stale search results.
-        try:
-            await delete_document_chunks(tenant_id, str(document_id))
-        except Exception as e:
-            logger.warning("Pre-reindex vector purge failed for %s: %s", document_id, e)
+        # Skipped entirely for first-time indexing, where there's nothing to purge.
+        if previously_indexed:
+            try:
+                await delete_document_chunks(tenant_id, str(document_id))
+            except Exception as e:
+                logger.warning("Pre-reindex vector purge failed for %s: %s", document_id, e)
 
         # Deliberately NOT caught here: a failed embed/upsert must fail the
         # whole document (propagates to _process_document_safe's except

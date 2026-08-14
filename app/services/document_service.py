@@ -14,7 +14,7 @@ import uuid
 from typing import List, Optional
 
 from fastapi import HTTPException, UploadFile, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -105,14 +105,16 @@ async def upload_documents(
     )
     usage = result.scalar_one_or_none()
 
+    # Only content_hash is needed below (dedup) plus a row count (quota) —
+    # narrow the SELECT instead of hydrating every active Document column.
     result = await db.execute(
-        select(Document).where(
+        select(Document.content_hash).where(
             Document.tenant_id == user.tenant_id,
             Document.is_active == True,
         )
     )
-    existing_docs = result.scalars().all()
-    existing_count = len(existing_docs)
+    existing_hashes_raw = result.scalars().all()
+    existing_count = len(existing_hashes_raw)
 
     max_mb = quota.max_file_size_mb if quota else settings.MAX_UPLOAD_SIZE_MB
 
@@ -120,7 +122,7 @@ async def upload_documents(
     # Cloudinary + Pinecone cost creating a second full set of chunks/vectors
     # for content that's already indexed. Same 409 precedent as the
     # duplicate-file_url check in select_sample_document.
-    existing_hashes = {d.content_hash for d in existing_docs if d.content_hash}
+    existing_hashes = {h for h in existing_hashes_raw if h}
     seen_hashes_in_batch: dict[str, str] = {}
 
     file_data = []
@@ -563,12 +565,12 @@ async def add_faq_entries(
     usage = result.scalar_one_or_none()
 
     result = await db.execute(
-        select(Document).where(
+        select(func.count()).select_from(Document).where(
             Document.tenant_id == user.tenant_id,
             Document.is_active == True,
         )
     )
-    existing_count = len(result.scalars().all())
+    existing_count = result.scalar_one()
 
     if quota and quota.max_documents != -1 and (existing_count + len(entries)) > quota.max_documents:
         raise HTTPException(

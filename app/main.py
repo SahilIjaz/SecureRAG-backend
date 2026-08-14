@@ -9,6 +9,7 @@ from slowapi.errors import RateLimitExceeded
 from sqlalchemy import text
 
 from app.api.frontend.router import router as frontend_router
+from app.api.public.widget import widget_app
 from app.api.v1.router import router as v1_router
 from app.config import settings
 from app.core.rate_limit import limiter
@@ -55,6 +56,11 @@ async def ensure_frontend_schema() -> None:
         "ALTER TABLE documents ADD COLUMN IF NOT EXISTS answer TEXT",
         "ALTER TABLE documents ADD COLUMN IF NOT EXISTS content_hash VARCHAR(64)",
         "CREATE INDEX IF NOT EXISTS ix_documents_content_hash ON documents (content_hash)",
+        # The Knowledge page's stats/documents/urls/faqs endpoints all filter
+        # on exactly this pair (tenant_id, is_active) — covers the hottest
+        # query on the table instead of scanning the tenant_id index and
+        # filtering is_active row-by-row.
+        "CREATE INDEX IF NOT EXISTS ix_documents_tenant_active ON documents (tenant_id, is_active)",
         "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS has_documents BOOLEAN",
         "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS onboarding_completed_at TIMESTAMPTZ",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT",
@@ -62,6 +68,8 @@ async def ensure_frontend_schema() -> None:
         # business categories ("SaaS", ...) that predate-constraint sets reject.
         "ALTER TABLE tenants DROP CONSTRAINT IF EXISTS tenants_employee_count_range_check",
         "ALTER TABLE tenants DROP CONSTRAINT IF EXISTS tenants_business_category_check",
+        # Public widget lead capture (Behavior tab "collect phone before chat").
+        "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS visitor_phone VARCHAR(32)",
     ]
     async with async_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -124,6 +132,11 @@ app.include_router(v1_router, prefix="/api/v1")
 
 # Frontend-compat API — paths/shapes match Nexus-frontend/src/api/*.api.ts.
 app.include_router(frontend_router, prefix="/api")
+
+# Public widget API — mounted as its own sub-app (own CORS: allow_origins=["*"],
+# since it's embedded on arbitrary customer domains not known ahead of time).
+# The real per-tenant domain allowlist is enforced inside app/api/public/widget.py.
+app.mount("/api/public/widget", widget_app)
 
 @app.get("/health", tags=["health"], summary="Health check")
 async def health_check() -> dict:
