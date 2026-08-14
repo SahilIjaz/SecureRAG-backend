@@ -38,6 +38,9 @@ class FELoginResponse(BaseModel):
     token: str
     user: FEUser
 
+class FEGoogleLoginRequest(BaseModel):
+    idToken: str = Field(..., description="Google ID token (credential) from Google Identity Services")
+
 class FEOtpVerifyRequest(BaseModel):
     email: EmailStr
     otp: str = Field(..., min_length=4, max_length=4)
@@ -181,6 +184,8 @@ class FEChatbotBehavior(BaseModel):
     handoffToHuman: bool
     confidenceThreshold: int = Field(..., ge=0, le=100)
     collectEmailBeforeChat: bool
+    collectNameBeforeChat: bool = False
+    collectPhoneBeforeChat: bool = False
     showSources: bool
     stayOnTopic: bool
     tone: str

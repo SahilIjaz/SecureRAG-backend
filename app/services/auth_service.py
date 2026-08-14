@@ -110,12 +110,16 @@ async def register_user(
             "email": email,
         }
 
+    # Tenant.id/User.id are client-generated UUIDs (see the model defaults),
+    # so nothing here needs a DB round trip to learn them — both can be
+    # added without an intermediate flush() and go to the DB in the single
+    # flush _create_and_send_otp already does below (which then also covers
+    # the OTP row), instead of 3 separate round trips to a remote Postgres.
     placeholder_tenant = Tenant(
         workspace_name="__pending__",
         slug=f"pending-{uuid.uuid4().hex[:8]}",
     )
     db.add(placeholder_tenant)
-    await db.flush()
 
     loop = asyncio.get_event_loop()
     pw_hash = await loop.run_in_executor(None, hash_password, password)
@@ -128,7 +132,6 @@ async def register_user(
         is_email_verified=False,
     )
     db.add(user)
-    await db.flush()
 
     await _create_and_send_otp(user, db)
 
@@ -820,23 +823,22 @@ def _issue_tokens(user: User) -> dict:
 async def forgot_password(email: str, db: AsyncSession) -> dict:
     """
     Send a password-reset OTP to the given email.
-    Always returns a success message even if the email is not found,
-    to prevent user enumeration.
+    Raises 404 if no account exists for the email, matching reset_password's
+    behavior (chosen over the enumeration-safe generic response).
     """
     result = await db.execute(select(User).where(User.email == email.lower().strip()))
     user = result.scalar_one_or_none()
 
-    if user is None or not user.is_active:
-        return {
-            "message": "If an account with that email exists, a reset code has been sent.",
-            "email": email,
-        }
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No account found with this email address.")
+    if not user.is_active:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="This account is inactive.")
 
     await _invalidate_old_otps(user.id, db, purpose=OTPPurpose.password_reset)
     await _create_and_send_otp(user, db, purpose=OTPPurpose.password_reset)
 
     return {
-        "message": "If an account with that email exists, a reset code has been sent.",
+        "message": "A reset code has been sent to your email.",
         "email": email,
     }
 

@@ -9,6 +9,7 @@ than the original /api/v1/auth routes:
       (used by BOTH the signup flow and the forgot-password flow)
   - POST /api/auth/forgot-password {email} -> {success}
   - POST /api/auth/reset-password {email, otp, newPassword} -> {success}
+  - POST /api/auth/google {idToken} -> {success, token, user}
 
 The frontend stores exactly ONE token (`res.token`) and sends it as the
 Bearer token for every later call — so these routes always issue a real
@@ -16,21 +17,27 @@ ACCESS token, never the short-lived onboarding token from the v1 flow.
 """
 
 import asyncio
+import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from google.auth.transport import requests as google_requests
+from google.oauth2 import id_token as google_id_token
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.frontend import helpers
+from app.config import settings
 from app.core.rate_limit import limiter
 from app.core.security import create_access_token, hash_password, verify_otp, verify_password
 from app.database import get_db
 from app.models.email_verification import EmailVerification, OTPPurpose
-from app.models.user import User
+from app.models.tenant import Tenant
+from app.models.user import AuthProvider, User
 from app.schemas.frontend import (
     FEForgotPasswordRequest,
+    FEGoogleLoginRequest,
     FELoginRequest,
     FELoginResponse,
     FEOtpVerifyRequest,
@@ -46,8 +53,7 @@ from app.services import auth_service
 router = APIRouter(prefix="/auth", tags=["Frontend — Auth"])
 
 async def _fe_user(user: User, db: AsyncSession) -> FEUser:
-    tenant = await helpers.get_tenant(user, db)
-    subscription = await helpers.get_subscription(user.tenant_id, db)
+    tenant, subscription = await helpers.get_tenant_and_subscription(user, db)
     company = tenant.workspace_name if tenant.workspace_name != "__pending__" else user.full_name
     return FEUser(
         id=str(user.id),
@@ -87,11 +93,81 @@ async def login(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Email not verified. Please verify your email first.")
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is deactivated.")
-    if not user.password_hash or not verify_password(body.password, user.password_hash):
+    # bcrypt verify is deliberately CPU-slow — run off the event loop so one
+    # login doesn't stall every other concurrent request for ~100ms+.
+    password_ok = bool(user.password_hash) and await asyncio.get_event_loop().run_in_executor(
+        None, verify_password, body.password, user.password_hash
+    )
+    if not password_ok:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password.")
 
     token = create_access_token({"sub": str(user.id), "tenant_id": str(user.tenant_id)})
     return FELoginResponse(success=True, token=token, user=await _fe_user(user, db))
+
+@router.post("/google", response_model=FELoginResponse)
+@limiter.limit("10/minute")
+async def google_login(
+    request: Request,
+    body: FEGoogleLoginRequest,
+    db: AsyncSession = Depends(get_db),
+) -> FELoginResponse:
+    """
+    Verify a Google ID token (from Google Identity Services on the frontend)
+    and sign the user in, linking or creating an account as needed. Unlike
+    the v1 /auth/social/google route, this always returns a real access
+    token — new users land in /onboarding with a working session, same as
+    the email/OTP signup path (see FEOtpVerifyResponse).
+    """
+    try:
+        idinfo = google_id_token.verify_oauth2_token(
+            body.idToken, google_requests.Request(), settings.GOOGLE_CLIENT_ID
+        )
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Google sign-in token.")
+
+    google_uid: str = idinfo["sub"]
+    email: str = idinfo.get("email", "").lower().strip()
+    full_name: str = idinfo.get("name") or (email.split("@")[0] if email else "")
+
+    if not email:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Google account has no email address.")
+
+    result = await db.execute(select(User).where(User.email == email))
+    user = result.scalar_one_or_none()
+
+    if user is not None:
+        if not user.is_active:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is deactivated.")
+        if user.auth_provider == AuthProvider.email:
+            # Same email already has a password account — link it to Google
+            # rather than erroring, so "already exists" never blocks sign-in.
+            user.auth_provider = AuthProvider.google
+            user.provider_uid = google_uid
+            user.is_email_verified = True
+            await db.flush()
+    else:
+        placeholder_tenant = Tenant(workspace_name="__pending__", slug=f"pending-{uuid.uuid4().hex[:8]}")
+        db.add(placeholder_tenant)
+        await db.flush()
+
+        user = User(
+            tenant_id=placeholder_tenant.id,
+            full_name=full_name,
+            email=email,
+            password_hash=None,
+            auth_provider=AuthProvider.google,
+            provider_uid=google_uid,
+            is_email_verified=True,
+        )
+        db.add(user)
+        await db.flush()
+
+    token = create_access_token({"sub": str(user.id), "tenant_id": str(user.tenant_id)})
+    return FELoginResponse(success=True, token=token, user=await _fe_user(user, db))
+
+async def _verify_otp_async(plain_otp: str, hashed_otp: str) -> bool:
+    """bcrypt verify off the event loop — see login()'s password check for why."""
+    return await asyncio.get_event_loop().run_in_executor(None, verify_otp, plain_otp, hashed_otp)
 
 async def _latest_valid_otp(
     user_id, purpose: OTPPurpose, db: AsyncSession
@@ -133,7 +209,7 @@ async def verify_otp_endpoint(
         otp_record = await _latest_valid_otp(user.id, OTPPurpose.email_verification, db)
         if otp_record is None:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="OTP has expired or does not exist. Please request a new one.")
-        if not verify_otp(body.otp, otp_record.otp_code):
+        if not await _verify_otp_async(body.otp, otp_record.otp_code):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid OTP code.")
 
         otp_record.is_used = True
@@ -147,7 +223,7 @@ async def verify_otp_endpoint(
     otp_record = await _latest_valid_otp(user.id, OTPPurpose.password_reset, db)
     if otp_record is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Reset code has expired or does not exist. Please request a new one.")
-    if not verify_otp(body.otp, otp_record.otp_code):
+    if not await _verify_otp_async(body.otp, otp_record.otp_code):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid reset code.")
 
     # Deliberately NOT marked used — /reset-password consumes it.
@@ -178,7 +254,7 @@ async def reset_password(
     otp_record = await _latest_valid_otp(user.id, OTPPurpose.password_reset, db)
     if otp_record is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Reset code has expired or does not exist. Please request a new one.")
-    if not verify_otp(body.otp, otp_record.otp_code):
+    if not await _verify_otp_async(body.otp, otp_record.otp_code):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid reset code.")
 
     otp_record.is_used = True

@@ -93,8 +93,7 @@ async def get_me(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> FEUser:
-    tenant = await helpers.get_tenant(current_user, db)
-    subscription = await helpers.get_subscription(current_user.tenant_id, db)
+    tenant, subscription = await helpers.get_tenant_and_subscription(current_user, db)
     company = tenant.workspace_name if tenant.workspace_name != "__pending__" else current_user.full_name
     return FEUser(
         id=str(current_user.id),
