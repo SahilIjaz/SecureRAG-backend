@@ -39,6 +39,7 @@ class Conversation(Base):
     )
     visitor_name: Mapped[str] = mapped_column(String(255), nullable=False, default="Visitor")
     visitor_email: Mapped[Optional[str]] = mapped_column(String(320), nullable=True)
+    visitor_phone: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="Open", index=True)
     sentiment: Mapped[str] = mapped_column(String(20), nullable=False, default="Neutral")
     channel: Mapped[str] = mapped_column(String(20), nullable=False, default="Widget")
