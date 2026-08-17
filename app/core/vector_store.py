@@ -15,6 +15,11 @@ _pc = None
 # Set of index names whose dimension has already been verified this process
 # lifetime — avoids an extra describe_index() call on every get_index().
 _dimension_verified: set[str] = set()
+# Index objects, cached per name — pc.Index(name) builds its own OpenAPI
+# client (and connection pool) from scratch on every construction, so
+# without this cache every search/upsert/delete call was paying for a
+# fresh handshake to Pinecone's index host regardless of _pc being cached.
+_index_cache: dict = {}
 
 def _get_pinecone():
     """Lazy-load Pinecone client."""
@@ -60,11 +65,17 @@ def ensure_index(index_name: str = None) -> None:
     _dimension_verified.add(name)
 
 def get_index(index_name: str = None):
-    """Get Pinecone index (creating it on first use)."""
+    """Get Pinecone index (creating it on first use). Cached per index name
+    for the process lifetime — also means ensure_index()'s list_indexes()
+    control-plane call only runs once per name, not on every query."""
     name = index_name or settings.PINECONE_INDEX_NAME
+    if name in _index_cache:
+        return _index_cache[name]
     ensure_index(name)
     pc = _get_pinecone()
-    return pc.Index(name)
+    index = pc.Index(name)
+    _index_cache[name] = index
+    return index
 
 # Cap on concurrent in-flight upsert batches — mirrors embeddings.py's
 # _MAX_CONCURRENT_BATCHES for the same reason (parallelize large documents,
