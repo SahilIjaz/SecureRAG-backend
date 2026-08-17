@@ -19,24 +19,26 @@ bottom) rather than included in the main `frontend_router`, for two reasons:
      exact-hostname check, not the permissive wildcard CORS allowance.
 """
 
+import json
 import logging
+import time
 import uuid
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.frontend import helpers
 from app.core.rate_limit import limiter
 from app.core.widget_auth import create_widget_session_token, decode_widget_session_token, is_origin_allowed
-from app.database import get_db
+from app.database import AsyncSessionLocal, get_db
 from app.models.chatbot_config import ChatbotConfig
 from app.models.conversation import Conversation, ConversationMessage
 from app.models.document import Document
@@ -143,7 +145,9 @@ async def post_widget_message(
 ) -> WidgetMessageResponse:
     from app.services.rag_service import answer_question
 
+    t0 = time.monotonic()
     tenant, config_record = await _resolve_tenant(request, db)
+    t_auth = time.monotonic()
     config = config_record.config
     behavior = config.get("behavior", {})
     identity = config.get("identity", {})
@@ -153,6 +157,16 @@ async def post_widget_message(
     conversation: Optional[Conversation] = None
     if session_payload and session_payload["tenant_id"] == str(tenant.id):
         conversation = await _load_conversation(session_payload["conversation_id"], tenant.id, db)
+    t_conv = time.monotonic()
+
+    # Snapshot prior turns from an existing conversation *before* possibly
+    # creating a new one below — a brand-new Conversation has no history by
+    # definition, and touching .messages on it post-flush would hit an
+    # unloaded relationship, triggering an implicit lazy-load that
+    # AsyncSession can't service outside an explicit await (MissingGreenlet).
+    # Only a conversation that actually came from _load_conversation's
+    # selectinload is safe to read .messages from directly.
+    history = [{"role": m.role, "text": m.text} for m in conversation.messages] if conversation is not None else []
 
     if conversation is None:
         lead = body.lead or WidgetLeadInfo()
@@ -177,10 +191,12 @@ async def post_widget_message(
         )
         db.add(conversation)
         await db.flush()
+    t_newconv = time.monotonic()
 
     db.add(ConversationMessage(conversation_id=conversation.id, role="user", text=body.message.strip()))
 
     quota, usage = await helpers.get_quota_and_usage(tenant.id, db)
+    t_quota = time.monotonic()
     quota_exceeded = (
         quota is not None
         and usage is not None
@@ -190,21 +206,29 @@ async def post_widget_message(
 
     if quota_exceeded:
         reply, sources, handoff = fallback, [], False
+        t_docs = t_gen_start = t_gen_done = time.monotonic()
     else:
-        docs_result = await db.execute(
-            select(Document.id, Document.original_filename).where(
-                Document.tenant_id == tenant.id, Document.is_active == True
+        doc_names: dict = {}
+        if behavior.get("showSources", True):
+            docs_result = await db.execute(
+                select(Document.id, Document.original_filename).where(
+                    Document.tenant_id == tenant.id, Document.is_active == True
+                )
             )
-        )
-        doc_names = {str(doc_id): name for doc_id, name in docs_result.all()}
+            doc_names = {str(doc_id): name for doc_id, name in docs_result.all()}
+        t_docs = time.monotonic()
 
         try:
+            t_gen_start = time.monotonic()
             result = await answer_question(
-                tenant_id=str(tenant.id), query=body.message, config=config, doc_names=doc_names
+                tenant_id=str(tenant.id), query=body.message, config=config, doc_names=doc_names,
+                history=history,
             )
+            t_gen_done = time.monotonic()
         except Exception:
             logger.exception("Widget chat failed for tenant %s", tenant.id)
             reply, sources, handoff = fallback, [], False
+            t_gen_done = time.monotonic()
         else:
             if usage is not None:
                 usage.questions_used = (usage.questions_used or 0) + 1
@@ -222,13 +246,201 @@ async def post_widget_message(
     if handoff and conversation.status == "Open":
         conversation.status = "Handed off"
     await db.flush()
+    t_flush = time.monotonic()
 
     # Re-issued on every message so an active conversation's sliding window
     # never expires mid-use, while an abandoned/leaked token still dies
     # within WIDGET_SESSION_TOKEN_TTL_HOURS of the last real activity.
     session_token = create_widget_session_token(str(tenant.id), str(conversation.id))
 
+    logger.info(
+        "widget /message timing tenant=%s auth=%.0fms conv_load=%.0fms new_conv=%.0fms quota=%.0fms "
+        "docs=%.0fms generate=%.0fms final_flush=%.0fms total=%.0fms",
+        tenant.id, (t_auth - t0) * 1000, (t_conv - t_auth) * 1000, (t_newconv - t_conv) * 1000,
+        (t_quota - t_newconv) * 1000, (t_docs - t_quota) * 1000, (t_gen_done - t_gen_start) * 1000,
+        (t_flush - t_gen_done) * 1000, (t_flush - t0) * 1000,
+    )
+
     return WidgetMessageResponse(reply=reply, sources=sources, handoff=handoff, sessionToken=session_token)
+
+def _sse(event: str, payload: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+SSE_HEADERS = {"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"}
+
+@router.post("/message/stream")
+@limiter.limit("20/minute", key_func=_widget_key_or_ip)
+async def post_widget_message_stream(
+    request: Request,
+    body: WidgetMessageRequest,
+    db: AsyncSession = Depends(get_db),
+) -> StreamingResponse:
+    """
+    Streaming counterpart to /message — identical quota/lead-gating/
+    handoff/persistence semantics, delivered token-by-token over SSE. A
+    visitor never sees a raw error: any failure before the first token
+    degrades to the tenant's configured fallback, exactly like /message's
+    `except Exception` today.
+    """
+    from app.services.rag_service import answer_question_stream
+
+    t0 = time.monotonic()
+    tenant, config_record = await _resolve_tenant(request, db)
+    t_auth = time.monotonic()
+    config = config_record.config
+    behavior = config.get("behavior", {})
+    identity = config.get("identity", {})
+    fallback = identity.get("fallbackMessage", "I'm not sure about that yet.")
+
+    session_payload = decode_widget_session_token(body.sessionToken) if body.sessionToken else None
+    conversation: Optional[Conversation] = None
+    if session_payload and session_payload["tenant_id"] == str(tenant.id):
+        conversation = await _load_conversation(session_payload["conversation_id"], tenant.id, db)
+    t_conv = time.monotonic()
+
+    # See post_widget_message()'s identical comment: only a conversation
+    # loaded via _load_conversation's selectinload is safe to read
+    # .messages from directly — a freshly constructed one isn't.
+    history = [{"role": m.role, "text": m.text} for m in conversation.messages] if conversation is not None else []
+
+    if conversation is None:
+        lead = body.lead or WidgetLeadInfo()
+        missing = []
+        if behavior.get("collectEmailBeforeChat") and not (lead.email or "").strip():
+            missing.append("email")
+        if behavior.get("collectNameBeforeChat") and not (lead.name or "").strip():
+            missing.append("name")
+        if behavior.get("collectPhoneBeforeChat") and not (lead.phone or "").strip():
+            missing.append("phone")
+        if missing:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Missing required field(s): {', '.join(missing)}",
+            )
+        conversation = Conversation(
+            tenant_id=tenant.id,
+            visitor_name=(lead.name or "Visitor").strip() or "Visitor",
+            visitor_email=(lead.email or None),
+            visitor_phone=(lead.phone or None),
+            channel="Widget",
+        )
+        db.add(conversation)
+        await db.flush()
+    t_newconv = time.monotonic()
+
+    db.add(ConversationMessage(conversation_id=conversation.id, role="user", text=body.message.strip()))
+
+    quota, usage = await helpers.get_quota_and_usage(tenant.id, db)
+    t_quota = time.monotonic()
+    quota_exceeded = (
+        quota is not None
+        and usage is not None
+        and quota.max_questions_per_month != -1
+        and usage.questions_used >= quota.max_questions_per_month
+    )
+
+    doc_names: dict = {}
+    if not quota_exceeded and behavior.get("showSources", True):
+        docs_result = await db.execute(
+            select(Document.id, Document.original_filename).where(
+                Document.tenant_id == tenant.id, Document.is_active == True
+            )
+        )
+        doc_names = {str(doc_id): name for doc_id, name in docs_result.all()}
+    t_docs = time.monotonic()
+
+    # Computable now — doesn't depend on generation.
+    session_token = create_widget_session_token(str(tenant.id), str(conversation.id))
+
+    # Plain locals only past this point — no ORM object may cross into the
+    # generator (the request's DB session is closed before its body runs).
+    tenant_id = tenant.id
+    conversation_id = conversation.id
+    message = body.message
+
+    await db.flush()
+    t_flush = time.monotonic()
+    logger.info(
+        "widget /message/stream prep timing tenant=%s auth=%.0fms conv_load=%.0fms new_conv=%.0fms quota=%.0fms "
+        "docs=%.0fms token+flush=%.0fms prep_total=%.0fms",
+        tenant_id, (t_auth - t0) * 1000, (t_conv - t_auth) * 1000, (t_newconv - t_conv) * 1000,
+        (t_quota - t_newconv) * 1000, (t_docs - t_quota) * 1000, (t_flush - t_docs) * 1000, (t_flush - t0) * 1000,
+    )
+
+    async def event_stream():
+        t_stream_start = time.monotonic()
+        yield _sse("session", {"sessionToken": session_token})
+
+        final_text = fallback
+        handoff = False
+        count_usage = False
+
+        try:
+            if quota_exceeded:
+                yield _sse("token", {"text": fallback})
+                yield _sse("done", {"reply": fallback, "sources": [], "handoff": False, "sessionToken": session_token})
+            else:
+                streamed_any = False
+                try:
+                    async for ev in answer_question_stream(
+                        tenant_id=str(tenant_id), query=message, config=config,
+                        doc_names=doc_names, history=history,
+                    ):
+                        if ev["type"] == "token":
+                            streamed_any = True
+                            yield _sse("token", {"text": ev["text"]})
+                        elif ev["type"] == "final":
+                            final_text = ev["answer"]
+                            handoff = ev["handoff"]
+                            count_usage = True
+                            yield _sse("done", {
+                                "reply": ev["answer"], "sources": ev["sources"],
+                                "handoff": ev["handoff"], "sessionToken": session_token,
+                            })
+                        elif ev["type"] == "error":
+                            if streamed_any:
+                                # Partial text already shown — keep it, tell the
+                                # client the rest didn't arrive, but never show a
+                                # visitor a raw error.
+                                yield _sse("error", {"message": "stream_interrupted"})
+                            else:
+                                yield _sse("token", {"text": fallback})
+                                yield _sse("done", {
+                                    "reply": fallback, "sources": [], "handoff": False, "sessionToken": session_token,
+                                })
+                            return
+                except Exception:
+                    logger.exception("Widget chat stream failed for tenant %s", tenant_id)
+                    yield _sse("token", {"text": fallback})
+                    yield _sse("done", {"reply": fallback, "sources": [], "handoff": False, "sessionToken": session_token})
+        finally:
+            logger.info(
+                "widget /message/stream time_to_done=%.0fms tenant=%s",
+                (time.monotonic() - t_stream_start) * 1000, tenant_id,
+            )
+
+        t_persist_start = time.monotonic()
+        try:
+            async with AsyncSessionLocal() as session:
+                session.add(ConversationMessage(conversation_id=conversation_id, role="bot", text=final_text or fallback))
+                if handoff:
+                    await session.execute(
+                        update(Conversation)
+                        .where(Conversation.id == conversation_id, Conversation.status == "Open")
+                        .values(status="Handed off")
+                    )
+                if count_usage:
+                    await helpers.increment_questions_used(tenant_id, session)
+                await session.commit()
+        except Exception:
+            logger.exception("Failed to persist widget reply after streaming (conversation %s)", conversation_id)
+        finally:
+            logger.info(
+                "widget /message/stream persist=%.0fms tenant=%s",
+                (time.monotonic() - t_persist_start) * 1000, tenant_id,
+            )
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream", headers=SSE_HEADERS)
 
 # ── GET /history ─────────────────────────────────────────────────────────────
 
