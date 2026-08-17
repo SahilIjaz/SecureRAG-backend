@@ -43,7 +43,7 @@ class FEGoogleLoginRequest(BaseModel):
 
 class FEOtpVerifyRequest(BaseModel):
     email: EmailStr
-    otp: str = Field(..., min_length=4, max_length=4)
+    otp: str = Field(..., min_length=6, max_length=6)
 
 class FEOtpVerifyResponse(BaseModel):
     success: bool
@@ -53,9 +53,12 @@ class FEOtpVerifyResponse(BaseModel):
 class FEForgotPasswordRequest(BaseModel):
     email: EmailStr
 
+class FEResendOtpRequest(BaseModel):
+    email: EmailStr
+
 class FEResetPasswordRequest(BaseModel):
     email: EmailStr
-    otp: str = Field(..., min_length=4, max_length=4)
+    otp: str = Field(..., min_length=6, max_length=6)
     newPassword: str = Field(..., min_length=8, max_length=128)
 
 class FESuccessResponse(BaseModel):

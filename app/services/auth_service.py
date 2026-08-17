@@ -91,7 +91,7 @@ async def register_user(
     db: AsyncSession,
 ) -> dict:
     """
-    Create an unverified user record and send a 4-digit OTP to the email.
+    Create an unverified user record and send a 6-digit OTP to the email.
     Returns {"message": ..., "email": ...}
     """
     result = await db.execute(select(User).where(User.email == email))
@@ -110,12 +110,17 @@ async def register_user(
             "email": email,
         }
 
-    # Tenant.id/User.id are client-generated UUIDs (see the model defaults),
-    # so nothing here needs a DB round trip to learn them — both can be
-    # added without an intermediate flush() and go to the DB in the single
-    # flush _create_and_send_otp already does below (which then also covers
-    # the OTP row), instead of 3 separate round trips to a remote Postgres.
+    # Tenant.id/User.id use an ORM-side `default=uuid.uuid4` — that default is
+    # only applied by SQLAlchemy at flush time, NOT at object construction, so
+    # reading placeholder_tenant.id / user.id here before any flush would
+    # silently be None (confirmed: this previously inserted a NULL
+    # users.tenant_id and crashed signup with an IntegrityError). Generating
+    # the UUIDs ourselves up front avoids that trap while still needing only
+    # the one flush _create_and_send_otp already does below (which then also
+    # covers the OTP row), instead of an extra intermediate round trip.
+    tenant_id = uuid.uuid4()
     placeholder_tenant = Tenant(
+        id=tenant_id,
         workspace_name="__pending__",
         slug=f"pending-{uuid.uuid4().hex[:8]}",
     )
@@ -125,7 +130,8 @@ async def register_user(
     pw_hash = await loop.run_in_executor(None, hash_password, password)
 
     user = User(
-        tenant_id=placeholder_tenant.id,
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
         full_name=company_name.strip(),
         email=email.lower().strip(),
         password_hash=pw_hash,

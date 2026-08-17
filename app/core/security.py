@@ -74,8 +74,8 @@ def decode_token(token: str) -> Dict[str, Any]:
 _otp_context = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=6)
 
 def generate_otp() -> str:
-    """Return a random 4-digit OTP string (zero-padded, e.g. '0391')."""
-    return "".join(random.choices(string.digits, k=4))
+    """Return a random 6-digit OTP string (zero-padded, e.g. '034911')."""
+    return "".join(random.choices(string.digits, k=6))
 
 def hash_otp(otp: str) -> str:
     """Return a bcrypt hash of the plain OTP code for safe storage."""

@@ -42,6 +42,7 @@ from app.schemas.frontend import (
     FELoginResponse,
     FEOtpVerifyRequest,
     FEOtpVerifyResponse,
+    FEResendOtpRequest,
     FEResetPasswordRequest,
     FESignupRequest,
     FESignupResponse,
@@ -131,6 +132,16 @@ async def google_login(
 
     if not email:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Google account has no email address.")
+    if not idinfo.get("email_verified"):
+        # Google itself is telling us it can't vouch that this token's holder
+        # actually owns `email` (e.g. an unverified address on the Google
+        # account). Trusting it anyway would let someone sign in as, and
+        # auto-link/take over, an existing password account for an email
+        # they don't control — reject before any account lookup happens.
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Google has not verified this email address yet. Please verify it with Google, or sign in with your password instead.",
+        )
 
     result = await db.execute(select(User).where(User.email == email))
     user = result.scalar_one_or_none()
@@ -228,6 +239,23 @@ async def verify_otp_endpoint(
 
     # Deliberately NOT marked used — /reset-password consumes it.
     return FEOtpVerifyResponse(success=True)
+
+@router.post("/resend-otp", response_model=FESuccessResponse)
+@limiter.limit("3/minute")
+async def resend_otp_endpoint(
+    request: Request,
+    body: FEResendOtpRequest,
+    db: AsyncSession = Depends(get_db),
+) -> FESuccessResponse:
+    """
+    Resends the signup email-verification OTP for an unverified account —
+    the "Resend code" button in OtpForm.tsx during the signup flow. Not for
+    the forgot-password flow's resend (that reuses POST /forgot-password,
+    since the account there is already verified and resend_otp() 400s on a
+    verified account by design).
+    """
+    await auth_service.resend_otp(email=body.email, db=db)
+    return FESuccessResponse()
 
 @router.post("/forgot-password", response_model=FESuccessResponse)
 @limiter.limit("3/minute")
