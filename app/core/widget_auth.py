@@ -21,6 +21,23 @@ def _hostname(origin_or_referer: str) -> Optional[str]:
     host = urlparse(origin_or_referer).hostname
     return host.lower() if host else None
 
+def _normalize_allowlist_entry(entry: str) -> Optional[str]:
+    """
+    Reduces one allowedDomains entry down to a bare hostname, the same shape
+    _hostname() produces from a real Origin header — so "acme.com",
+    "https://acme.com", and "http://localhost:5173" all normalize to the
+    same comparable value regardless of how the tenant typed it in.
+    """
+    entry = entry.strip()
+    if not entry:
+        return None
+    if "://" in entry:
+        return _hostname(entry)
+    # No scheme: entry is already meant to be a bare hostname, but may still
+    # carry a stray ":port" or "/path" if someone pasted more than a domain.
+    host = entry.split("/", 1)[0].split(":", 1)[0].strip().lower()
+    return host or None
+
 def is_origin_allowed(origin_header: Optional[str], allowed_domains_csv: str) -> bool:
     """
     Exact-hostname allowlist check — never substring/suffix matching, so an
@@ -39,7 +56,11 @@ def is_origin_allowed(origin_header: Optional[str], allowed_domains_csv: str) ->
     host = _hostname(origin_header)
     if not host:
         return False
-    allowed = {d.strip().lower() for d in allowed_domains_csv.split(",") if d.strip()}
+    allowed = {
+        normalized
+        for d in allowed_domains_csv.split(",")
+        if (normalized := _normalize_allowlist_entry(d))
+    }
     return host in allowed
 
 def create_widget_session_token(tenant_id: str, conversation_id: str) -> str:
