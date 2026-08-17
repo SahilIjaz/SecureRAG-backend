@@ -9,17 +9,19 @@ The whole config is stored as one JSONB blob in the dashboard's wire format
 (see app/models/chatbot_config.py).
 """
 
+import json
 import logging
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.frontend import helpers
 from app.core.rate_limit import limiter
-from app.database import get_db
+from app.database import AsyncSessionLocal, get_db
 from app.models.chatbot_config import ChatbotConfig
 from app.models.user import User
 from app.schemas.frontend import (
@@ -159,11 +161,19 @@ async def upload_avatar(
 
     return FEAvatarUploadResponse(avatarUrl=avatar_url)
 
+class FETestChatHistoryMessage(BaseModel):
+    role: Literal["user", "bot"]
+    text: str = Field(..., min_length=1, max_length=4000)
+
 class FETestChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=4000)
     # The dashboard preview sends its current (possibly unsaved) draft config so
     # Behavior/Identity edits apply immediately, before "Save changes".
     config: Optional[FEChatbotConfig] = None
+    # Test Chatbot is stateless (nothing persisted) — unlike the widget it
+    # can't recover prior turns from the DB, so the modal replays them from
+    # its local React state.
+    history: List[FETestChatHistoryMessage] = Field(default_factory=list, max_length=20)
 
 class FETestChatResponse(BaseModel):
     reply: str
@@ -211,15 +221,18 @@ async def test_chat(
     behavior = config.get("behavior", {})
     fallback = identity.get("fallbackMessage", "I'm not sure about that yet.")
 
-    # Map document ids → filenames so answers can cite sources by name.
-    from app.models.document import Document
+    # Map document ids → filenames so answers can cite sources by name —
+    # only needed when the tenant actually wants sources cited.
+    doc_names: dict = {}
+    if behavior.get("showSources", True):
+        from app.models.document import Document
 
-    docs_result = await db.execute(
-        select(Document.id, Document.original_filename).where(
-            Document.tenant_id == current_user.tenant_id, Document.is_active == True
+        docs_result = await db.execute(
+            select(Document.id, Document.original_filename).where(
+                Document.tenant_id == current_user.tenant_id, Document.is_active == True
+            )
         )
-    )
-    doc_names = {str(doc_id): name for doc_id, name in docs_result.all()}
+        doc_names = {str(doc_id): name for doc_id, name in docs_result.all()}
 
     try:
         result = await answer_question(
@@ -227,6 +240,7 @@ async def test_chat(
             query=body.message,
             config=config,
             doc_names=doc_names,
+            history=[m.model_dump() for m in body.history],
         )
     except Exception as e:
         logger.exception("Test chat failed for tenant %s", current_user.tenant_id)
@@ -258,6 +272,97 @@ async def test_chat(
     return FETestChatResponse(
         reply=result["answer"], sources=result["sources"], confidence=confidence
     )
+
+def _sse(event: str, payload: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+SSE_HEADERS = {"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"}
+
+@router.post("/test-chat/stream")
+@limiter.limit("20/minute")
+async def test_chat_stream(
+    request: Request,
+    body: FETestChatRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> StreamingResponse:
+    """
+    Streaming counterpart to /test-chat — same quota/config/handoff
+    semantics, but the answer is delivered token-by-token over SSE instead
+    of as one JSON response. Kept alongside the non-streaming endpoint
+    (unused by the dashboard after this ships, but useful for debugging and
+    mock-mode parity).
+    """
+    from app.services.rag_service import answer_question_stream
+
+    quota, usage = await helpers.get_quota_and_usage(current_user.tenant_id, db)
+    if (
+        quota is not None
+        and usage is not None
+        and quota.max_questions_per_month != -1
+        and usage.questions_used >= quota.max_questions_per_month
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Monthly message quota reached. Upgrade your plan to continue.",
+        )
+
+    if body.config:
+        config = body.config.model_dump()
+    else:
+        record = await _get_or_create_config(current_user, db)
+        config = record.config
+    behavior = config.get("behavior", {})
+
+    doc_names: dict = {}
+    if behavior.get("showSources", True):
+        from app.models.document import Document
+
+        docs_result = await db.execute(
+            select(Document.id, Document.original_filename).where(
+                Document.tenant_id == current_user.tenant_id, Document.is_active == True
+            )
+        )
+        doc_names = {str(doc_id): name for doc_id, name in docs_result.all()}
+
+    # Plain locals only past this point — no ORM object may cross into the
+    # generator below, which runs after this request's DB session is closed
+    # (FastAPI tears down Depends(get_db) before a StreamingResponse body runs).
+    tenant_id = current_user.tenant_id
+    history = [m.model_dump() for m in body.history]
+    message = body.message
+
+    async def event_stream():
+        succeeded = False
+        try:
+            async for ev in answer_question_stream(
+                tenant_id=str(tenant_id), query=message, config=config,
+                doc_names=doc_names, history=history,
+            ):
+                if ev["type"] == "token":
+                    yield _sse("token", {"text": ev["text"]})
+                elif ev["type"] == "final":
+                    succeeded = True
+                    yield _sse("done", {
+                        "reply": ev["answer"], "sources": ev["sources"],
+                        "handoff": ev["handoff"], "confidence": ev["confidence"],
+                    })
+                elif ev["type"] == "error":
+                    yield _sse("error", {"message": f"Chat backend error: {ev['message']}"})
+                    return
+        except Exception as e:
+            logger.exception("Test chat stream failed for tenant %s", tenant_id)
+            yield _sse("error", {"message": f"Chat backend error: {e}"})
+        finally:
+            if succeeded:
+                try:
+                    async with AsyncSessionLocal() as session:
+                        await helpers.increment_questions_used(tenant_id, session)
+                        await session.commit()
+                except Exception:
+                    logger.exception("Failed to record usage after streamed test chat")
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream", headers=SSE_HEADERS)
 
 @router.post("/api-key/regenerate", response_model=FERegenerateApiKeyResponse)
 async def regenerate_api_key(

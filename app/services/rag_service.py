@@ -2,8 +2,9 @@
 
 import asyncio
 import logging
+import time
 import uuid
-from typing import List
+from typing import AsyncIterator, List
 
 from app.core.embeddings import embed_text
 from app.core.vector_store import search_chunks
@@ -74,16 +75,42 @@ _LANGUAGE_NAMES = {"en": "English", "es": "Spanish", "fr": "French", "de": "Germ
 # maxResponseLength → (prompt instruction, output token cap)
 _LENGTH_RULES = {
     "short": ("Answer in 1-2 sentences maximum.", 300),
-    "medium": ("Keep the answer focused — a short paragraph unless more detail is truly needed.", 1024),
+    "medium": ("Keep the answer focused — a short paragraph unless more detail is truly needed.", 512),
     "long": ("Give a detailed, thorough answer when the question warrants it.", 2048),
 }
 
-def _build_behavior_prompt(config: dict, context: str, query: str) -> tuple:
+# How many prior messages (not turns) to replay into the prompt. 8 ≈ 4
+# user/bot exchanges — enough for "did we already greet?" and a pronoun
+# follow-up, while adding only a few hundred tokens next to the RAG context
+# chunks already in the prompt.
+_HISTORY_MESSAGE_LIMIT = 8
+_HISTORY_TEXT_CAP = 500  # guard against one huge pasted message
+
+def _format_history(history: list[dict] | None, bot_name: str) -> str:
+    """Render the last few turns as a 'CONVERSATION SO FAR' block, or '' when
+    this is genuinely the first message."""
+    if not history:
+        return ""
+    lines = []
+    for msg in history[-_HISTORY_MESSAGE_LIMIT:]:
+        text = (msg.get("text") or "").strip()
+        if not text:
+            continue
+        if len(text) > _HISTORY_TEXT_CAP:
+            text = text[:_HISTORY_TEXT_CAP] + "..."
+        speaker = "User" if (msg.get("role") or "").lower() == "user" else bot_name
+        lines.append(f"{speaker}: {text}")
+    if not lines:
+        return ""
+    return "\nCONVERSATION SO FAR (oldest first — do not repeat yourself):\n" + "\n".join(lines) + "\n"
+
+def _build_behavior_prompt(config: dict, context: str, query: str, history: list[dict] | None = None) -> tuple:
     """Build (prompt, max_tokens, handoff_enabled) from the tenant's chatbot config."""
     identity = config.get("identity", {}) if config else {}
     behavior = config.get("behavior", {}) if config else {}
 
     bot_name = identity.get("name", "Support Assistant")
+    welcome = (identity.get("welcomeMessage") or "").strip()
     persona = _PERSONA_STYLES.get(identity.get("persona"), _PERSONA_STYLES["friendly"])
     tone = _TONE_STYLES.get(behavior.get("tone"), _TONE_STYLES["balanced"])
     language = _LANGUAGE_NAMES.get(identity.get("language"), "English")
@@ -93,11 +120,20 @@ def _build_behavior_prompt(config: dict, context: str, query: str) -> tuple:
 
     rules = [persona, tone, length_instruction, f"Respond in {language} unless the user writes in another language."]
 
+    rules.append(
+        "Keep one consistent voice for the whole conversation. Work out from your own name, "
+        "your opening message and the knowledge base whether you are speaking AS the person or "
+        'organisation the knowledge base describes (use "I"/"my", or "we"/"our" for a team), or '
+        "ON BEHALF OF someone you refer to by name. Whichever it is, never switch part-way "
+        "through — do not start answering in the third person about someone you introduced "
+        "yourself as."
+    )
+
     if behavior.get("stayOnTopic", True):
         rules.append(
             "Only answer questions related to the documents in your knowledge base. "
-            "If the question is off-topic (small talk is fine, but unrelated subjects are not), "
-            "politely say it's outside what you can help with."
+            "Greetings, thanks and goodbyes are always fine — reply to them naturally and briefly. "
+            "If the question is about an unrelated subject, politely say it's outside what you can help with."
         )
     else:
         rules.append("You may also answer general questions beyond the documents when helpful.")
@@ -112,18 +148,43 @@ def _build_behavior_prompt(config: dict, context: str, query: str) -> tuple:
     if handoff:
         confidence_instruction = (
             "\nIMPORTANT: The very first line of your reply must be exactly "
-            "'CONFIDENCE: <number 0-100>' — your confidence that the context actually answers "
-            "the question. Then continue the reply on the next line."
+            "'CONFIDENCE: <number 0-100>' — your confidence that you can properly answer "
+            "this message. Then continue the reply on the next line. "
+            "For a real question, this is your confidence that the context below actually "
+            "answers it. If the message needs nothing looked up at all — a greeting, a "
+            "thank-you, a goodbye, or a reply that follows from the conversation so far — "
+            "then you already have everything you need, so score CONFIDENCE: 100."
         )
 
     rules_text = "\n".join(f"- {r}" for r in rules)
-    prompt = f"""You are "{bot_name}", a customer support chatbot answering from the company's knowledge base.
+    history_block = _format_history(history, bot_name)
+
+    if welcome:
+        opening_block = (
+            f'The chat window already opened with this message from you:\n"{welcome}"\n'
+            "Use exactly the same voice and point of view as that message in every reply — if it "
+            "speaks in the first person, so do you; if it refers to a person or company by name in "
+            "the third person, so do you. Do not introduce yourself again, do not state your own "
+            "name, and do not open with a greeting — just answer the message directly. "
+        )
+    else:
+        opening_block = (
+            "The chat window already opened with a welcome message from you, so the user knows who "
+            "you are. Do not introduce yourself, do not state your own name, and do not open with a "
+            "greeting — just answer the message directly. "
+        )
+
+    prompt = f"""You are "{bot_name}". Answer the user from the knowledge base below.
+
+The knowledge base may describe a company and its product or service, or it may describe a single person (a resume, portfolio or bio). Read the context and work out which — do not assume it is a company. If it is about one person and that is who you are named after or introduced as, then you ARE that person: answer as yourself, in the first person.
 
 STYLE RULES:
 {rules_text}
 
-Do not describe your own capabilities or list what documents you have unless the user explicitly asks. Greet briefly and ask what they need instead.{confidence_instruction}
+Do not describe your own capabilities or list what documents you have. If the user explicitly asks what you can do or what documents you have, greet them briefly and ask what they need instead of listing anything.
 
+{opening_block}The only exception is when the user's own message is purely a greeting, in which case greet them back briefly.{confidence_instruction}
+{history_block}
 CONTEXT FROM THE KNOWLEDGE BASE:
 {context}
 
@@ -139,12 +200,67 @@ def _parse_confidence(answer: str) -> tuple:
         return None, answer
     return min(int(match.group(1)), 100), answer[match.end():].strip()
 
+async def _prepare_generation(
+    tenant_id: str,
+    query: str,
+    max_tokens: int,
+    config: dict | None,
+    doc_names: dict | None,
+    history: list[dict] | None,
+) -> tuple:
+    """
+    Shared front half of both answer_question() and answer_question_stream():
+    embed the query, search Pinecone, label chunks, build the prompt.
+
+    Returns (chunks, prompt, response_max_tokens, handoff_enabled). An empty
+    `chunks` list means nothing relevant was retrieved — callers fall back
+    to the tenant's configured fallback message rather than calling Gemini
+    with no context.
+    """
+    t0 = time.monotonic()
+    query_embedding = await embed_text(query)
+    t_embed = time.monotonic()
+    chunks = await search_chunks(query_embedding, tenant_id, top_k=settings.RAG_SEARCH_TOP_K)
+    t_search = time.monotonic()
+    logger.info(
+        "rag timing tenant=%s embed=%.0fms search=%.0fms chunks=%d",
+        tenant_id, (t_embed - t0) * 1000, (t_search - t_embed) * 1000, len(chunks),
+    )
+
+    if not chunks:
+        return [], "", max_tokens, False
+
+    # Label each chunk with its source document so the model can cite it.
+    labeled = []
+    for chunk in chunks:
+        name = (doc_names or {}).get(str(chunk.get("document_id")), "")
+        header = f"[Source: {name}]\n" if name else ""
+        labeled.append(f"{header}{chunk['text']}")
+    context = "\n\n---\n\n".join(labeled)
+
+    if config:
+        prompt, response_max_tokens, handoff_enabled = _build_behavior_prompt(config, context, query, history)
+    else:
+        handoff_enabled = False
+        response_max_tokens = max_tokens
+        prompt = f"""You are a helpful assistant answering questions based on provided documents.
+
+CONTEXT:
+{context}
+
+QUESTION: {query}
+
+Please answer the question based on the context provided. If the answer is not in the context, say so."""
+
+    return chunks, prompt, response_max_tokens, handoff_enabled
+
 async def answer_question(
     tenant_id: str,
     query: str,
     max_tokens: int = 1024,
     config: dict = None,
     doc_names: dict = None,
+    history: list[dict] | None = None,
 ) -> dict:
     """
     Answer a question using the RAG pipeline, shaped by the tenant's chatbot
@@ -157,6 +273,8 @@ async def answer_question(
         max_tokens: Max tokens (used only when no config is given)
         config: The tenant's chatbot config dict (frontend wire format)
         doc_names: Optional {document_id: filename} map for source citing
+        history: Optional prior turns, each {"role": "user"|"bot", "text": str},
+            oldest first — lets the model know this isn't the first message.
 
     Returns:
         {"answer", "sources", "model", "confidence", "handoff"}
@@ -167,49 +285,23 @@ async def answer_question(
     from google.genai import errors as genai_errors
     from google.genai import types as genai_types
 
-    # "gemini-2.5-flash" was retired for new API keys (404 NOT_FOUND) — using
-    # the "-latest" alias instead of a dated model name so Google can move
-    # what it points to without this breaking again.
-    ANSWER_MODEL = "gemini-flash-latest"
+    model_chain = settings.GEMINI_MODEL_CHAIN
 
     try:
-        query_embedding = await embed_text(query)
-        chunks = await search_chunks(
-            query_embedding, tenant_id, top_k=settings.RAG_SEARCH_TOP_K
+        chunks, prompt, response_max_tokens, handoff_enabled = await _prepare_generation(
+            tenant_id, query, max_tokens, config, doc_names, history
         )
 
         if not chunks:
             return {
                 "answer": "No relevant documents found for your question.",
                 "sources": [],
-                "model": ANSWER_MODEL,
+                "model": model_chain[0] if model_chain else None,
                 "confidence": 0,
                 "handoff": False,
             }
 
-        # Label each chunk with its source document so the model can cite it.
-        labeled = []
-        for chunk in chunks:
-            name = (doc_names or {}).get(str(chunk.get("document_id")), "")
-            header = f"[Source: {name}]\n" if name else ""
-            labeled.append(f"{header}{chunk['text']}")
-        context = "\n\n---\n\n".join(labeled)
-
-        if config:
-            prompt, response_max_tokens, handoff_enabled = _build_behavior_prompt(config, context, query)
-        else:
-            handoff_enabled = False
-            response_max_tokens = max_tokens
-            prompt = f"""You are a helpful assistant answering questions based on provided documents.
-
-CONTEXT:
-{context}
-
-QUESTION: {query}
-
-Please answer the question based on the context provided. If the answer is not in the context, say so."""
-
-        logger.info("Sending query to Gemini for answer generation")
+        t_prep = time.monotonic()
         # --- Anthropic (previous provider) — kept, commented, as a rollback path.
         # client = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
         # response = await client.messages.create(
@@ -223,14 +315,6 @@ Please answer the question based on the context provided. If the answer is not i
         # answer = next(
         #     (block.text for block in response.content if block.type == "text"), ""
         # )
-        # "-latest" points at whatever model Google currently recommends,
-        # which is also the one everyone else's traffic defaults to — so
-        # it's the most likely to be under 503 pressure. A pinned, less
-        # popular model is a genuinely different capacity pool, not just a
-        # cosmetic fallback, so trying it beats retrying the same
-        # overloaded endpoint again.
-        FALLBACK_MODEL = "gemini-2.0-flash"
-
         client = _get_genai_client()
 
         async def _generate(model: str):
@@ -242,19 +326,28 @@ Please answer the question based on the context provided. If the answer is not i
                 ),
             )
 
+        # Try each configured model once in order, then give the *last* one
+        # (the most deliberately chosen fallback) one more shot after a brief
+        # delay to absorb a transient overload rather than give up outright.
+        attempts = [(model, 0) for model in model_chain]
+        if model_chain:
+            attempts.append((model_chain[-1], 1.2))
+
         response = None
-        used_model = ANSWER_MODEL
+        used_model = model_chain[0] if model_chain else None
         last_error: Exception | None = None
-        for model, delay in ((ANSWER_MODEL, 0), (FALLBACK_MODEL, 0), (FALLBACK_MODEL, 1.2)):
+        attempt_count = 0
+        for model, delay in attempts:
+            attempt_count += 1
             if delay:
                 await asyncio.sleep(delay)
             try:
                 response = await _generate(model)
                 used_model = model
                 break
-            except genai_errors.ServerError as e:
+            except genai_errors.APIError as e:
                 last_error = e
-                logger.warning("Gemini model %s returned a server error: %s", model, e)
+                logger.warning("Gemini model %s returned an error: %s", model, e)
         if response is None:
             raise last_error
         answer = response.text or ""
@@ -263,7 +356,11 @@ Please answer the question based on the context provided. If the answer is not i
         if handoff_enabled:
             confidence, answer = _parse_confidence(answer)
 
-        logger.info("Generated answer using RAG pipeline (confidence=%s)", confidence)
+        t_gen = time.monotonic()
+        logger.info(
+            "rag timing tenant=%s generate=%.0fms model=%s attempt=%d/%d confidence=%s",
+            tenant_id, (t_gen - t_prep) * 1000, used_model, attempt_count, len(attempts), confidence,
+        )
 
         return {
             "answer": answer,
@@ -276,3 +373,255 @@ Please answer the question based on the context provided. If the answer is not i
     except Exception as e:
         logger.error(f"Failed to generate answer: {str(e)}")
         raise
+
+_CONFIDENCE_PREFIX_MAX = 64  # if no newline by here, the model ignored the instruction
+
+def _try_parse_confidence_prefix(buf: str) -> tuple:
+    """
+    Streaming counterpart to _parse_confidence(). Must never guess on a
+    partial buffer — "CONFIDENCE: 8" must not be read as confidence=8 when
+    the model was about to type 85.
+
+    Returns:
+        ("pending", None, "")         - keep buffering, the line isn't complete yet
+        ("parsed", confidence, rest)  - CONFIDENCE line consumed, `rest` is what follows it
+        ("absent", None, buf)         - no CONFIDENCE line; treat `buf` as answer text
+    """
+    import re
+
+    if "\n" in buf:
+        match = re.match(r"\s*CONFIDENCE:\s*(\d{1,3})\s*\n", buf)
+        if match:
+            return "parsed", min(int(match.group(1)), 100), buf[match.end():]
+        return "absent", None, buf
+    if len(buf) > _CONFIDENCE_PREFIX_MAX:
+        return "absent", None, buf
+    return "pending", None, ""
+
+async def _prepend(first, aiter):
+    """Yield `first`, then everything else from `aiter` — used to put back
+    the first chunk consumed as the model-chain-retry litmus test."""
+    yield first
+    async for item in aiter:
+        yield item
+
+async def _aclose(aiter) -> None:
+    """Best-effort stop of an in-flight stream (e.g. once handoff makes the
+    rest of the tokens moot) without leaking the underlying connection."""
+    try:
+        await aiter.aclose()
+    except Exception:
+        pass
+
+async def answer_question_stream(
+    tenant_id: str,
+    query: str,
+    max_tokens: int = 1024,
+    config: dict = None,
+    doc_names: dict = None,
+    history: list[dict] | None = None,
+) -> AsyncIterator[dict]:
+    """
+    Streaming counterpart to answer_question(). Yields incremental
+    {"type": "token", "text": ...} events, then exactly one terminal event:
+    {"type": "final", "answer", "sources", "model", "confidence", "handoff"}
+    or {"type": "error", "message": ...}.
+
+    Human-handoff confidence gating happens *inside* this generator, not the
+    caller — the model's reply starts with a 'CONFIDENCE: NN' line (see
+    _build_behavior_prompt) whenever handoff is enabled, and that line is
+    buffered (never shown) until parsed. If it's below threshold, nothing
+    of the real answer is ever streamed — only the tenant's fallback
+    message is, as a single token event. This preserves the exact
+    confidence-gating behavior of answer_question()/its callers while still
+    letting the bulk of a passing answer stream token-by-token.
+    """
+    from google.genai import errors as genai_errors
+    from google.genai import types as genai_types
+
+    model_chain = settings.GEMINI_MODEL_CHAIN
+    identity = (config or {}).get("identity", {})
+    behavior = (config or {}).get("behavior", {})
+    fallback = identity.get("fallbackMessage", "I'm not sure about that yet.")
+    threshold = behavior.get("confidenceThreshold", 60)
+
+    try:
+        chunks, prompt, response_max_tokens, handoff_enabled = await _prepare_generation(
+            tenant_id, query, max_tokens, config, doc_names, history
+        )
+    except Exception as e:
+        logger.exception("Failed to prepare generation for tenant %s", tenant_id)
+        yield {"type": "error", "message": str(e)}
+        return
+
+    if not chunks:
+        yield {"type": "token", "text": fallback}
+        yield {
+            "type": "final", "answer": fallback, "sources": [],
+            "model": model_chain[0] if model_chain else None, "confidence": 0, "handoff": False,
+        }
+        return
+
+    client = _get_genai_client()
+
+    # Same retry policy as answer_question()'s non-streaming loop, but the
+    # litmus test for "did this model work" is "did it produce a first
+    # chunk," not "did the whole call succeed." Deliberate scope boundary:
+    # once a model has yielded its first chunk we commit to it for the rest
+    # of the stream — an APIError raised *mid-stream* becomes an error
+    # event, not a retry on another model, since partial text is already
+    # visible and replaying it under a different model would duplicate or
+    # contradict it. This covers the real failure mode (an overloaded or
+    # retired model, which always fails at request time), not a rare
+    # mid-stream fault.
+    attempts = [(model, 0) for model in model_chain]
+    if model_chain:
+        attempts.append((model_chain[-1], 1.2))
+
+    t_attempts_start = time.monotonic()
+    iterator = None
+    first_chunk = None
+    used_model = None
+    last_error: Exception | None = None
+    attempt_count = 0
+    for model, delay in attempts:
+        attempt_count += 1
+        if delay:
+            await asyncio.sleep(delay)
+        try:
+            raw = await client.aio.models.generate_content_stream(
+                model=model,
+                contents=prompt,
+                config=genai_types.GenerateContentConfig(
+                    max_output_tokens=response_max_tokens + (50 if handoff_enabled else 0),
+                ),
+            )
+            candidate = raw.__aiter__()
+            first_chunk = await candidate.__anext__()
+            iterator, used_model = candidate, model
+            break
+        except StopAsyncIteration:
+            last_error = RuntimeError(f"{model} returned an empty stream")
+        except genai_errors.APIError as e:
+            last_error = e
+            logger.warning("Gemini model %s failed to start streaming: %s", model, e)
+
+    if iterator is None:
+        logger.info(
+            "rag timing tenant=%s first_token=FAILED after=%.0fms attempts=%d/%d",
+            tenant_id, (time.monotonic() - t_attempts_start) * 1000, attempt_count, len(attempts),
+        )
+        yield {"type": "error", "message": str(last_error)}
+        return
+
+    t_first_chunk = time.monotonic()
+    logger.info(
+        "rag timing tenant=%s first_token=%.0fms model=%s attempt=%d/%d",
+        tenant_id, (t_first_chunk - t_attempts_start) * 1000, used_model, attempt_count, len(attempts),
+    )
+
+    full: list[str] = []
+    confidence = None
+    gate_open = not handoff_enabled  # no CONFIDENCE line to wait for
+    buf = ""
+    try:
+        async for chunk in _prepend(first_chunk, iterator):
+            text = getattr(chunk, "text", None) or ""
+            if not text:
+                continue
+            if gate_open:
+                full.append(text)
+                yield {"type": "token", "text": text}
+                continue
+            buf += text
+            state, parsed, rest = _try_parse_confidence_prefix(buf)
+            if state == "pending":
+                continue
+            confidence = parsed
+            if handoff_enabled and confidence is not None and confidence < threshold:
+                await _aclose(iterator)
+                yield {"type": "token", "text": fallback}
+                yield {
+                    "type": "final", "answer": fallback, "sources": [],
+                    "model": used_model, "confidence": confidence, "handoff": True,
+                }
+                return
+            gate_open = True
+            if rest:
+                full.append(rest)
+                yield {"type": "token", "text": rest}
+
+        # Stream ended while still buffering a possible CONFIDENCE line (the
+        # whole reply was shorter than the line itself) — flush it instead
+        # of silently dropping it; there's nothing more coming either way.
+        if not gate_open and buf:
+            state, parsed, rest = _try_parse_confidence_prefix(buf)
+            text = rest if state == "parsed" else buf
+            if state == "parsed":
+                confidence = parsed
+            if handoff_enabled and confidence is not None and confidence < threshold:
+                yield {"type": "token", "text": fallback}
+                yield {
+                    "type": "final", "answer": fallback, "sources": [],
+                    "model": used_model, "confidence": confidence, "handoff": True,
+                }
+                return
+            if text:
+                full.append(text)
+                yield {"type": "token", "text": text}
+    except Exception as e:
+        logger.exception("Streaming generation failed for tenant %s", tenant_id)
+        yield {"type": "error", "message": str(e)}
+        return
+
+    answer = "".join(full).strip()
+    t_gen = time.monotonic()
+    logger.info(
+        "rag timing tenant=%s rest_of_stream=%.0fms total_generate=%.0fms model=%s confidence=%s",
+        tenant_id, (t_gen - t_first_chunk) * 1000, (t_gen - t_attempts_start) * 1000, used_model, confidence,
+    )
+    yield {
+        "type": "final", "answer": answer, "sources": [c["text"] for c in chunks],
+        "model": used_model, "confidence": confidence, "handoff": False,
+    }
+
+async def verify_gemini_models() -> None:
+    """
+    Startup sanity check: confirm the configured Gemini model chain
+    (settings.GEMINI_MODEL_CHAIN) is actually reachable with the current
+    GEMINI_API_KEY. Uses models.get() (cheap metadata fetch, no generation
+    cost) rather than generate_content. Strictly non-fatal — logs loudly,
+    never raises — so a bad key/model never blocks app boot. This turns a
+    deprecated/inaccessible model into a startup log line instead of a live
+    user's failed chat (this has already happened twice: gemini-2.0-flash,
+    then gemini-2.5-flash, were both retired for this free-tier key).
+    """
+    if not settings.GEMINI_API_KEY:
+        logger.warning("GEMINI_API_KEY is not set — skipping Gemini model reachability check")
+        return
+
+    from google.genai import errors as genai_errors
+
+    client = _get_genai_client()
+    reachable = []
+    for model in settings.GEMINI_MODEL_CHAIN:
+        try:
+            await client.aio.models.get(model=model)
+            reachable.append(model)
+            logger.info("Gemini model %r is reachable with the configured API key", model)
+        except genai_errors.APIError as e:
+            logger.warning(
+                "Gemini model %r is NOT reachable with the configured API key (%s). "
+                "Dated/pinned model names are the most likely to be retired — prefer "
+                "'-latest' aliases in GEMINI_ANSWER_MODEL/GEMINI_FALLBACK_MODELS.",
+                model, e,
+            )
+        except Exception as e:
+            logger.warning("Could not verify Gemini model %r (%s): %s", model, type(e).__name__, e)
+
+    if not reachable:
+        logger.error(
+            "None of the configured Gemini models (%s) are reachable with the current "
+            "GEMINI_API_KEY — chat answers will fail until this is fixed.",
+            ", ".join(settings.GEMINI_MODEL_CHAIN),
+        )

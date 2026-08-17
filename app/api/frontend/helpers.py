@@ -181,6 +181,19 @@ async def get_current_usage(tenant_id: uuid.UUID, db: AsyncSession) -> Optional[
     )
     return result.scalar_one_or_none()
 
+async def increment_questions_used(tenant_id: uuid.UUID, db: AsyncSession) -> None:
+    """
+    Bump the current month's questions_used. Split out from the streaming
+    chat endpoints' post-generation bookkeeping because FastAPI closes
+    Depends(get_db) before a StreamingResponse body is iterated — the
+    request-scoped session is already committed and closed by then, so
+    callers must run this against a *fresh* session opened after the stream
+    completes, not the one injected into the endpoint.
+    """
+    usage = await get_current_usage(tenant_id, db)
+    if usage is not None:
+        usage.questions_used = (usage.questions_used or 0) + 1
+
 async def get_quota_and_usage(
     tenant_id: uuid.UUID, db: AsyncSession
 ) -> tuple[Optional[TenantQuota], Optional[UsageCount]]:

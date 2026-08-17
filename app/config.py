@@ -52,6 +52,16 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str = ""
     GEMINI_API_KEY: str = ""
 
+    # Model names, not hardcoded in rag_service.py, so a Google-side deprecation
+    # (has already happened twice) is an env change, not a code change +
+    # redeploy. Both default to "-latest" aliases rather than dated pinned
+    # versions (e.g. "gemini-2.5-flash") — on this project's free-tier API
+    # key, every dated gemini-2.5-* model 404s as "no longer available to new
+    # users" while the alias identifiers work fine, since Google moves what
+    # they point to instead of retiring them outright.
+    GEMINI_ANSWER_MODEL: str = "gemini-flash-latest"
+    GEMINI_FALLBACK_MODELS: str = "gemini-flash-lite-latest"  # comma-separated, tried in order
+
     RAG_CHUNK_SIZE: int = 500
     RAG_CHUNK_OVERLAP: int = 50
     RAG_SEARCH_TOP_K: int = 5
@@ -69,6 +79,18 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         case_sensitive=True,
     )
+
+    @property
+    def GEMINI_MODEL_CHAIN(self) -> list[str]:
+        """GEMINI_ANSWER_MODEL first, then each GEMINI_FALLBACK_MODELS entry,
+        skipping blanks/duplicates. Shared by rag_service.py's retry loop and
+        its startup reachability check, so the parsing logic lives once."""
+        chain = [self.GEMINI_ANSWER_MODEL]
+        for name in self.GEMINI_FALLBACK_MODELS.split(","):
+            name = name.strip()
+            if name and name not in chain:
+                chain.append(name)
+        return chain
 
     @model_validator(mode="after")
     def _validate_chunk_overlap(self) -> "Settings":
