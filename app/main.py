@@ -10,7 +10,6 @@ from sqlalchemy import text
 
 from app.api.frontend.router import router as frontend_router
 from app.api.public.widget import widget_app
-from app.api.v1.router import router as v1_router
 from app.config import settings
 from app.core.rate_limit import limiter
 
@@ -84,6 +83,12 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error("Failed to apply frontend-compat schema: %s", e)
 
+    try:
+        from app.services.rag_service import verify_gemini_models
+        await verify_gemini_models()
+    except Exception as e:
+        logger.error("Gemini model reachability check crashed unexpectedly: %s", e)
+
     import asyncio
 
     from app.services.indexing_service import stale_document_sweep_loop
@@ -127,8 +132,6 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
     allow_headers=["Authorization", "Content-Type"],
     max_age=3600, )
-
-app.include_router(v1_router, prefix="/api/v1")
 
 # Frontend-compat API — paths/shapes match Nexus-frontend/src/api/*.api.ts.
 app.include_router(frontend_router, prefix="/api")
