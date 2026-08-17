@@ -47,29 +47,44 @@ class Tenant(Base):
         nullable=False,
     )
 
+    # passive_deletes=True on every relationship below: all of these FKs
+    # already have ondelete="CASCADE" at the DB level (see each model's
+    # ForeignKey("tenants.id", ondelete="CASCADE")). Without passive_deletes,
+    # SQLAlchemy's default behavior on session.delete(tenant) is to try to
+    # manage these relationships itself — for the ones with no delete
+    # cascade (user/subscription/tenant_quota/usage_counts), that means
+    # issuing "UPDATE ... SET tenant_id = NULL" for any loaded child, which
+    # crashes since tenant_id is NOT NULL everywhere. passive_deletes=True
+    # tells the ORM to leave deletion of children entirely to the database's
+    # own ON DELETE CASCADE instead.
     user: Mapped[Optional["User"]] = relationship(
         "User",
         back_populates="tenant",
         uselist=False,
+        passive_deletes=True,
     )
     subscription: Mapped[Optional["Subscription"]] = relationship(
         "Subscription",
         back_populates="tenant",
         uselist=False,
+        passive_deletes=True,
     )
     tenant_quota: Mapped[Optional["TenantQuota"]] = relationship(
         "TenantQuota",
         back_populates="tenant",
         uselist=False,
+        passive_deletes=True,
     )
     usage_counts: Mapped[List["UsageCount"]] = relationship(
         "UsageCount",
         back_populates="tenant",
+        passive_deletes=True,
     )
     documents: Mapped[List["Document"]] = relationship(
         "Document",
         back_populates="tenant",
         cascade="all, delete-orphan",
+        passive_deletes=True,
     )
 
     def __repr__(self) -> str:
