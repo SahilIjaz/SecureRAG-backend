@@ -61,17 +61,17 @@ def _build_plain_body(full_name: str, otp: str) -> str:
         f"If you did not request this, ignore this email."
     )
 
-def _send_via_brevo(recipient_email: str, full_name: str, otp: str) -> None:
-    """Send OTP email using Brevo HTTP API (works on Render)."""
+def _send_via_brevo(recipient_email: str, subject: str, html_content: str, text_content: str) -> None:
+    """Send an email using Brevo HTTP API (works on Render)."""
     payload = {
         "sender": {
             "name": settings.EMAILS_FROM_NAME,
             "email": settings.EMAILS_FROM_EMAIL,
         },
         "to": [{"email": recipient_email}],
-        "subject": "Your SecureRAG++ verification code",
-        "htmlContent": _build_otp_html(full_name, otp),
-        "textContent": _build_plain_body(full_name, otp),
+        "subject": subject,
+        "htmlContent": html_content,
+        "textContent": text_content,
     }
 
     headers = {
@@ -89,16 +89,16 @@ def _send_via_brevo(recipient_email: str, full_name: str, otp: str) -> None:
         logger.error("[EMAIL] Brevo error %s: %s", response.status_code, response.text)
         response.raise_for_status()
 
-def _send_via_smtp(recipient_email: str, full_name: str, otp: str) -> None:
-    """Fallback: send OTP email via SMTP (for local development)."""
+def _send_via_smtp(recipient_email: str, subject: str, html_content: str, text_content: str) -> None:
+    """Fallback: send an email via SMTP (for local development)."""
     smtp_password = settings.SMTP_PASSWORD.replace(" ", "")
 
     msg = MIMEMultipart("alternative")
-    msg["Subject"] = "Your SecureRAG++ verification code"
+    msg["Subject"] = subject
     msg["From"] = f"{settings.EMAILS_FROM_NAME} <{settings.EMAILS_FROM_EMAIL}>"
     msg["To"] = recipient_email
-    msg.attach(MIMEText(_build_plain_body(full_name, otp), "plain"))
-    msg.attach(MIMEText(_build_otp_html(full_name, otp), "html"))
+    msg.attach(MIMEText(text_content, "plain"))
+    msg.attach(MIMEText(html_content, "html"))
 
     with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=15) as server:
         server.ehlo()
@@ -107,26 +107,37 @@ def _send_via_smtp(recipient_email: str, full_name: str, otp: str) -> None:
         server.login(settings.SMTP_USERNAME, smtp_password)
         server.sendmail(settings.EMAILS_FROM_EMAIL, recipient_email, msg.as_string())
 
-async def send_otp_email(recipient_email: str, full_name: str, otp: str) -> None:
+async def send_email(recipient_email: str, subject: str, html_content: str, text_content: str) -> None:
     """
-    Send an OTP verification email.
-    Uses Brevo HTTP API if configured, otherwise falls back to SMTP, then to logging.
+    Send an email. Uses Brevo HTTP API if configured, otherwise falls back to
+    SMTP, then to logging — the same fallback chain send_otp_email always
+    used, generalized so notification_service can reuse it for anything else
+    transactional (conversation handoffs, weekly summaries, ...).
     """
     loop = asyncio.get_event_loop()
 
     if settings.BREVO_API_KEY:
         try:
-            await loop.run_in_executor(None, _send_via_brevo, recipient_email, full_name, otp)
+            await loop.run_in_executor(None, _send_via_brevo, recipient_email, subject, html_content, text_content)
             return
         except Exception as e:
             logger.error("[EMAIL] Brevo failed: %s", e)
 
     if settings.SMTP_USERNAME and settings.SMTP_PASSWORD:
         try:
-            await loop.run_in_executor(None, _send_via_smtp, recipient_email, full_name, otp)
-            logger.info("[EMAIL] OTP sent via SMTP to %s", recipient_email)
+            await loop.run_in_executor(None, _send_via_smtp, recipient_email, subject, html_content, text_content)
+            logger.info("[EMAIL] Sent via SMTP to %s", recipient_email)
             return
         except Exception as e:
             logger.error("[EMAIL] SMTP failed: %s", e)
 
-    logger.warning("[EMAIL] No email provider available — OTP for %s is: %s", recipient_email, otp)
+    logger.warning("[EMAIL] No email provider available — %r for %s was not sent", subject, recipient_email)
+
+async def send_otp_email(recipient_email: str, full_name: str, otp: str) -> None:
+    """Send an OTP verification email."""
+    await send_email(
+        recipient_email,
+        subject="Your SecureRAG++ verification code",
+        html_content=_build_otp_html(full_name, otp),
+        text_content=_build_plain_body(full_name, otp),
+    )

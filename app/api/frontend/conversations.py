@@ -1,9 +1,10 @@
 """
 Frontend-compat conversations endpoints (/api/conversations/...).
 
-  - GET  /api/conversations             -> ConversationListItem[]
-  - GET  /api/conversations/{id}        -> ConversationDetail (with messages)
-  - POST /api/conversations/{id}/reply  -> {message}  (human agent reply; marks it Handed off)
+  - GET  /api/conversations              -> ConversationListItem[]
+  - GET  /api/conversations/{id}         -> ConversationDetail (with messages)
+  - POST /api/conversations/{id}/reply   -> {message}  (human agent reply; marks it Handed off)
+  - POST /api/conversations/{id}/resolve -> ConversationDetail  (marks it Resolved)
 """
 
 import uuid
@@ -52,6 +53,7 @@ def _message(msg: ConversationMessage) -> FEConversationMessage:
         role=msg.role,
         text=msg.text,
         time=helpers.hhmm(msg.created_at),
+        sources=msg.sources or [],
     )
 
 async def _get_conversation_or_404(
@@ -119,3 +121,17 @@ async def send_reply(
     await db.refresh(msg)
 
     return FESendReplyResponse(message=_message(msg))
+
+@router.post("/{conversation_id}/resolve", response_model=FEConversationDetail)
+async def resolve_conversation(
+    conversation_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> FEConversationDetail:
+    convo = await _get_conversation_or_404(conversation_id, current_user, db)
+    convo.status = "Resolved"
+    await db.flush()
+    return FEConversationDetail(
+        **_list_item(convo).model_dump(),
+        messages=[_message(m) for m in convo.messages],
+    )

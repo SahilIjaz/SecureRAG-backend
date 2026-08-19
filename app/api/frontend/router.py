@@ -3,7 +3,7 @@ Aggregate router for the frontend-compat API, mounted at /api.
 
 Paths match Nexus-frontend/src/api/*.api.ts exactly:
 /api/auth, /api/user, /api/onboarding, /api/dashboard, /api/chatbot,
-/api/conversations, /api/knowledge, /api/settings
+/api/conversations, /api/knowledge, /api/settings, /api/notifications
 """
 
 from fastapi import APIRouter
@@ -14,6 +14,7 @@ from app.api.frontend import (
     conversations,
     dashboard,
     knowledge,
+    notifications,
     onboarding,
     settings,
     user,
@@ -29,3 +30,4 @@ router.include_router(chatbot.router)
 router.include_router(conversations.router)
 router.include_router(knowledge.router)
 router.include_router(settings.router)
+router.include_router(notifications.router)

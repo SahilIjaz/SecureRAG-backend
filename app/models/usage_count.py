@@ -4,7 +4,7 @@ import uuid
 from datetime import date, datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Date, DateTime, Float, ForeignKey, Integer, UniqueConstraint, func
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -40,6 +40,11 @@ class UsageCount(Base):
     questions_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     documents_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     storage_used_mb: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    # Set once each threshold is crossed this period_month, so the plan-usage
+    # warning fires exactly once per threshold instead of on every message
+    # past it — see notification_service's usage-warning check.
+    warned_80_percent: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    warned_100_percent: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
