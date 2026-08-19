@@ -12,6 +12,8 @@ from pydantic import BaseModel, EmailStr, Field, field_validator
 
 from app.config import settings
 
+FEPlanId = Literal["starter", "growth", "business"]
+
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
 class FEUser(BaseModel):
@@ -78,7 +80,7 @@ class FEOnboardingStep2(BaseModel):
     workspaceName: str = Field(..., min_length=2, max_length=100)
 
 class FEOnboardingStep3(BaseModel):
-    plan: Literal["free", "pro", "premium"]
+    plan: FEPlanId
 
 class FEOnboardingStep4(BaseModel):
     hasDocuments: bool
@@ -87,7 +89,7 @@ class FECompleteOnboardingRequest(BaseModel):
     businessCategory: str
     teamSize: str
     workspaceName: str = Field(..., min_length=2, max_length=100)
-    plan: Literal["free", "pro", "premium"]
+    plan: FEPlanId
     hasDocuments: bool
     uploadedFiles: Optional[int] = 0
     uploadedUrls: Optional[int] = 0
@@ -96,7 +98,7 @@ class FEOnboardingSummary(BaseModel):
     businessCategory: str
     teamSize: str
     workspaceName: str
-    plan: Literal["free", "pro", "premium"]
+    plan: FEPlanId
     hasDocuments: bool
     uploadedFiles: int
     uploadedUrls: int
@@ -223,6 +225,15 @@ class FERegenerateApiKeyResponse(BaseModel):
 
 # ── Conversations ─────────────────────────────────────────────────────────────
 
+class CitationSource(BaseModel):
+    """One retrieved chunk a bot reply cites — used by both the Test Chatbot
+    response and persisted conversation messages."""
+    documentId: Optional[str] = None
+    documentName: Optional[str] = None
+    snippet: str
+    page: Optional[int] = None
+    score: float
+
 class FEConversationListItem(BaseModel):
     id: str
     name: str
@@ -239,6 +250,7 @@ class FEConversationMessage(BaseModel):
     role: Literal["user", "agent", "bot"]
     text: str
     time: str
+    sources: List[CitationSource] = []
 
 class FEConversationDetail(FEConversationListItem):
     messages: List[FEConversationMessage]
@@ -358,18 +370,24 @@ class FEPaymentMethod(BaseModel):
     expiry: str
 
 class FEBillingInfo(BaseModel):
-    planId: Literal["free", "pro", "premium"]
-    status: Literal["Active", "Canceled"]
+    planId: FEPlanId
+    status: Literal["Active", "Trialing", "Past Due", "Canceled"]
     priceLabel: str
     renewsOn: str
     paymentMethod: FEPaymentMethod
+    trialEndsOn: Optional[str] = None
 
 class FEChangePlanRequest(BaseModel):
-    planId: Literal["free", "pro", "premium"]
+    planId: FEPlanId
 
-class FEUpdatePaymentMethodRequest(BaseModel):
-    last4: str = Field(..., min_length=4, max_length=4)
-    expiry: str = Field(..., min_length=4, max_length=7)
+class FECheckoutRequest(BaseModel):
+    planId: FEPlanId
+
+class FECheckoutResponse(BaseModel):
+    clientSecret: str
+
+class FESetupIntentResponse(BaseModel):
+    clientSecret: str
 
 class FEApiKey(BaseModel):
     id: str
@@ -402,3 +420,19 @@ class FESaveProfileRequest(BaseModel):
 class FESaveProfileResponse(BaseModel):
     success: bool
     profile: FEUserProfile
+
+# ── Notifications (in-app bell) ─────────────────────────────────────────────────
+
+class FENotification(BaseModel):
+    id: str
+    type: str
+    title: str
+    body: Optional[str] = None
+    link: Optional[str] = None
+    isRead: bool
+    createdAt: str
+    timeAgo: str
+
+class FENotificationListResponse(BaseModel):
+    notifications: List[FENotification]
+    unreadCount: int

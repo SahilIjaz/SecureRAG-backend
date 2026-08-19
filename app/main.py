@@ -8,6 +8,7 @@ from slowapi.errors import RateLimitExceeded
 
 from sqlalchemy import text
 
+from app.api.billing_webhook import router as billing_webhook_router
 from app.api.frontend.router import router as frontend_router
 from app.api.public.widget import widget_app
 from app.config import settings
@@ -69,6 +70,18 @@ async def ensure_frontend_schema() -> None:
         "ALTER TABLE tenants DROP CONSTRAINT IF EXISTS tenants_business_category_check",
         # Public widget lead capture (Behavior tab "collect phone before chat").
         "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS visitor_phone VARCHAR(32)",
+        # Plan-usage notification dedup — fire the 80%/100% warning once per
+        # billing period_month, not on every message past the threshold.
+        "ALTER TABLE usage_counts ADD COLUMN IF NOT EXISTS warned_80_percent BOOLEAN NOT NULL DEFAULT FALSE",
+        "ALTER TABLE usage_counts ADD COLUMN IF NOT EXISTS warned_100_percent BOOLEAN NOT NULL DEFAULT FALSE",
+        # Citation sources for a bot reply — see app/models/conversation.py.
+        "ALTER TABLE conversation_messages ADD COLUMN IF NOT EXISTS sources JSONB",
+        # Stripe linkage — see app/models/subscription.py.
+        "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS stripe_customer_id VARCHAR(255)",
+        "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS stripe_subscription_id VARCHAR(255)",
+        "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS stripe_price_id VARCHAR(255)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS ix_subscriptions_stripe_subscription_id "
+        "ON subscriptions (stripe_subscription_id)",
     ]
     async with async_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -93,6 +106,13 @@ async def lifespan(app: FastAPI):
 
     from app.services.indexing_service import stale_document_sweep_loop
     asyncio.create_task(stale_document_sweep_loop())
+
+    from app.services.notification_service import weekly_summary_loop
+    from app.services.conversation_service import stale_conversation_sweep_loop
+    # Held on app.state so these can't be garbage-collected mid-sleep —
+    # asyncio.create_task() only keeps a weak reference to its result.
+    app.state.weekly_summary_task = asyncio.create_task(weekly_summary_loop())
+    app.state.conversation_sweep_task = asyncio.create_task(stale_conversation_sweep_loop())
 
     logger.info(
         "%s API is running (debug=%s)",
@@ -135,6 +155,10 @@ app.add_middleware(
 
 # Frontend-compat API — paths/shapes match Nexus-frontend/src/api/*.api.ts.
 app.include_router(frontend_router, prefix="/api")
+
+# Stripe webhook — unauthenticated (verified via signature, not a JWT), so it
+# is mounted directly rather than going through frontend_router's Depends.
+app.include_router(billing_webhook_router, prefix="/api")
 
 # Public widget API — mounted as its own sub-app (own CORS: allow_origins=["*"],
 # since it's embedded on arbitrary customer domains not known ahead of time).

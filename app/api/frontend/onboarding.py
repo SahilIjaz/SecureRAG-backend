@@ -23,12 +23,14 @@ from app.api.frontend import helpers
 from app.core.rate_limit import limiter
 from app.database import get_db
 from app.models.document import Document, DocumentSource, DocumentStatus
-from app.models.subscription import BillingCycle, PlanName, Subscription, SubscriptionStatus
+from app.models.subscription import PlanName, Subscription, SubscriptionStatus
 from app.models.tenant import Tenant
 from app.models.tenant_quota import TenantQuota
 from app.models.usage_count import UsageCount
 from app.models.user import User
 from app.schemas.frontend import (
+    FECheckoutRequest,
+    FECheckoutResponse,
     FECompleteOnboardingRequest,
     FECompleteOnboardingResponse,
     FEOnboardingSummary,
@@ -36,7 +38,7 @@ from app.schemas.frontend import (
     FESuccessResponse,
     FEUploadDocumentsResponse,
 )
-from app.services import document_service
+from app.services import document_service, stripe_service
 from app.services.auth_service import PLAN_QUOTAS, get_any_valid_user, _first_of_month, _slugify
 from app.services.indexing_service import schedule_document_processing, schedule_url_scrape
 
@@ -61,34 +63,30 @@ async def _ensure_baseline_quota(tenant: Tenant, db: AsyncSession) -> TenantQuot
     """
     Guarantees a TenantQuota (and UsageCount) row exists before any Step-5
     upload/scrape can happen. Without this, document_service.upload_documents'
-    `if quota: ...` check silently no-ops when no quota row exists yet
-    (previously true for the whole Step-5 window, since /complete was the
-    only place a quota got created) — letting a brand-new signup upload
-    unlimited documents before any plan limit exists.
+    `if quota: ...` check silently no-ops when no quota row exists yet,
+    letting a brand-new signup upload unlimited documents before any plan
+    limit exists.
 
-    At this point in the wizard the user hasn't picked a plan yet (that's
-    step 3, not persisted until /complete), so this creates a conservative
-    free-tier placeholder Subscription + TenantQuota if neither exists.
-    /complete's existing create-or-update logic (see `complete()` below)
-    already knows how to upgrade both to the real chosen plan afterward —
-    this reuses that exact idempotent pattern, just triggered earlier.
+    There's no permanent free tier anymore — POST /onboarding/checkout
+    (Step 3) is what creates the Subscription row, via a real Stripe trial.
+    If none exists by Step 5, the wizard was driven out of order; fail
+    loudly here rather than silently granting a free plan that was never
+    supposed to exist. The TenantQuota row itself may still be a
+    conservative Starter-tier placeholder at this point if Stripe's webhook
+    hasn't confirmed the actual chosen plan yet — that's expected and
+    self-corrects once the webhook lands (see stripe_service.sync_subscription_from_stripe).
     """
     subscription = await helpers.get_subscription(tenant.id, db)
     if subscription is None:
-        subscription = Subscription(
-            tenant_id=tenant.id,
-            plan_name=PlanName.free,
-            billing_cycle=None,
-            status=SubscriptionStatus.active,
-            expires_at=None,
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Complete plan selection (Step 3) before uploading documents.",
         )
-        db.add(subscription)
-        await db.flush()
 
     quota = await helpers.get_quota(tenant.id, db)
     if quota is None:
-        free_quotas = PLAN_QUOTAS[PlanName.free]
-        quota = TenantQuota(tenant_id=tenant.id, subscription_id=subscription.id, **free_quotas)
+        starter_quotas = PLAN_QUOTAS[PlanName.free]
+        quota = TenantQuota(tenant_id=tenant.id, subscription_id=subscription.id, **starter_quotas)
         db.add(quota)
         await db.flush()
 
@@ -147,8 +145,10 @@ async def save_step(
         tenant.slug = await _unique_slug(workspace_name, tenant, db)
     elif step == 3:
         if payload.get("plan") not in helpers.FE_TO_BE_PLAN:
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="plan must be one of: free, pro, premium.")
-        # Plan is persisted on /complete (which receives it again) — nothing to save yet.
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="plan must be one of: starter, growth, business.")
+        # The Stripe trial subscription itself is started via POST
+        # /onboarding/checkout (called once the user has entered card
+        # details), not here — this step only validates the choice.
     elif step == 4:
         has_documents = payload.get("hasDocuments")
         if not isinstance(has_documents, bool):
@@ -158,6 +158,38 @@ async def save_step(
 
     await db.flush()
     return FESuccessResponse()
+
+@router.post("/checkout", response_model=FECheckoutResponse)
+async def onboarding_checkout(
+    body: FECheckoutRequest,
+    current_user: User = Depends(get_any_valid_user),
+    db: AsyncSession = Depends(get_db),
+) -> FECheckoutResponse:
+    """
+    Starts the 3-day trial for the plan picked in Step 3 and returns a
+    Stripe SetupIntent client secret for the frontend to collect the card
+    via Stripe Elements, mirroring POST /api/settings/billing/checkout —
+    kept as a separate endpoint only because this router authenticates via
+    get_any_valid_user (mid-wizard token) rather than get_current_user.
+    """
+    tenant = await helpers.get_tenant(current_user, db)
+    subscription = await helpers.get_subscription(tenant.id, db)
+    if subscription is None:
+        subscription = Subscription(
+            tenant_id=tenant.id,
+            plan_name=PlanName.free,
+            billing_cycle=None,
+            status=SubscriptionStatus.trial,
+            expires_at=None,
+        )
+        db.add(subscription)
+        await db.flush()
+
+    plan_name = helpers.FE_TO_BE_PLAN[body.planId]
+    client_secret = await stripe_service.start_trial_subscription(
+        tenant, current_user, subscription, plan_name, db
+    )
+    return FECheckoutResponse(clientSecret=client_secret)
 
 @router.post("/upload", response_model=FEUploadDocumentsResponse)
 @limiter.limit("10/minute")
@@ -276,28 +308,23 @@ async def complete(
     tenant.has_documents = body.hasDocuments
     tenant.onboarding_completed_at = datetime.now(timezone.utc)
 
-    plan_name = helpers.FE_TO_BE_PLAN[body.plan]
-    quotas = PLAN_QUOTAS[plan_name]
-    # The dashboard's plans are monthly-priced; the DB requires a billing
-    # cycle for any paid plan (chk_subscriptions_billing_cycle).
-    billing_cycle = None if plan_name == PlanName.free else BillingCycle.monthly
-
+    # The trial Subscription itself is created by POST /onboarding/checkout
+    # when Step 3 was submitted (real Stripe trial, no permanent free plan
+    # anymore) — /complete no longer creates one. plan_name/status/
+    # billing_cycle are left for Stripe's webhook to set (see
+    # stripe_service.sync_subscription_from_stripe); this endpoint only
+    # proactively syncs the quota to the already-chosen plan so the
+    # dashboard doesn't sit on the conservative placeholder until the
+    # webhook round trip lands.
     subscription = await helpers.get_subscription(tenant.id, db)
     if subscription is None:
-        subscription = Subscription(
-            tenant_id=tenant.id,
-            plan_name=plan_name,
-            billing_cycle=billing_cycle,
-            status=SubscriptionStatus.active,
-            expires_at=None,
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Complete plan selection (Step 3) before finishing onboarding.",
         )
-        db.add(subscription)
-        await db.flush()
-    else:
-        # Re-completing onboarding just updates the plan — never 409s the flow.
-        subscription.plan_name = plan_name
-        subscription.billing_cycle = billing_cycle
-        subscription.status = SubscriptionStatus.active
+
+    plan_name = helpers.FE_TO_BE_PLAN[body.plan]
+    quotas = PLAN_QUOTAS[plan_name]
 
     quota = await helpers.get_quota(tenant.id, db)
     if quota is None:

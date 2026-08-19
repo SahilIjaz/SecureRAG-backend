@@ -4,9 +4,10 @@ Frontend-compat settings endpoints (/api/settings/...).
   Workspace:      GET/PUT/DELETE /api/settings/workspace
   Notifications:  GET/PUT        /api/settings/notifications   (PUT takes a partial patch)
   Billing:        GET            /api/settings/billing
+                  POST           /api/settings/billing/checkout        (returns Stripe SetupIntent clientSecret)
                   POST           /api/settings/billing/cancel
-                  PUT            /api/settings/billing/plan
-                  PUT            /api/settings/billing/payment-method
+                  PUT            /api/settings/billing/plan             (existing subscription only — no card)
+                  POST           /api/settings/billing/payment-method/setup-intent
   API keys:       GET/POST       /api/settings/api-keys
                   DELETE         /api/settings/api-keys/{id}
 """
@@ -22,13 +23,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.frontend import helpers
 from app.core.security import hash_password
 from app.database import get_db
-from app.models.subscription import BillingCycle, PlanName, SubscriptionStatus
+from app.models.subscription import SubscriptionStatus
 from app.models.tenant import Tenant
 from app.models.tenant_settings import ApiKey, NotificationSetting, PaymentMethod
 from app.models.user import User
 from app.schemas.frontend import (
     FEApiKey,
     FEBillingInfo,
+    FECheckoutRequest,
+    FECheckoutResponse,
     FEChangePlanRequest,
     FECreateApiKeyRequest,
     FECreateApiKeyResponse,
@@ -36,11 +39,12 @@ from app.schemas.frontend import (
     FENotificationSettingsPatch,
     FEPaymentMethod,
     FESaveWorkspaceSettingsResponse,
+    FESetupIntentResponse,
     FESuccessResponse,
-    FEUpdatePaymentMethodRequest,
     FEWorkspaceSettings,
 )
-from app.services.auth_service import PLAN_QUOTAS, _slugify, get_current_user
+from app.services import stripe_service
+from app.services.auth_service import _slugify, get_current_user
 
 router = APIRouter(prefix="/settings", tags=["Frontend — Settings"])
 
@@ -153,6 +157,13 @@ async def update_notifications(
 
 # ── Billing ───────────────────────────────────────────────────────────────────
 
+_FE_STATUS: dict[SubscriptionStatus, str] = {
+    SubscriptionStatus.active: "Active",
+    SubscriptionStatus.trial: "Trialing",
+    SubscriptionStatus.cancelled: "Canceled",
+    SubscriptionStatus.expired: "Canceled",
+}
+
 async def _get_or_create_payment_method(user: User, db: AsyncSession) -> PaymentMethod:
     result = await db.execute(
         select(PaymentMethod).where(PaymentMethod.tenant_id == user.tenant_id)
@@ -169,13 +180,15 @@ async def _billing_info(user: User, db: AsyncSession) -> FEBillingInfo:
     payment = await _get_or_create_payment_method(user, db)
     fe_plan = helpers.fe_plan_for_subscription(subscription)
 
-    fe_status = "Active"
-    if subscription is not None and subscription.status == SubscriptionStatus.cancelled:
-        fe_status = "Canceled"
+    fe_status = _FE_STATUS.get(subscription.status, "Active") if subscription else "Active"
 
     renews_on = helpers.first_of_next_month()
     if subscription is not None and subscription.expires_at is not None:
         renews_on = subscription.expires_at
+
+    trial_ends_on = None
+    if subscription is not None and subscription.status == SubscriptionStatus.trial and subscription.expires_at:
+        trial_ends_on = helpers.format_date(subscription.expires_at)
 
     return FEBillingInfo(
         planId=fe_plan,
@@ -183,6 +196,7 @@ async def _billing_info(user: User, db: AsyncSession) -> FEBillingInfo:
         priceLabel=helpers.PLAN_PRICE_LABELS[fe_plan],
         renewsOn=helpers.format_date(renews_on),
         paymentMethod=FEPaymentMethod(brand=payment.brand, last4=payment.last4, expiry=payment.expiry),
+        trialEndsOn=trial_ends_on,
     )
 
 @router.get("/billing", response_model=FEBillingInfo)
@@ -192,6 +206,28 @@ async def get_billing(
 ) -> FEBillingInfo:
     return await _billing_info(current_user, db)
 
+@router.post("/billing/checkout", response_model=FECheckoutResponse)
+async def start_checkout(
+    body: FECheckoutRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> FECheckoutResponse:
+    """Starts (or restarts) a 3-day trial on the chosen plan and returns a
+    SetupIntent client secret for the frontend to collect the card via
+    Stripe Elements. The local Subscription row is only updated with the
+    Stripe IDs here — plan/status/quota land once the webhook confirms the
+    trial actually started."""
+    tenant = await helpers.get_tenant(current_user, db)
+    subscription = await helpers.get_subscription(current_user.tenant_id, db)
+    if subscription is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No subscription found.")
+
+    plan_name = helpers.FE_TO_BE_PLAN[body.planId]
+    client_secret = await stripe_service.start_trial_subscription(
+        tenant, current_user, subscription, plan_name, db
+    )
+    return FECheckoutResponse(clientSecret=client_secret)
+
 @router.post("/billing/cancel", response_model=FEBillingInfo)
 async def cancel_plan(
     current_user: User = Depends(get_current_user),
@@ -200,8 +236,7 @@ async def cancel_plan(
     subscription = await helpers.get_subscription(current_user.tenant_id, db)
     if subscription is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No subscription found.")
-    subscription.status = SubscriptionStatus.cancelled
-    await db.flush()
+    await stripe_service.cancel_subscription(subscription, db)
     return await _billing_info(current_user, db)
 
 @router.put("/billing/plan", response_model=FEBillingInfo)
@@ -213,33 +248,32 @@ async def change_plan(
     subscription = await helpers.get_subscription(current_user.tenant_id, db)
     if subscription is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No subscription found.")
+    if not subscription.stripe_subscription_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="No active subscription to change — start checkout first.",
+        )
 
     plan_name = helpers.FE_TO_BE_PLAN[body.planId]
-    subscription.plan_name = plan_name
-    subscription.billing_cycle = None if plan_name == PlanName.free else BillingCycle.monthly
-    subscription.status = SubscriptionStatus.active
-
-    quota = await helpers.get_quota(current_user.tenant_id, db)
-    quotas = PLAN_QUOTAS[plan_name]
-    if quota is not None:
-        quota.max_documents = quotas["max_documents"]
-        quota.max_file_size_mb = quotas["max_file_size_mb"]
-        quota.max_questions_per_month = quotas["max_questions_per_month"]
-
-    await db.flush()
+    await stripe_service.change_subscription_plan(subscription, plan_name, db)
     return await _billing_info(current_user, db)
 
-@router.put("/billing/payment-method", response_model=FEBillingInfo)
-async def update_payment_method(
-    body: FEUpdatePaymentMethodRequest,
+@router.post("/billing/payment-method/setup-intent", response_model=FESetupIntentResponse)
+async def create_payment_method_setup_intent(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-) -> FEBillingInfo:
-    payment = await _get_or_create_payment_method(current_user, db)
-    payment.last4 = body.last4
-    payment.expiry = body.expiry
-    await db.flush()
-    return await _billing_info(current_user, db)
+) -> FESetupIntentResponse:
+    """Returns a SetupIntent client secret for updating the card on file.
+    The actual brand/last4/expiry update happens via the
+    setup_intent.succeeded webhook once Stripe confirms the new card."""
+    subscription = await helpers.get_subscription(current_user.tenant_id, db)
+    if subscription is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No subscription found.")
+    try:
+        client_secret = await stripe_service.create_card_update_setup_intent(subscription)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+    return FESetupIntentResponse(clientSecret=client_secret)
 
 # ── API keys ──────────────────────────────────────────────────────────────────
 

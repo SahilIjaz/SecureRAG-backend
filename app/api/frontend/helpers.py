@@ -22,31 +22,36 @@ from app.models.tenant import Tenant
 from app.models.tenant_quota import TenantQuota
 from app.models.usage_count import UsageCount
 from app.models.user import User
+from app.services.notification_service import notify_tenant
 
 # ── Plan mapping ──────────────────────────────────────────────────────────────
-# Frontend plan ids: free | pro | premium — backend PlanName: free | pro | pro_plus
+# Frontend plan ids: starter | growth | business — backend PlanName stays
+# free | pro | pro_plus (its original names, kept as-is since it's a live
+# Postgres enum — renaming it isn't worth the migration risk for a purely
+# cosmetic mismatch). This dict is the one place that translation happens.
 
 FE_TO_BE_PLAN: dict[str, PlanName] = {
-    "free": PlanName.free,
-    "pro": PlanName.pro,
-    "premium": PlanName.pro_plus,
+    "starter": PlanName.free,
+    "growth": PlanName.pro,
+    "business": PlanName.pro_plus,
 }
 BE_TO_FE_PLAN: dict[PlanName, str] = {v: k for k, v in FE_TO_BE_PLAN.items()}
 
 PLAN_PRICE_LABELS: dict[str, str] = {
-    "free": "$0 / month",
-    "pro": "$49 / month",
-    "premium": "$199 / month",
+    "starter": "$10 / month",
+    "growth": "$22 / month",
+    "business": "$105 / month",
 }
 
-PLAN_DISPLAY_NAMES: dict[str, str] = {"free": "Free", "pro": "Pro", "premium": "Premium"}
+PLAN_DISPLAY_NAMES: dict[str, str] = {"starter": "Starter", "growth": "Growth", "business": "Business"}
 
-# Display ceilings for quotas stored as -1 (unlimited) so the frontend's
-# "used / total" progress bars always have a finite denominator.
+# Mirrors PLAN_QUOTAS in auth_service.py (messages/docs) plus a chunks
+# ceiling the quota model doesn't track, so the frontend's "used / total"
+# progress bars always have a finite denominator.
 PLAN_DISPLAY_LIMITS: dict[str, dict[str, int]] = {
-    "free": {"messages": 50, "docs": 10, "urls": 5, "chunks": 1000},
-    "pro": {"messages": 10000, "docs": 100, "urls": 50, "chunks": 5000},
-    "premium": {"messages": 50000, "docs": 500, "urls": 200, "chunks": 20000},
+    "starter": {"messages": 500, "docs": 25, "urls": 25, "chunks": 2000},
+    "growth": {"messages": 5000, "docs": 150, "urls": 150, "chunks": 12000},
+    "business": {"messages": 12000, "docs": 1000, "urls": 1000, "chunks": 80000},
 }
 
 # ── Display formatting ────────────────────────────────────────────────────────
@@ -189,10 +194,40 @@ async def increment_questions_used(tenant_id: uuid.UUID, db: AsyncSession) -> No
     request-scoped session is already committed and closed by then, so
     callers must run this against a *fresh* session opened after the stream
     completes, not the one injected into the endpoint.
+
+    Also the single choke point for the plan-usage-warning notification —
+    every questions_used increment (dashboard test-chat and the public
+    widget, streaming and non-streaming) already runs through here, so the
+    80%/100% threshold check only needs to live in one place.
     """
     usage = await get_current_usage(tenant_id, db)
-    if usage is not None:
-        usage.questions_used = (usage.questions_used or 0) + 1
+    if usage is None:
+        return
+    usage.questions_used = (usage.questions_used or 0) + 1
+    await _maybe_warn_plan_usage(tenant_id, usage, db)
+
+async def _maybe_warn_plan_usage(tenant_id: uuid.UUID, usage: UsageCount, db: AsyncSession) -> None:
+    quota = await get_quota(tenant_id, db)
+    if quota is None or quota.max_questions_per_month == -1:
+        return
+    ratio = usage.questions_used / quota.max_questions_per_month
+
+    if ratio >= 1.0 and not usage.warned_100_percent:
+        usage.warned_100_percent = True
+        await notify_tenant(
+            tenant_id, "plan_usage_warnings",
+            "You've reached 100% of your plan's monthly message limit",
+            "New chat messages will keep working, but consider upgrading so you don't run into a hard cap later.",
+            "/dashboard/settings?tab=billing", db,
+        )
+    elif ratio >= 0.8 and not usage.warned_80_percent:
+        usage.warned_80_percent = True
+        await notify_tenant(
+            tenant_id, "plan_usage_warnings",
+            "You've used 80% of your plan's monthly message limit",
+            "Consider upgrading before you hit your limit.",
+            "/dashboard/settings?tab=billing", db,
+        )
 
 async def get_quota_and_usage(
     tenant_id: uuid.UUID, db: AsyncSession

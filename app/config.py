@@ -46,6 +46,12 @@ class Settings(BaseSettings):
     PINECONE_API_KEY: str = ""
     PINECONE_INDEX_NAME: str = "securerag-documents"
 
+    STRIPE_SECRET_KEY: str = ""
+    STRIPE_WEBHOOK_SECRET: str = ""
+    STRIPE_PRICE_STARTER: str = ""
+    STRIPE_PRICE_GROWTH: str = ""
+    STRIPE_PRICE_BUSINESS: str = ""
+
     # Kept even though the active answer_question() call now uses Gemini —
     # the Anthropic call is commented out in rag_service.py, not deleted, so
     # this setting stays valid if it's ever restored.
@@ -69,6 +75,13 @@ class Settings(BaseSettings):
     # Background-job recovery: how long a document may sit in "processing"
     # before a startup sweep assumes the worker died and reschedules it.
     INDEXING_STALE_MINUTES: int = 15
+
+    # How long an Open/Handed-off conversation may sit with no new message
+    # before a recurring sweep auto-closes it — otherwise nothing ever marks
+    # a conversation Resolved except an agent doing it by hand, so an
+    # abandoned/unanswered chat (or a stray test message) stays "open"
+    # forever and the inbox only ever grows.
+    CONVERSATION_AUTO_RESOLVE_DAYS: int = 7
 
     # FAQ entries (question + answer pairs added directly, no file involved).
     FAQ_QUESTION_MAX_LEN: int = 500
