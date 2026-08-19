@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, List, Optional
 
 from sqlalchemy import DateTime, ForeignKey, String, Text, func
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 # list endpoints are a straight pass-through.
 CONVERSATION_STATUSES = ("Open", "Handed off", "Resolved")
 CONVERSATION_SENTIMENTS = ("Positive", "Neutral", "Negative")
-CONVERSATION_CHANNELS = ("Widget", "API")
+CONVERSATION_CHANNELS = ("Widget", "API", "Internal Test")
 
 class Conversation(Base):
     """A visitor chat session with the tenant's chatbot."""
@@ -88,6 +88,9 @@ class ConversationMessage(Base):
     )
     role: Mapped[str] = mapped_column(String(10), nullable=False, default="user")
     text: Mapped[str] = mapped_column(Text, nullable=False)
+    # Citation data for a bot reply — [{documentId, documentName, snippet, page, score}, ...].
+    # Only ever populated for role="bot"; null for user/agent messages.
+    sources: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

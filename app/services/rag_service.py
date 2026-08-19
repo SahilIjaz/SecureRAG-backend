@@ -200,6 +200,23 @@ def _parse_confidence(answer: str) -> tuple:
         return None, answer
     return min(int(match.group(1)), 100), answer[match.end():].strip()
 
+def _build_citation_sources(chunks: list[dict], doc_names: dict | None) -> list[dict]:
+    """Shape retrieved chunks into the citation payload the frontend renders —
+    document identity, a short snippet, and the retrieval score as a
+    grounding-confidence proxy (works unconditionally, unlike the LLM's
+    self-reported CONFIDENCE line which only exists when handoff is on)."""
+    out = []
+    for c in chunks:
+        text = c.get("text", "")
+        out.append({
+            "documentId": str(c["document_id"]) if c.get("document_id") else None,
+            "documentName": (doc_names or {}).get(str(c.get("document_id"))),
+            "snippet": text[:220] + ("…" if len(text) > 220 else ""),
+            "page": c.get("page"),
+            "score": round(float(c.get("score", 0)), 4),
+        })
+    return out
+
 async def _prepare_generation(
     tenant_id: str,
     query: str,
@@ -364,7 +381,7 @@ async def answer_question(
 
         return {
             "answer": answer,
-            "sources": [c["text"] for c in chunks],
+            "sources": _build_citation_sources(chunks, doc_names),
             "model": used_model,
             "confidence": confidence,
             "handoff": False,
@@ -373,6 +390,102 @@ async def answer_question(
     except Exception as e:
         logger.error(f"Failed to generate answer: {str(e)}")
         raise
+
+_CLASSIFY_MAX_TOKENS = 80  # confirmed against a live call: 60 was enough, this leaves headroom
+_CLASSIFY_TOPIC_MAX_LEN = 255  # matches Conversation.topic's column width
+
+def _parse_classification(text: str) -> tuple:
+    """Pull SENTIMENT/TOPIC lines out of a classification reply; either half is
+    None if the model didn't produce it in a recognizable shape."""
+    import re
+
+    sentiment = None
+    match = re.search(r"SENTIMENT:\s*(Positive|Neutral|Negative)", text, re.IGNORECASE)
+    if match:
+        sentiment = match.group(1).capitalize()
+
+    topic = None
+    match = re.search(r"TOPIC:\s*(.+)", text)
+    if match:
+        topic = match.group(1).strip()[:_CLASSIFY_TOPIC_MAX_LEN] or None
+
+    return sentiment, topic
+
+async def classify_conversation_turn(tenant_id: str, user_message: str, bot_reply: str) -> tuple:
+    """
+    Best-effort sentiment + topic classification for one chat turn, e.g.
+    ("Negative", "Refund policy"). Deliberately decoupled from the answer
+    generation path (see answer_question/answer_question_stream) — callers
+    run this *after* the visitor already has their reply, so a slow or
+    failing classification call never adds latency to, or breaks, the
+    actual chat. Any failure returns (None, None); callers should treat
+    that as "leave the stored sentiment/topic as they were."
+    """
+    if not settings.GEMINI_MODEL_CHAIN:
+        return None, None
+
+    from google.genai import errors as genai_errors
+    from google.genai import types as genai_types
+
+    prompt = (
+        "Classify this customer support exchange. Reply with exactly two lines, nothing else:\n"
+        "SENTIMENT: Positive, Neutral, or Negative — the customer's tone, not the assistant's.\n"
+        "TOPIC: a 2-4 word label for what the customer was asking about.\n\n"
+        f"Customer: {user_message}\n"
+        f"Assistant: {bot_reply}"
+    )
+    try:
+        client = _get_genai_client()
+        # The chain's *last* model, not the first: confirmed live that the
+        # primary answer model (gemini-flash-latest) spends an unpredictable
+        # chunk of its output budget on internal "thinking" tokens before any
+        # visible text — it truncated at MAX_TOKENS with empty/partial text
+        # even at 200 tokens. The lighter fallback model has no such
+        # overhead and completes this two-line reply cleanly well under
+        # _CLASSIFY_MAX_TOKENS, so it's the better fit for a cheap
+        # background call, not just a fallback.
+        response = await client.aio.models.generate_content(
+            model=settings.GEMINI_MODEL_CHAIN[-1],
+            contents=prompt,
+            config=genai_types.GenerateContentConfig(max_output_tokens=_CLASSIFY_MAX_TOKENS),
+        )
+        return _parse_classification(response.text or "")
+    except genai_errors.APIError as e:
+        logger.warning("Conversation classification failed for tenant %s: %s", tenant_id, e)
+        return None, None
+    except Exception as e:
+        logger.warning("Conversation classification errored for tenant %s: %s", tenant_id, e)
+        return None, None
+
+async def store_conversation_classification(
+    conversation_id, tenant_id: str, user_message: str, bot_reply: str
+) -> None:
+    """
+    classify_conversation_turn() + persist the result — meant to be scheduled
+    via core.background.fire_and_forget() after a reply has already been
+    sent, from any caller that just wrote a real Conversation turn (the
+    public widget, or the dashboard's Test Chatbot in "simulate real visitor"
+    mode). Runs in its own DB session since the caller's request-scoped
+    session is typically gone (committed and closed, or about to be) by the
+    time this executes. A failure here only means this turn's sentiment/topic
+    stay at their previous values — it can never affect the chat reply
+    already sent to the caller.
+    """
+    from sqlalchemy import update
+
+    from app.database import AsyncSessionLocal
+    from app.models.conversation import Conversation
+
+    sentiment, topic = await classify_conversation_turn(str(tenant_id), user_message, bot_reply)
+    if sentiment is None and topic is None:
+        return
+    values = {k: v for k, v in {"sentiment": sentiment, "topic": topic}.items() if v is not None}
+    try:
+        async with AsyncSessionLocal() as session:
+            await session.execute(update(Conversation).where(Conversation.id == conversation_id).values(**values))
+            await session.commit()
+    except Exception:
+        logger.exception("Failed to store conversation classification for %s", conversation_id)
 
 _CONFIDENCE_PREFIX_MAX = 64  # if no newline by here, the model ignored the instruction
 
@@ -581,7 +694,7 @@ async def answer_question_stream(
         tenant_id, (t_gen - t_first_chunk) * 1000, (t_gen - t_attempts_start) * 1000, used_model, confidence,
     )
     yield {
-        "type": "final", "answer": answer, "sources": [c["text"] for c in chunks],
+        "type": "final", "answer": answer, "sources": _build_citation_sources(chunks, doc_names),
         "model": used_model, "confidence": confidence, "handoff": False,
     }
 

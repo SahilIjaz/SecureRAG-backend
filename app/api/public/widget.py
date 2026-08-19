@@ -36,7 +36,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.frontend import helpers
+from app.core.background import fire_and_forget
 from app.core.rate_limit import limiter
+from app.schemas.frontend import CitationSource
 from app.core.widget_auth import create_widget_session_token, decode_widget_session_token, is_origin_allowed
 from app.database import AsyncSessionLocal, get_db
 from app.models.chatbot_config import ChatbotConfig
@@ -44,6 +46,8 @@ from app.models.conversation import Conversation, ConversationMessage
 from app.models.document import Document
 from app.models.tenant import Tenant
 from app.schemas.frontend import FEChatbotAppearance, FEChatbotIdentity
+from app.services.notification_service import notify_tenant, conversation_alert_copy
+from app.services.rag_service import store_conversation_classification
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +136,7 @@ class WidgetMessageRequest(BaseModel):
 
 class WidgetMessageResponse(BaseModel):
     reply: str
-    sources: List[str] = []
+    sources: List[CitationSource] = []
     handoff: bool = False
     sessionToken: str
 
@@ -204,6 +208,10 @@ async def post_widget_message(
         and usage.questions_used >= quota.max_questions_per_month
     )
 
+    unresolved_reason = None
+    notif_type = None
+    should_classify = False
+
     if quota_exceeded:
         reply, sources, handoff = fallback, [], False
         t_docs = t_gen_start = t_gen_done = time.monotonic()
@@ -231,22 +239,39 @@ async def post_widget_message(
             t_gen_done = time.monotonic()
         else:
             if usage is not None:
-                usage.questions_used = (usage.questions_used or 0) + 1
+                await helpers.increment_questions_used(tenant.id, db)
 
+            should_classify = True
             confidence = result.get("confidence")
             threshold = behavior.get("confidenceThreshold", 60)
             if not result.get("sources"):
                 reply, sources, handoff = fallback, [], False
+                unresolved_reason = "No matching document found"
+                notif_type = "knowledge_gaps_detected"
             elif behavior.get("handoffToHuman") and confidence is not None and confidence < threshold:
                 reply, sources, handoff = fallback, [], True
+                unresolved_reason = "Low-confidence answer, handed off"
+                notif_type = "unresolved_conversations"
             else:
                 reply, sources, handoff = result["answer"], result["sources"], False
 
     db.add(ConversationMessage(conversation_id=conversation.id, role="bot", text=reply))
     if handoff and conversation.status == "Open":
         conversation.status = "Handed off"
+    if unresolved_reason:
+        conversation.unresolved_reason = unresolved_reason
     await db.flush()
     t_flush = time.monotonic()
+
+    if notif_type:
+        await notify_tenant(
+            tenant.id, notif_type,
+            *conversation_alert_copy(notif_type, body.message),
+            f"/dashboard/conversations?id={conversation.id}", db,
+        )
+
+    if should_classify:
+        fire_and_forget(store_conversation_classification(conversation.id, tenant.id, body.message, reply))
 
     # Re-issued on every message so an active conversation's sliding window
     # never expires mid-use, while an abandoned/leaked token still dies
@@ -374,6 +399,8 @@ async def post_widget_message_stream(
         final_text = fallback
         handoff = False
         count_usage = False
+        unresolved_reason = None
+        notif_type = None
 
         try:
             if quota_exceeded:
@@ -393,6 +420,16 @@ async def post_widget_message_stream(
                             final_text = ev["answer"]
                             handoff = ev["handoff"]
                             count_usage = True
+                            # Check handoff *before* sources: answer_question_stream()
+                            # deliberately blanks sources to [] for a suppressed
+                            # low-confidence answer too, not just a genuine "nothing
+                            # retrieved" — sources alone can't tell the two apart here.
+                            if handoff:
+                                unresolved_reason = "Low-confidence answer, handed off"
+                                notif_type = "unresolved_conversations"
+                            elif not ev["sources"]:
+                                unresolved_reason = "No matching document found"
+                                notif_type = "knowledge_gaps_detected"
                             yield _sse("done", {
                                 "reply": ev["answer"], "sources": ev["sources"],
                                 "handoff": ev["handoff"], "sessionToken": session_token,
@@ -429,9 +466,23 @@ async def post_widget_message_stream(
                         .where(Conversation.id == conversation_id, Conversation.status == "Open")
                         .values(status="Handed off")
                     )
+                if unresolved_reason:
+                    await session.execute(
+                        update(Conversation)
+                        .where(Conversation.id == conversation_id)
+                        .values(unresolved_reason=unresolved_reason)
+                    )
                 if count_usage:
                     await helpers.increment_questions_used(tenant_id, session)
+                if notif_type:
+                    await notify_tenant(
+                        tenant_id, notif_type,
+                        *conversation_alert_copy(notif_type, message),
+                        f"/dashboard/conversations?id={conversation_id}", session,
+                    )
                 await session.commit()
+            if count_usage:
+                fire_and_forget(store_conversation_classification(conversation_id, tenant_id, message, final_text or fallback))
         except Exception:
             logger.exception("Failed to persist widget reply after streaming (conversation %s)", conversation_id)
         finally:
