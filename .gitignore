@@ -60,3 +60,4 @@ migrations/__pycache__/
 # Markdown docs (local-only, not for the repo)
 *.md
 *.txt
+!README.md
