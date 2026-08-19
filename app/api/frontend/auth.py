@@ -10,6 +10,7 @@ than the original /api/v1/auth routes:
   - POST /api/auth/forgot-password {email} -> {success}
   - POST /api/auth/reset-password {email, otp, newPassword} -> {success}
   - POST /api/auth/google {idToken} -> {success, token, user}
+  - POST /api/auth/logout {} -> {success}  (Bearer token required)
 
 The frontend stores exactly ONE token (`res.token`) and sends it as the
 Bearer token for every later call — so these routes always issue a real
@@ -265,6 +266,19 @@ async def forgot_password(
     db: AsyncSession = Depends(get_db),
 ) -> FESuccessResponse:
     await auth_service.forgot_password(email=body.email, db=db)
+    return FESuccessResponse()
+
+@router.post("/logout", response_model=FESuccessResponse)
+async def logout(
+    request: Request,
+    _revoked: None = Depends(auth_service.revoke_current_token),
+) -> FESuccessResponse:
+    """
+    Revokes the caller's current access token (see revoke_current_token) so it
+    stops working immediately instead of remaining valid until it naturally
+    expires. Always returns success — see revoke_current_token's docstring
+    for why an already-invalid token isn't an error here.
+    """
     return FESuccessResponse()
 
 @router.post("/reset-password", response_model=FESuccessResponse)

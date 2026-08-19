@@ -1,17 +1,12 @@
 """
 Auth Service — all authentication business logic.
 
-Signup flow (multi-step, matches Figma):
-  Step 1: register_user() — create unverified user, send OTP
-  Step 2: verify_email() — verify OTP, mark email verified
-  Step 3: save_organization_info()— save business_category + employee_count_range
-  Step 4: setup_workspace() — create tenant, link to user
-  Step 5: select_plan() — create subscription + tenant_quota + usage_count row
+register_user() is Step 1 of signup (create unverified user, send OTP); the
+frontend-compat routes in api/frontend/auth.py handle OTP verification and
+login directly, and api/frontend/onboarding.py owns steps 2+ of onboarding —
+neither goes through this module beyond that.
 
-Auth:
-  signin() — validate credentials, return JWT pair
-  refresh_tokens() — validate refresh token, return new JWT pair
-  get_current_user() — FastAPI dependency to extract + validate access token
+get_current_user() — FastAPI dependency to extract + validate access token.
 """
 
 import asyncio
@@ -24,52 +19,50 @@ from typing import Optional
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
-
-from google.auth.transport import requests as google_requests
-from google.oauth2 import id_token as google_id_token
 
 from app.config import settings
 from app.core.email import send_otp_email
 from app.core.security import (
     create_access_token,
-    create_refresh_token,
     decode_token,
     generate_otp,
     hash_otp,
     hash_password,
     verify_otp,
-    verify_password,
 )
 from app.database import get_db
 from app.models.email_verification import EmailVerification, OTPPurpose
-from app.models.subscription import BillingCycle, PlanName, Subscription, SubscriptionStatus
+from app.models.subscription import PlanName
 from app.models.tenant import Tenant
-from app.models.tenant_quota import TenantQuota
-from app.models.usage_count import UsageCount
-from app.models.user import AuthProvider, User
+from app.models.user import User
+from app.models.revoked_token import RevokedToken
 
 logger = logging.getLogger(__name__)
 
 _bearer_scheme = HTTPBearer(auto_error=False)
 
+# Keyed by the internal PlanName enum (free/pro/pro_plus), which no longer
+# matches the user-facing names — see FE_TO_BE_PLAN in api/frontend/helpers.py
+# for the free→Starter/pro→Growth/pro_plus→Business remap. Values are the
+# real costed quotas from the Stripe pricing model (Starter $10, Growth $22,
+# Business $105/mo).
 PLAN_QUOTAS: dict[PlanName, dict] = {
     PlanName.free: {
-        "max_documents": 10,
-        "max_file_size_mb": 15,
-        "max_questions_per_month": 50,
+        "max_documents": 25,
+        "max_file_size_mb": 20,
+        "max_questions_per_month": 500,
     },
     PlanName.pro: {
-        "max_documents": 100,
+        "max_documents": 150,
         "max_file_size_mb": 50,
-        "max_questions_per_month": -1,
+        "max_questions_per_month": 5000,
     },
     PlanName.pro_plus: {
-        "max_documents": -1,
-        "max_file_size_mb": -1,
-        "max_questions_per_month": -1,
+        "max_documents": 1000,
+        "max_file_size_mb": 100,
+        "max_questions_per_month": 12000,
     },
 }
 
@@ -146,461 +139,6 @@ async def register_user(
         "email": email,
     }
 
-async def verify_email(
-    email: str,
-    otp: str,
-    db: AsyncSession,
-) -> dict:
-    """
-    Validate the OTP for the given email.
-    Returns {"message": ..., "email": ...}
-    """
-    user = await _get_user_by_email_or_404(email, db)
-
-    if user.is_email_verified:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email is already verified.",
-        )
-
-    result = await db.execute(
-        select(EmailVerification)
-        .where(
-            EmailVerification.user_id == user.id,
-            EmailVerification.purpose == OTPPurpose.email_verification,
-            EmailVerification.is_used == False,
-            EmailVerification.expires_at > datetime.now(timezone.utc),
-        )
-        .order_by(EmailVerification.created_at.desc())
-        .limit(1)
-    )
-    otp_record = result.scalar_one_or_none()
-
-    if otp_record is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="OTP has expired or does not exist. Please request a new one.",
-        )
-
-    if not verify_otp(otp, otp_record.otp_code):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid OTP code.",
-        )
-
-    otp_record.is_used = True
-    user.is_email_verified = True
-
-    onboarding_token = create_access_token(
-        data={"sub": str(user.id), "purpose": "onboarding"},
-        expires_delta=timedelta(hours=1),
-    )
-
-    return {
-        "message": "Email verified successfully.",
-        "email": email,
-        "onboarding_token": onboarding_token,
-    }
-
-async def save_organization_info(
-    user: User,
-    business_category: str,
-    employee_count_range: str,
-    db: AsyncSession,
-) -> dict:
-    """
-    Persist organisation info onto the tenant record.
-    The tenant exists as a placeholder from Step 1.
-    """
-    try:
-        tenant = await _get_tenant_for_user(user, db)
-
-        tenant.business_category = business_category
-        tenant.employee_count_range = employee_count_range
-        await db.flush()
-        await db.commit()
-
-        return {
-            "message": "Organisation info saved.",
-            "email": user.email,
-            "full_name": user.full_name,
-            "business_category": business_category,
-            "employee_count_range": employee_count_range,
-        }
-    except Exception as err:
-        await db.rollback()
-        logger.error(f"Failed to save organization info: {err}")
-        raise
-
-async def setup_workspace(
-    user: User,
-    workspace_name: str,
-    db: AsyncSession,
-) -> dict:
-    """
-    Set the tenant workspace name and generate its unique slug.
-    """
-    try:
-        tenant = await _get_tenant_for_user(user, db)
-
-        base_slug = _slugify(workspace_name)
-
-        slug = base_slug
-        counter = 1
-        while True:
-            result = await db.execute(
-                select(Tenant).where(Tenant.slug == slug, Tenant.id != tenant.id)
-            )
-            if result.scalar_one_or_none() is None:
-                break
-            slug = f"{base_slug}-{counter}"
-            counter += 1
-
-        tenant.workspace_name = workspace_name.strip()
-        tenant.slug = slug
-        await db.flush()
-        await db.commit()
-
-        return {
-            "message": "Workspace set up successfully.",
-            "workspace_name": tenant.workspace_name,
-            "slug": tenant.slug,
-        }
-    except Exception as err:
-        await db.rollback()
-        logger.error(f"Failed to setup workspace: {err}")
-        raise
-
-async def select_plan(
-    user: User,
-    plan_name: PlanName,
-    billing_cycle: Optional[BillingCycle],
-    db: AsyncSession,
-) -> dict:
-    """
-    Create subscription + tenant_quota + initial usage_count row.
-    This completes onboarding.
-    """
-    tenant = await _get_tenant_for_user(user, db)
-
-    if plan_name != PlanName.free and billing_cycle is None:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="billing_cycle is required for paid plans.",
-        )
-
-    result = await db.execute(
-        select(Subscription).where(Subscription.tenant_id == tenant.id)
-    )
-    if result.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Subscription already exists for this tenant.",
-        )
-
-    expires_at = None
-    if plan_name != PlanName.free:
-        delta = timedelta(days=30) if billing_cycle == BillingCycle.monthly else timedelta(days=365)
-        expires_at = datetime.now(timezone.utc) + delta
-
-    subscription = Subscription(
-        tenant_id=tenant.id,
-        plan_name=plan_name,
-        billing_cycle=billing_cycle,
-        status=SubscriptionStatus.active,
-        expires_at=expires_at,
-    )
-    db.add(subscription)
-    await db.flush()
-
-    quotas = PLAN_QUOTAS[plan_name]
-    tenant_quota = TenantQuota(
-        tenant_id=tenant.id,
-        subscription_id=subscription.id,
-        **quotas,
-    )
-    db.add(tenant_quota)
-
-    usage = UsageCount(
-        tenant_id=tenant.id,
-        period_month=_first_of_month().date(),
-    )
-    db.add(usage)
-    await db.flush()
-
-    tokens = _issue_tokens(user)
-
-    return {
-        "message": "Onboarding complete. Welcome to SecureRAG++!",
-        **tokens,
-    }
-
-async def complete_onboarding(
-    user: User,
-    role: str,
-    team_size: str,
-    goal: str,
-    workspace_name: str,
-    plan_name: PlanName = PlanName.free,
-    billing_cycle: Optional[BillingCycle] = None,
-    db: AsyncSession = None,
-) -> dict:
-    """
-    Consolidated onboarding: save role, team size, goal, workspace name,
-    and create subscription in one call. Replaces steps 3, 4, 5.
-    """
-    tenant = await _get_tenant_for_user(user, db)
-
-    tenant.employee_count_range = team_size
-    tenant.workspace_name = workspace_name.strip()
-
-    base_slug = _slugify(workspace_name)
-    slug = base_slug
-    counter = 1
-    while True:
-        result = await db.execute(
-            select(Tenant).where(Tenant.slug == slug, Tenant.id != tenant.id)
-        )
-        if result.scalar_one_or_none() is None:
-            break
-        slug = f"{base_slug}-{counter}"
-        counter += 1
-
-    tenant.slug = slug
-
-    if plan_name != PlanName.free and billing_cycle is None:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="billing_cycle is required for paid plans.",
-        )
-
-    result = await db.execute(
-        select(Subscription).where(Subscription.tenant_id == tenant.id)
-    )
-    if result.scalar_one_or_none():
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Subscription already exists for this tenant.",
-        )
-
-    expires_at = None
-    if plan_name != PlanName.free:
-        delta = timedelta(days=30) if billing_cycle == BillingCycle.monthly else timedelta(days=365)
-        expires_at = datetime.now(timezone.utc) + delta
-
-    subscription = Subscription(
-        tenant_id=tenant.id,
-        plan_name=plan_name,
-        billing_cycle=billing_cycle,
-        status=SubscriptionStatus.active,
-        expires_at=expires_at,
-    )
-    db.add(subscription)
-    await db.flush()
-
-    quotas = PLAN_QUOTAS[plan_name]
-    tenant_quota = TenantQuota(
-        tenant_id=tenant.id,
-        subscription_id=subscription.id,
-        **quotas,
-    )
-    db.add(tenant_quota)
-
-    usage = UsageCount(
-        tenant_id=tenant.id,
-        period_month=_first_of_month().date(),
-    )
-    db.add(usage)
-    await db.flush()
-    await db.commit()
-
-    tokens = _issue_tokens(user)
-
-    return {
-        "message": "Onboarding complete. Welcome to SecureRAG++!",
-        "workspace_name": tenant.workspace_name,
-        "slug": tenant.slug,
-        **tokens,
-    }
-
-async def google_login(token: str, db: AsyncSession) -> dict:
-    """
-    Verify a Google ID token and sign in (or register) the user.
-
-    - If the user already exists with auth_provider=google, issue JWT tokens.
-    - If the user exists with auth_provider=email (same email), link the
-      Google account and issue tokens.
-    - If no user exists, create a new user + placeholder tenant and issue
-      an onboarding_token so the frontend can complete steps 3-5.
-    """
-    try:
-        idinfo = google_id_token.verify_oauth2_token(
-            token,
-            google_requests.Request(),
-            settings.GOOGLE_CLIENT_ID,
-        )
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid Google ID token.",
-        )
-
-    google_uid: str = idinfo["sub"]
-    email: str = idinfo.get("email", "").lower().strip()
-    full_name: str = idinfo.get("name", email.split("@")[0])
-
-    if not email:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Google account does not have an email address.",
-        )
-
-    result = await db.execute(select(User).where(User.email == email))
-    user = result.scalar_one_or_none()
-
-    if user is not None:
-        if user.auth_provider == AuthProvider.email:
-            user.auth_provider = AuthProvider.google
-            user.provider_uid = google_uid
-            user.is_email_verified = True
-
-        if not user.is_active:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Account is deactivated.",
-            )
-
-        sub_result = await db.execute(
-            select(Subscription).where(Subscription.tenant_id == user.tenant_id)
-        )
-        has_subscription = sub_result.scalar_one_or_none() is not None
-
-        if has_subscription:
-            return {**_issue_tokens(user), "is_new_user": False}
-
-        onboarding_token = create_access_token(
-            data={"sub": str(user.id), "purpose": "onboarding"},
-            expires_delta=timedelta(hours=1),
-        )
-        return {
-            "access_token": "",
-            "refresh_token": "",
-            "token_type": "bearer",
-            "is_new_user": True,
-            "onboarding_token": onboarding_token,
-        }
-
-    placeholder_tenant = Tenant(
-        workspace_name="__pending__",
-        slug=f"pending-{uuid.uuid4().hex[:8]}",
-    )
-    db.add(placeholder_tenant)
-    await db.flush()
-
-    user = User(
-        tenant_id=placeholder_tenant.id,
-        full_name=full_name,
-        email=email,
-        password_hash=None,
-        auth_provider=AuthProvider.google,
-        provider_uid=google_uid,
-        is_email_verified=True,
-    )
-    db.add(user)
-    await db.flush()
-
-    onboarding_token = create_access_token(
-        data={"sub": str(user.id), "purpose": "onboarding"},
-        expires_delta=timedelta(hours=1),
-    )
-
-    return {
-        "access_token": "",
-        "refresh_token": "",
-        "token_type": "bearer",
-        "is_new_user": True,
-        "onboarding_token": onboarding_token,
-    }
-
-async def signin(
-    email: str,
-    password: str,
-    db: AsyncSession,
-) -> dict:
-    result = await db.execute(
-        select(User)
-        .where(User.email == email.lower().strip())
-        .options(selectinload(User.tenant))
-    )
-    user = result.scalar_one_or_none()
-    if user is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No account found with this email address.",
-        )
-
-    if not user.is_email_verified:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Email not verified. Please verify your email first.",
-        )
-
-    if not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Account is deactivated.",
-        )
-
-    if not verify_password(password, user.password_hash):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password.",
-        )
-
-    if not user.tenant or not user.tenant.business_category:
-        logger.info(f"User {user.id} ({user.email}) needs to complete onboarding")
-        onboarding_token = create_access_token(
-            data={"sub": str(user.id), "purpose": "onboarding"},
-            expires_delta=timedelta(hours=1),
-        )
-        return {
-            "onboarding_token": onboarding_token,
-            "token_type": "bearer",
-            "needs_onboarding": True,
-        }
-
-    logger.info(f"User {user.id} ({user.email}) signin successful")
-    return _issue_tokens(user)
-
-async def refresh_tokens(
-    refresh_token: str,
-    db: AsyncSession,
-) -> dict:
-    credentials_error = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Invalid or expired refresh token.",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-    try:
-        payload = decode_token(refresh_token)
-    except JWTError:
-        raise credentials_error
-
-    if payload.get("type") != "refresh":
-        raise credentials_error
-
-    user_id: Optional[str] = payload.get("sub")
-    if not user_id:
-        raise credentials_error
-
-    result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
-    user = result.scalar_one_or_none()
-
-    if user is None or not user.is_active:
-        raise credentials_error
-
-    return _issue_tokens(user)
-
 async def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer_scheme),
     db: AsyncSession = Depends(get_db),
@@ -630,6 +168,14 @@ async def get_current_user(
     if payload.get("type") != "access":
         raise credentials_error
 
+    jti = payload.get("jti")
+    if jti and await _is_jti_revoked(jti, db):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="You have been logged out. Please log in again.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     user_id: Optional[str] = payload.get("sub")
     if not user_id:
         raise credentials_error
@@ -647,6 +193,41 @@ async def get_current_user(
         )
 
     return user
+
+async def _is_jti_revoked(jti: str, db: AsyncSession) -> bool:
+    result = await db.execute(select(RevokedToken.id).where(RevokedToken.jti == jti))
+    return result.scalar_one_or_none() is not None
+
+async def revoke_current_token(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer_scheme),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """
+    FastAPI dependency for POST /auth/logout — records the presented access
+    token's jti as revoked so get_current_user() rejects it immediately
+    instead of trusting it until its natural expiry. Deliberately lenient:
+    a missing, malformed, wrong-type, or already-expired token is a no-op
+    rather than a 401 — from the client's point of view logout always
+    "succeeds", since there's nothing left worth revoking in those cases.
+    """
+    if credentials is None:
+        return
+    try:
+        payload = decode_token(credentials.credentials)
+    except JWTError:
+        return
+    if payload.get("type") != "access":
+        return
+    jti = payload.get("jti")
+    exp = payload.get("exp")
+    if not jti or not exp:
+        return
+
+    db.add(RevokedToken(jti=jti, expires_at=datetime.fromtimestamp(exp, tz=timezone.utc)))
+    # Opportunistic cleanup so this table stays tiny without a separate
+    # scheduled job — access tokens are short-lived (30 min by default), so
+    # any row here is safe to drop once its own token would've expired anyway.
+    await db.execute(delete(RevokedToken).where(RevokedToken.expires_at < datetime.now(timezone.utc)))
 
 async def get_onboarding_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer_scheme),
@@ -798,33 +379,6 @@ async def _get_user_by_email_or_404(email: str, db: AsyncSession) -> User:
             detail="No account found with this email address.",
         )
     return user
-
-async def _get_verified_user_or_401(email: str, db: AsyncSession) -> User:
-    user = await _get_user_by_email_or_404(email, db)
-    if not user.is_email_verified:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Email is not verified. Complete Step 2 first.",
-        )
-    return user
-
-async def _get_tenant_for_user(user: User, db: AsyncSession) -> Tenant:
-    result = await db.execute(select(Tenant).where(Tenant.id == user.tenant_id))
-    tenant = result.scalar_one_or_none()
-    if tenant is None:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Tenant record not found.",
-        )
-    return tenant
-
-def _issue_tokens(user: User) -> dict:
-    payload = {"sub": str(user.id)}
-    return {
-        "access_token": create_access_token(payload),
-        "refresh_token": create_refresh_token(payload),
-        "token_type": "bearer",
-    }
 
 async def forgot_password(email: str, db: AsyncSession) -> dict:
     """

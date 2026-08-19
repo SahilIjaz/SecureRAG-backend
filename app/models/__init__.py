@@ -9,6 +9,8 @@ from app.models.document import Document
 from app.models.chatbot_config import ChatbotConfig
 from app.models.conversation import Conversation, ConversationMessage
 from app.models.tenant_settings import ApiKey, NotificationSetting, PaymentMethod
+from app.models.revoked_token import RevokedToken
+from app.models.notification import Notification
 
 __all__ = [
     "Tenant",
@@ -25,4 +27,6 @@ __all__ = [
     "ApiKey",
     "NotificationSetting",
     "PaymentMethod",
+    "RevokedToken",
+    "Notification",
 ]
