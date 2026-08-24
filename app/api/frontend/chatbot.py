@@ -142,6 +142,11 @@ async def save_config(
     record = await _get_or_create_config(current_user, db)
     record.config = body.model_dump()
     await db.flush()
+    # The widget's tenant+config lookup caches on the API key (see
+    # helpers.get_tenant_by_widget_api_key) — without this, an edit here
+    # (allowedDomains, identity, behavior...) wouldn't reach the live widget
+    # for up to WIDGET_TENANT_CACHE_TTL_SECONDS.
+    helpers.invalidate_widget_tenant_cache(record.config.get("deploy", {}).get("apiKey", ""))
     return FESaveChatbotConfigResponse(success=True, config=body)
 
 MAX_AVATAR_MB = 2
@@ -507,6 +512,7 @@ async def regenerate_api_key(
     db: AsyncSession = Depends(get_db),
 ) -> FERegenerateApiKeyResponse:
     record = await _get_or_create_config(current_user, db)
+    old_key = record.config.get("deploy", {}).get("apiKey", "")
     new_key = helpers.generate_widget_api_key()
     # Reassign (don't mutate) so SQLAlchemy detects the JSONB change.
     config = dict(record.config)
@@ -515,4 +521,9 @@ async def regenerate_api_key(
     config["deploy"] = deploy
     record.config = config
     await db.flush()
+    # Without this, a just-revoked key would keep authenticating widget
+    # requests (via the stale cache entry from helpers.get_tenant_by_widget_
+    # api_key) for up to WIDGET_TENANT_CACHE_TTL_SECONDS after regeneration —
+    # defeats the point of rotating a leaked key.
+    helpers.invalidate_widget_tenant_cache(old_key)
     return FERegenerateApiKeyResponse(apiKey=new_key)

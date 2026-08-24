@@ -22,6 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.core import perf_timing
 from app.models.subscription import BillingCycle, PlanName, Subscription, SubscriptionStatus
 from app.models.tenant import Tenant
 from app.models.tenant_quota import TenantQuota
@@ -75,12 +76,13 @@ async def get_or_create_customer(
 ) -> str:
     if subscription.stripe_customer_id:
         return subscription.stripe_customer_id
-    customer = await _run(
-        stripe.Customer.create,
-        email=user.email,
-        name=tenant.workspace_name,
-        metadata={"tenant_id": str(tenant.id)},
-    )
+    with perf_timing.timed("stripe_api_customer_create"):
+        customer = await _run(
+            stripe.Customer.create,
+            email=user.email,
+            name=tenant.workspace_name,
+            metadata={"tenant_id": str(tenant.id)},
+        )
     subscription.stripe_customer_id = customer.id
     await db.flush()
     return customer.id
@@ -103,7 +105,8 @@ async def start_trial_subscription(
     the trial actually started (see sync_subscription_from_stripe).
     """
     price_id = _plan_to_price()[plan_name]
-    customer_id = await get_or_create_customer(tenant, user, subscription, db)
+    with perf_timing.timed("stripe_get_or_create_customer_total"):
+        customer_id = await get_or_create_customer(tenant, user, subscription, db)
 
     # If the user already started (but never completed) a trial on a
     # different plan — e.g. picked Starter, backed up, picked Growth
@@ -114,23 +117,26 @@ async def start_trial_subscription(
     # a confirmed SetupIntent), so this can't cancel a real paying sub.
     if subscription.stripe_subscription_id and subscription.stripe_price_id != price_id:
         try:
-            await _run(stripe.Subscription.cancel, subscription.stripe_subscription_id)
+            with perf_timing.timed("stripe_api_cancel_stale_subscription"):
+                await _run(stripe.Subscription.cancel, subscription.stripe_subscription_id)
         except stripe.error.StripeError as e:
             logger.warning("Could not cancel stale trial subscription %s: %s", subscription.stripe_subscription_id, e)
 
-    stripe_sub = await _run(
-        stripe.Subscription.create,
-        customer=customer_id,
-        items=[{"price": price_id}],
-        trial_period_days=TRIAL_DAYS,
-        payment_behavior="default_incomplete",
-        payment_settings={"save_default_payment_method": "on_subscription"},
-        expand=["pending_setup_intent"],
-    )
+    with perf_timing.timed("stripe_api_subscription_create"):
+        stripe_sub = await _run(
+            stripe.Subscription.create,
+            customer=customer_id,
+            items=[{"price": price_id}],
+            trial_period_days=TRIAL_DAYS,
+            payment_behavior="default_incomplete",
+            payment_settings={"save_default_payment_method": "on_subscription"},
+            expand=["pending_setup_intent"],
+        )
 
     subscription.stripe_subscription_id = stripe_sub.id
     subscription.stripe_price_id = price_id
-    await db.flush()
+    with perf_timing.timed("db_flush"):
+        await db.flush()
 
     setup_intent = stripe_sub.pending_setup_intent
     if setup_intent is None or not setup_intent.client_secret:

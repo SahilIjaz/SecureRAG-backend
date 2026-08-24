@@ -20,6 +20,7 @@ from app.core.rate_limit import limiter
 from app.core.security import hash_password, verify_password
 from app.database import get_db
 from app.models.user import User
+from app.services.auth_service import invalidate_user_cache
 from app.schemas.frontend import (
     FEChangePasswordRequest,
     FESaveProfileRequest,
@@ -75,6 +76,7 @@ async def upload_profile_photo(
 
     current_user.avatar_url = avatar_url
     await db.flush()
+    invalidate_user_cache(current_user.id)
     return FEAvatarUploadResponse(avatarUrl=avatar_url)
 
 async def _profile(user: User, db: AsyncSession) -> FEUserProfile:
@@ -122,6 +124,7 @@ async def change_password(
     loop = asyncio.get_event_loop()
     current_user.password_hash = await loop.run_in_executor(None, hash_password, body.newPassword)
     await db.flush()
+    invalidate_user_cache(current_user.id)
     return FESuccessResponse()
 
 @router.get("/profile", response_model=FEUserProfile)
@@ -158,4 +161,5 @@ async def save_profile(
         tenant.workspace_name = body.companyName.strip()
 
     await db.flush()
+    invalidate_user_cache(current_user.id)
     return FESaveProfileResponse(success=True, profile=await _profile(current_user, db))

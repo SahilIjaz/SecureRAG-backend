@@ -18,10 +18,16 @@ _db_url = _build_database_url(settings.DATABASE_URL)
 async_engine = create_async_engine(
     _db_url,
     echo=settings.DEBUG,
-    pool_pre_ping=True,
+    pool_pre_ping=settings.DB_POOL_PRE_PING,
     pool_size=5,
     max_overflow=10,
-    connect_args={"ssl": "require"},
+    # statement_cache_size=0: DATABASE_URL points at Neon's pooled endpoint (PgBouncer,
+    # transaction mode) — a prepared statement created on one physical backend connection
+    # can vanish before asyncpg's next query if PgBouncer hands out a different backend,
+    # surfacing as "prepared statement ... does not exist". Disabling asyncpg's client-side
+    # statement cache avoids that; the pooler is what actually removes the connection-setup
+    # latency, so losing local statement caching costs nothing extra here.
+    connect_args={"ssl": "require", "statement_cache_size": 0},
 )
 
 AsyncSessionLocal = async_sessionmaker(

@@ -20,6 +20,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.frontend import helpers
+from app.core import perf_timing
 from app.core.rate_limit import limiter
 from app.database import get_db
 from app.models.document import Document, DocumentSource, DocumentStatus
@@ -83,14 +84,13 @@ async def _ensure_baseline_quota(tenant: Tenant, db: AsyncSession) -> TenantQuot
             detail="Complete plan selection (Step 3) before uploading documents.",
         )
 
-    quota = await helpers.get_quota(tenant.id, db)
+    quota, usage = await helpers.get_quota_and_usage(tenant.id, db)
     if quota is None:
         starter_quotas = PLAN_QUOTAS[PlanName.free]
         quota = TenantQuota(tenant_id=tenant.id, subscription_id=subscription.id, **starter_quotas)
         db.add(quota)
         await db.flush()
 
-    usage = await helpers.get_current_usage(tenant.id, db)
     if usage is None:
         usage = UsageCount(tenant_id=tenant.id, period_month=_first_of_month().date())
         db.add(usage)
@@ -128,7 +128,8 @@ async def save_step(
     if step not in (1, 2, 3, 4, 5):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid onboarding step.")
 
-    tenant = await helpers.get_tenant(current_user, db)
+    with perf_timing.timed("db_get_tenant"):
+        tenant = await helpers.get_tenant(current_user, db)
 
     if step == 1:
         category = str(payload.get("businessCategory", "")).strip()
@@ -156,7 +157,8 @@ async def save_step(
         tenant.has_documents = has_documents
     # step 5 (upload) is handled by POST /onboarding/upload.
 
-    await db.flush()
+    with perf_timing.timed("db_flush"):
+        await db.flush()
     return FESuccessResponse()
 
 @router.post("/checkout", response_model=FECheckoutResponse)
@@ -172,8 +174,10 @@ async def onboarding_checkout(
     kept as a separate endpoint only because this router authenticates via
     get_any_valid_user (mid-wizard token) rather than get_current_user.
     """
-    tenant = await helpers.get_tenant(current_user, db)
-    subscription = await helpers.get_subscription(tenant.id, db)
+    with perf_timing.timed("db_get_tenant"):
+        tenant = await helpers.get_tenant(current_user, db)
+    with perf_timing.timed("db_get_subscription"):
+        subscription = await helpers.get_subscription(tenant.id, db)
     if subscription is None:
         subscription = Subscription(
             tenant_id=tenant.id,
@@ -183,12 +187,14 @@ async def onboarding_checkout(
             expires_at=None,
         )
         db.add(subscription)
-        await db.flush()
+        with perf_timing.timed("db_flush_new_subscription"):
+            await db.flush()
 
     plan_name = helpers.FE_TO_BE_PLAN[body.planId]
-    client_secret = await stripe_service.start_trial_subscription(
-        tenant, current_user, subscription, plan_name, db
-    )
+    with perf_timing.timed("stripe_start_trial_subscription_total"):
+        client_secret = await stripe_service.start_trial_subscription(
+            tenant, current_user, subscription, plan_name, db
+        )
     return FECheckoutResponse(clientSecret=client_secret)
 
 @router.post("/upload", response_model=FEUploadDocumentsResponse)
@@ -200,8 +206,10 @@ async def upload(
     current_user: User = Depends(get_any_valid_user),
     db: AsyncSession = Depends(get_db),
 ) -> FEUploadDocumentsResponse:
-    tenant = await helpers.get_tenant(current_user, db)
-    quota = await _ensure_baseline_quota(tenant, db)
+    with perf_timing.timed("db_get_tenant"):
+        tenant = await helpers.get_tenant(current_user, db)
+    with perf_timing.timed("ensure_baseline_quota"):
+        quota = await _ensure_baseline_quota(tenant, db)
     if quota is None:
         # Fail closed rather than silently allowing unlimited uploads —
         # _ensure_baseline_quota should always create one, so this would
@@ -216,19 +224,23 @@ async def upload(
     to_index: List[Document] = []
 
     if files:
-        saved = await document_service.upload_documents(current_user, files, db)
+        with perf_timing.timed("upload_documents_total"):
+            saved = await document_service.upload_documents(current_user, files, db)
         uploaded_files = len(saved)
         to_index.extend(saved)
 
     url_docs: List[Document] = []
     if urls:
-        url_docs = await _create_pending_url_documents(current_user, urls, db, quota=quota)
+        with perf_timing.timed("create_pending_url_documents"):
+            url_docs = await _create_pending_url_documents(current_user, urls, db, quota=quota)
         uploaded_urls = len(url_docs)
         to_index.extend(url_docs)
 
-    await db.commit()
-    schedule_document_processing([d.id for d in to_index if d.file_url])
-    schedule_url_scrape([d.id for d in url_docs])
+    with perf_timing.timed("db_commit"):
+        await db.commit()
+    with perf_timing.timed("schedule_background_jobs"):
+        schedule_document_processing([d.id for d in to_index if d.file_url])
+        schedule_url_scrape([d.id for d in url_docs])
 
     return FEUploadDocumentsResponse(
         success=True,
@@ -299,12 +311,14 @@ async def complete(
     current_user: User = Depends(get_any_valid_user),
     db: AsyncSession = Depends(get_db),
 ) -> FECompleteOnboardingResponse:
-    tenant = await helpers.get_tenant(current_user, db)
+    with perf_timing.timed("db_get_tenant"):
+        tenant = await helpers.get_tenant(current_user, db)
 
     tenant.business_category = body.businessCategory.strip()
     tenant.employee_count_range = body.teamSize.strip()
     tenant.workspace_name = body.workspaceName.strip()
-    tenant.slug = await _unique_slug(body.workspaceName, tenant, db)
+    with perf_timing.timed("unique_slug_lookup"):
+        tenant.slug = await _unique_slug(body.workspaceName, tenant, db)
     tenant.has_documents = body.hasDocuments
     tenant.onboarding_completed_at = datetime.now(timezone.utc)
 
@@ -316,7 +330,8 @@ async def complete(
     # proactively syncs the quota to the already-chosen plan so the
     # dashboard doesn't sit on the conservative placeholder until the
     # webhook round trip lands.
-    subscription = await helpers.get_subscription(tenant.id, db)
+    with perf_timing.timed("db_get_subscription"):
+        subscription = await helpers.get_subscription(tenant.id, db)
     if subscription is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -326,7 +341,8 @@ async def complete(
     plan_name = helpers.FE_TO_BE_PLAN[body.plan]
     quotas = PLAN_QUOTAS[plan_name]
 
-    quota = await helpers.get_quota(tenant.id, db)
+    with perf_timing.timed("db_get_quota_and_usage"):
+        quota, usage = await helpers.get_quota_and_usage(tenant.id, db)
     if quota is None:
         quota = TenantQuota(tenant_id=tenant.id, subscription_id=subscription.id, **quotas)
         db.add(quota)
@@ -335,11 +351,11 @@ async def complete(
         quota.max_file_size_mb = quotas["max_file_size_mb"]
         quota.max_questions_per_month = quotas["max_questions_per_month"]
 
-    usage = await helpers.get_current_usage(tenant.id, db)
     if usage is None:
         usage = UsageCount(tenant_id=tenant.id, period_month=_first_of_month().date())
         db.add(usage)
-        await db.flush()
+        with perf_timing.timed("db_flush_new_usage"):
+            await db.flush()
 
     # One-time reconciliation, not an ongoing mechanism: Step-5 uploads can
     # land before this point (via _ensure_baseline_quota), so recompute
@@ -351,19 +367,22 @@ async def complete(
     # is what prevents counters from drifting going forward; if usage is
     # still found drifting after both are in place, that's a new bug, not
     # something this reconciliation should be relied on to keep masking.
-    result = await db.execute(
-        select(Document).where(
-            Document.tenant_id == tenant.id,
-            Document.is_active == True,
+    with perf_timing.timed("db_get_active_documents"):
+        result = await db.execute(
+            select(Document).where(
+                Document.tenant_id == tenant.id,
+                Document.is_active == True,
+            )
         )
-    )
-    active_docs = result.scalars().all()
+        active_docs = result.scalars().all()
     usage.documents_count = len(active_docs)
     usage.storage_used_mb = round(sum(d.file_size_mb or 0.0 for d in active_docs), 4)
 
-    await db.flush()
+    with perf_timing.timed("db_flush_final"):
+        await db.flush()
 
-    summary = await _build_summary(current_user, db)
+    with perf_timing.timed("build_summary"):
+        summary = await _build_summary(current_user, db)
     return FECompleteOnboardingResponse(success=True, summary=summary)
 
 @router.get("/summary", response_model=Optional[FEOnboardingSummary])

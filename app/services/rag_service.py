@@ -299,10 +299,14 @@ async def answer_question(
     # --- Anthropic (previous provider) — kept, commented, as a rollback path.
     # from anthropic import AsyncAnthropic
     # ANSWER_MODEL = "claude-sonnet-5"
+    import httpx
     from google.genai import errors as genai_errors
     from google.genai import types as genai_types
 
     model_chain = settings.GEMINI_MODEL_CHAIN
+    http_options = genai_types.HttpOptions(
+        timeout=int(settings.GEMINI_REQUEST_TIMEOUT_SECONDS * 1000)
+    )
 
     try:
         chunks, prompt, response_max_tokens, handoff_enabled = await _prepare_generation(
@@ -340,6 +344,7 @@ async def answer_question(
                 contents=prompt,
                 config=genai_types.GenerateContentConfig(
                     max_output_tokens=response_max_tokens + (50 if handoff_enabled else 0),
+                    http_options=http_options,
                 ),
             )
 
@@ -365,6 +370,11 @@ async def answer_question(
             except genai_errors.APIError as e:
                 last_error = e
                 logger.warning("Gemini model %s returned an error: %s", model, e)
+            except httpx.TimeoutException as e:
+                last_error = e
+                logger.warning(
+                    "Gemini model %s timed out after %.0fs", model, settings.GEMINI_REQUEST_TIMEOUT_SECONDS
+                )
         if response is None:
             raise last_error
         answer = response.text or ""
@@ -436,16 +446,12 @@ async def classify_conversation_turn(tenant_id: str, user_message: str, bot_repl
     )
     try:
         client = _get_genai_client()
-        # The chain's *last* model, not the first: confirmed live that the
-        # primary answer model (gemini-flash-latest) spends an unpredictable
-        # chunk of its output budget on internal "thinking" tokens before any
-        # visible text — it truncated at MAX_TOKENS with empty/partial text
-        # even at 200 tokens. The lighter fallback model has no such
-        # overhead and completes this two-line reply cleanly well under
-        # _CLASSIFY_MAX_TOKENS, so it's the better fit for a cheap
-        # background call, not just a fallback.
+        # Always the dedicated lite model (see GEMINI_CLASSIFICATION_MODEL's
+        # docstring) — deliberately independent of GEMINI_MODEL_CHAIN's
+        # order, since that chain's primary/fallback positions are chosen
+        # for answer quality+reliability, not for this call's needs.
         response = await client.aio.models.generate_content(
-            model=settings.GEMINI_MODEL_CHAIN[-1],
+            model=settings.GEMINI_CLASSIFICATION_MODEL,
             contents=prompt,
             config=genai_types.GenerateContentConfig(max_output_tokens=_CLASSIFY_MAX_TOKENS),
         )
@@ -549,10 +555,14 @@ async def answer_question_stream(
     confidence-gating behavior of answer_question()/its callers while still
     letting the bulk of a passing answer stream token-by-token.
     """
+    import httpx
     from google.genai import errors as genai_errors
     from google.genai import types as genai_types
 
     model_chain = settings.GEMINI_MODEL_CHAIN
+    http_options = genai_types.HttpOptions(
+        timeout=int(settings.GEMINI_REQUEST_TIMEOUT_SECONDS * 1000)
+    )
     identity = (config or {}).get("identity", {})
     behavior = (config or {}).get("behavior", {})
     fallback = identity.get("fallbackMessage", "I'm not sure about that yet.")
@@ -607,6 +617,7 @@ async def answer_question_stream(
                 contents=prompt,
                 config=genai_types.GenerateContentConfig(
                     max_output_tokens=response_max_tokens + (50 if handoff_enabled else 0),
+                    http_options=http_options,
                 ),
             )
             candidate = raw.__aiter__()
@@ -618,6 +629,11 @@ async def answer_question_stream(
         except genai_errors.APIError as e:
             last_error = e
             logger.warning("Gemini model %s failed to start streaming: %s", model, e)
+        except httpx.TimeoutException as e:
+            last_error = e
+            logger.warning(
+                "Gemini model %s timed out starting stream after %.0fs", model, settings.GEMINI_REQUEST_TIMEOUT_SECONDS
+            )
 
     if iterator is None:
         logger.info(

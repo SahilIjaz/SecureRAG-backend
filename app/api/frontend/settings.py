@@ -27,6 +27,7 @@ from app.models.subscription import SubscriptionStatus
 from app.models.tenant import Tenant
 from app.models.tenant_settings import ApiKey, NotificationSetting, PaymentMethod
 from app.models.user import User
+from app.services.auth_service import invalidate_user_cache
 from app.schemas.frontend import (
     FEApiKey,
     FEBillingInfo,
@@ -103,6 +104,7 @@ async def delete_workspace(
     tenant.is_active = False
     current_user.is_active = False
     await db.flush()
+    invalidate_user_cache(current_user.id)
     return FESuccessResponse()
 
 # ── Notifications ─────────────────────────────────────────────────────────────

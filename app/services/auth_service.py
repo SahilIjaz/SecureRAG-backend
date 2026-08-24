@@ -12,6 +12,7 @@ get_current_user() — FastAPI dependency to extract + validate access token.
 import asyncio
 import logging
 import re
+import time
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Optional
@@ -21,9 +22,11 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import make_transient_to_detached
 
 from app.config import settings
 from app.core.email import send_otp_email
+from app.core import perf_timing
 from app.core.security import (
     create_access_token,
     decode_token,
@@ -77,6 +80,59 @@ def _first_of_month() -> datetime:
     today = datetime.now(timezone.utc)
     return today.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
+# ── Short-TTL user cache ────────────────────────────────────────────────────
+#
+# get_current_user/get_onboarding_user/get_any_valid_user run on *every*
+# authenticated request and each used to do their own `SELECT * FROM users
+# WHERE id = ...` — on a remote Postgres that's 250ms-3.5s paid again and
+# again for a row that rarely changes between two calls a few seconds apart.
+#
+# Caching the live ORM `User` instance itself would be wrong: several
+# endpoints (settings.py deactivate_workspace, user.py avatar/password/
+# profile updates) mutate `current_user.<field>` directly and rely on the
+# request's own session to flush that write — a stale object from a
+# *different* request's session wouldn't be tracked by this request's
+# session, so the mutation would silently never be saved.
+#
+# Session.merge(obj, load=False) is SQLAlchemy's documented mechanism for
+# exactly this ("used for cache population... foregoes all database access"):
+# given a transient copy of the cached column values, it splices them into
+# THIS request's session as a fully tracked, persistent instance — no SELECT,
+# and any subsequent mutation on the returned object still flushes normally.
+_USER_CACHE_COLUMNS = (
+    "id", "tenant_id", "full_name", "email", "password_hash",
+    "auth_provider", "provider_uid", "avatar_url",
+    "is_email_verified", "is_active", "created_at", "updated_at",
+)
+_user_cache: dict[str, tuple[float, dict]] = {}
+
+def _cache_user(user: User) -> None:
+    data = {col: getattr(user, col) for col in _USER_CACHE_COLUMNS}
+    _user_cache[str(user.id)] = (time.monotonic() + settings.AUTH_USER_CACHE_TTL_SECONDS, data)
+
+def invalidate_user_cache(user_id) -> None:
+    """Call after any direct `current_user.<field> = ...` mutation so the
+    next request sees it immediately instead of waiting out the TTL."""
+    _user_cache.pop(str(user_id), None)
+
+async def _load_user(user_id: str, db: AsyncSession) -> Optional[User]:
+    cached = _user_cache.get(user_id)
+    if cached is not None and cached[0] > time.monotonic():
+        transient = User(**cached[1])
+        # merge(..., load=False) refuses a plain transient object (it has no
+        # identity key yet) — make_transient_to_detached is SQLAlchemy's own
+        # helper for exactly this "populate the session from an in-memory
+        # cache, skip the SELECT" case: it synthesizes the identity key from
+        # the primary key we already set, without touching the DB.
+        make_transient_to_detached(transient)
+        return await db.merge(transient, load=False)
+
+    result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
+    user = result.scalar_one_or_none()
+    if user is not None:
+        _cache_user(user)
+    return user
+
 async def register_user(
     company_name: str,
     email: str,
@@ -87,8 +143,9 @@ async def register_user(
     Create an unverified user record and send a 6-digit OTP to the email.
     Returns {"message": ..., "email": ...}
     """
-    result = await db.execute(select(User).where(User.email == email))
-    existing = result.scalar_one_or_none()
+    with perf_timing.timed("existing_user_lookup"):
+        result = await db.execute(select(User).where(User.email == email))
+        existing = result.scalar_one_or_none()
 
     if existing:
         if existing.is_email_verified:
@@ -96,7 +153,8 @@ async def register_user(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="An account with this email already exists.",
             )
-        await _invalidate_old_otps(existing.id, db)
+        with perf_timing.timed("invalidate_old_otps"):
+            await _invalidate_old_otps(existing.id, db)
         await _create_and_send_otp(existing, db)
         return {
             "message": "Account already registered but not verified. A new OTP has been sent.",
@@ -120,7 +178,8 @@ async def register_user(
     db.add(placeholder_tenant)
 
     loop = asyncio.get_event_loop()
-    pw_hash = await loop.run_in_executor(None, hash_password, password)
+    with perf_timing.timed("bcrypt_hash_password"):
+        pw_hash = await loop.run_in_executor(None, hash_password, password)
 
     user = User(
         id=uuid.uuid4(),
@@ -180,8 +239,8 @@ async def get_current_user(
     if not user_id:
         raise credentials_error
 
-    result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
-    user = result.scalar_one_or_none()
+    with perf_timing.timed("auth_dep_load_user"):
+        user = await _load_user(user_id, db)
 
     if user is None:
         raise credentials_error
@@ -262,8 +321,8 @@ async def get_onboarding_user(
     if not user_id:
         raise credentials_error
 
-    result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
-    user = result.scalar_one_or_none()
+    with perf_timing.timed("auth_dep_load_user"):
+        user = await _load_user(user_id, db)
 
     if user is None or not user.is_active:
         raise credentials_error
@@ -307,8 +366,8 @@ async def get_any_valid_user(
     if not user_id:
         raise credentials_error
 
-    result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
-    user = result.scalar_one_or_none()
+    with perf_timing.timed("auth_dep_load_user"):
+        user = await _load_user(user_id, db)
 
     if user is None or not user.is_active:
         raise credentials_error
@@ -341,7 +400,8 @@ async def _create_and_send_otp(
     expires_at = datetime.now(timezone.utc) + timedelta(minutes=settings.OTP_EXPIRE_MINUTES)
 
     loop = asyncio.get_event_loop()
-    hashed_otp = await loop.run_in_executor(None, hash_otp, otp)
+    with perf_timing.timed("bcrypt_hash_otp"):
+        hashed_otp = await loop.run_in_executor(None, hash_otp, otp)
 
     otp_record = EmailVerification(
         user_id=user.id,
@@ -351,9 +411,25 @@ async def _create_and_send_otp(
         is_used=False,
     )
     db.add(otp_record)
-    await db.flush()
+    with perf_timing.timed("db_flush_pending_rows"):
+        await db.flush()
 
-    asyncio.create_task(send_otp_email(user.email, user.full_name, otp))
+    if settings.DEBUG:
+        # TEMP (latency audit): surface the plaintext OTP so the flow can be
+        # driven end-to-end without depending on real email delivery time.
+        # DEBUG-gated only — never logs in a non-DEBUG environment.
+        logger.info("[DEV OTP] %s purpose=%s otp=%s", user.email, purpose.value, otp)
+
+    async def _send_and_report() -> None:
+        t0 = time.perf_counter()
+        await send_otp_email(user.email, user.full_name, otp)
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        logger.info(
+            "[PERF][background, not counted in response time] send_otp_email user=%s elapsed=%.2fms",
+            user.email, elapsed_ms,
+        )
+
+    asyncio.create_task(_send_and_report())
 
 async def _invalidate_old_otps(
     user_id: uuid.UUID,

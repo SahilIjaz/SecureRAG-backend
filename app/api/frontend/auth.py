@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.frontend import helpers
 from app.config import settings
+from app.core import perf_timing
 from app.core.rate_limit import limiter
 from app.core.security import create_access_token, hash_password, verify_otp, verify_password
 from app.database import get_db
@@ -86,8 +87,9 @@ async def login(
     body: FELoginRequest,
     db: AsyncSession = Depends(get_db),
 ) -> FELoginResponse:
-    result = await db.execute(select(User).where(User.email == body.email.lower().strip()))
-    user = result.scalar_one_or_none()
+    with perf_timing.timed("db_lookup_user"):
+        result = await db.execute(select(User).where(User.email == body.email.lower().strip()))
+        user = result.scalar_one_or_none()
 
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No account found with this email address.")
@@ -97,14 +99,18 @@ async def login(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is deactivated.")
     # bcrypt verify is deliberately CPU-slow — run off the event loop so one
     # login doesn't stall every other concurrent request for ~100ms+.
-    password_ok = bool(user.password_hash) and await asyncio.get_event_loop().run_in_executor(
-        None, verify_password, body.password, user.password_hash
-    )
+    with perf_timing.timed("bcrypt_verify_password"):
+        password_ok = bool(user.password_hash) and await asyncio.get_event_loop().run_in_executor(
+            None, verify_password, body.password, user.password_hash
+        )
     if not password_ok:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password.")
 
-    token = create_access_token({"sub": str(user.id), "tenant_id": str(user.tenant_id)})
-    return FELoginResponse(success=True, token=token, user=await _fe_user(user, db))
+    with perf_timing.timed("create_access_token"):
+        token = create_access_token({"sub": str(user.id), "tenant_id": str(user.tenant_id)})
+    with perf_timing.timed("build_fe_user"):
+        fe_user = await _fe_user(user, db)
+    return FELoginResponse(success=True, token=token, user=fe_user)
 
 @router.post("/google", response_model=FELoginResponse)
 @limiter.limit("10/minute")
@@ -212,24 +218,31 @@ async def verify_otp_endpoint(
         does NOT consume it (POST /reset-password re-validates the same code),
         and returns no token.
     """
-    result = await db.execute(select(User).where(User.email == body.email.lower().strip()))
-    user = result.scalar_one_or_none()
+    with perf_timing.timed("db_lookup_user"):
+        result = await db.execute(select(User).where(User.email == body.email.lower().strip()))
+        user = result.scalar_one_or_none()
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No account found with this email address.")
 
     if not user.is_email_verified:
-        otp_record = await _latest_valid_otp(user.id, OTPPurpose.email_verification, db)
+        with perf_timing.timed("db_lookup_otp_record"):
+            otp_record = await _latest_valid_otp(user.id, OTPPurpose.email_verification, db)
         if otp_record is None:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="OTP has expired or does not exist. Please request a new one.")
-        if not await _verify_otp_async(body.otp, otp_record.otp_code):
+        with perf_timing.timed("bcrypt_verify_otp"):
+            otp_ok = await _verify_otp_async(body.otp, otp_record.otp_code)
+        if not otp_ok:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid OTP code.")
 
         otp_record.is_used = True
         user.is_email_verified = True
-        await db.flush()
+        with perf_timing.timed("db_flush"):
+            await db.flush()
 
         token = create_access_token({"sub": str(user.id), "tenant_id": str(user.tenant_id)})
-        return FEOtpVerifyResponse(success=True, token=token, user=await _fe_user(user, db))
+        with perf_timing.timed("build_fe_user"):
+            fe_user = await _fe_user(user, db)
+        return FEOtpVerifyResponse(success=True, token=token, user=fe_user)
 
     # Verified account — this is the forgot-password flow.
     otp_record = await _latest_valid_otp(user.id, OTPPurpose.password_reset, db)

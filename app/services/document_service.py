@@ -18,7 +18,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.core import vector_store
+from app.core import perf_timing, vector_store
 from app.core.scraper import scrape_website_to_pdf
 from app.core.storage import delete_file_from_cloudinary, upload_file_to_cloudinary
 from app.core.validation import safe_filename, sniff_mime_or_raise
@@ -97,24 +97,27 @@ async def upload_documents(
             detail="No files provided.",
         )
 
-    quota = await lock_quota_row(user.tenant_id, db)
+    with perf_timing.timed("lock_quota_row"):
+        quota = await lock_quota_row(user.tenant_id, db)
 
-    result = await db.execute(
-        select(UsageCount).where(UsageCount.tenant_id == user.tenant_id)
-        .order_by(UsageCount.period_month.desc())
-    )
-    usage = result.scalar_one_or_none()
+    with perf_timing.timed("db_lookup_usage"):
+        result = await db.execute(
+            select(UsageCount).where(UsageCount.tenant_id == user.tenant_id)
+            .order_by(UsageCount.period_month.desc())
+        )
+        usage = result.scalar_one_or_none()
 
     # Only content_hash is needed below (dedup) plus a row count (quota) —
     # narrow the SELECT instead of hydrating every active Document column.
-    result = await db.execute(
-        select(Document.content_hash).where(
-            Document.tenant_id == user.tenant_id,
-            Document.is_active == True,
+    with perf_timing.timed("db_lookup_existing_hashes"):
+        result = await db.execute(
+            select(Document.content_hash).where(
+                Document.tenant_id == user.tenant_id,
+                Document.is_active == True,
+            )
         )
-    )
-    existing_hashes_raw = result.scalars().all()
-    existing_count = len(existing_hashes_raw)
+        existing_hashes_raw = result.scalars().all()
+        existing_count = len(existing_hashes_raw)
 
     max_mb = quota.max_file_size_mb if quota else settings.MAX_UPLOAD_SIZE_MB
 
@@ -178,15 +181,16 @@ async def upload_documents(
     saved_documents: List[Document] = []
     failures: List[str] = []
 
-    for content, file_size_mb, filename, content_type, content_hash in file_data:
+    for i, (content, file_size_mb, filename, content_type, content_hash) in enumerate(file_data):
         public_id = None
         try:
-            public_id, secure_url = await upload_file_to_cloudinary(
-                file_content=content,
-                tenant_id=user.tenant_id,
-                original_filename=filename,
-                content_type=content_type,
-            )
+            with perf_timing.timed(f"cloudinary_upload_file_{i}_{filename}"):
+                public_id, secure_url = await upload_file_to_cloudinary(
+                    file_content=content,
+                    tenant_id=user.tenant_id,
+                    original_filename=filename,
+                    content_type=content_type,
+                )
 
             doc = Document(
                 tenant_id=user.tenant_id,
@@ -213,17 +217,24 @@ async def upload_documents(
                     logger.exception("Failed to clean up orphaned blob %s", public_id)
             failures.append(filename)
 
-    await db.flush()
+    with perf_timing.timed("db_flush_documents"):
+        await db.flush()
 
     if usage and saved_documents:
         actual_storage = sum(d.file_size_mb for d in saved_documents)
         usage.documents_count = (usage.documents_count or 0) + len(saved_documents)
         usage.storage_used_mb = round((usage.storage_used_mb or 0.0) + actual_storage, 4)
 
-    await db.commit()
+    with perf_timing.timed("db_commit_inner"):
+        await db.commit()
 
-    for doc in saved_documents:
-        await db.refresh(doc)
+    # No per-document db.refresh() here: the session is expire_on_commit=False
+    # (see app/database.py) and SQLAlchemy 2.0's default eager_defaults="auto"
+    # already fetches server-generated columns (created_at/updated_at) via
+    # RETURNING as part of the INSERT emitted at flush() — a separate refresh
+    # per file was one extra round trip per uploaded file for values that
+    # were already populated. Verified via knowledge.py's /documents response
+    # (which reads doc.created_at) after removing this.
 
     if failures and not saved_documents:
         raise HTTPException(

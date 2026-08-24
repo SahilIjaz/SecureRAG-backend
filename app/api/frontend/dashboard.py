@@ -79,13 +79,15 @@ async def get_stats(
     db: AsyncSession = Depends(get_db),
 ) -> FEOverviewStats:
     now = _now()
-    current = await _conversations_since(
-        current_user.tenant_id, now - timedelta(days=WINDOW_DAYS), db, with_messages=True
-    )
+    # A single query over the wider (2x) window already contains every conversation the
+    # narrower "current" window would return, since WINDOW_DAYS*2 > WINDOW_DAYS — so split
+    # it in Python instead of paying a second round trip for a strict subset of this data.
+    cutoff = now - timedelta(days=WINDOW_DAYS)
     both_windows = await _conversations_since(
         current_user.tenant_id, now - timedelta(days=WINDOW_DAYS * 2), db, with_messages=True
     )
-    previous = [c for c in both_windows if c.created_at < now - timedelta(days=WINDOW_DAYS)]
+    current = [c for c in both_windows if c.created_at >= cutoff]
+    previous = [c for c in both_windows if c.created_at < cutoff]
 
     def resolution_rate(convos: List[Conversation]) -> float:
         if not convos:
@@ -250,9 +252,8 @@ async def get_usage(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> FEPlanUsage:
-    subscription = await helpers.get_subscription(current_user.tenant_id, db)
-    quota = await helpers.get_quota(current_user.tenant_id, db)
-    usage = await helpers.get_current_usage(current_user.tenant_id, db)
+    _tenant, subscription = await helpers.get_tenant_and_subscription(current_user, db)
+    quota, usage = await helpers.get_quota_and_usage(current_user.tenant_id, db)
     docs = await helpers.get_active_documents(current_user.tenant_id, db)
     file_docs, url_docs, faq_docs = helpers.split_docs_and_urls(docs)
 
