@@ -1,7 +1,8 @@
 import logging
+import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from slowapi.errors import RateLimitExceeded
@@ -12,6 +13,7 @@ from app.api.billing_webhook import router as billing_webhook_router
 from app.api.frontend.router import router as frontend_router
 from app.api.public.widget import widget_app
 from app.config import settings
+from app.core import perf_timing
 from app.core.rate_limit import limiter
 
 logging.basicConfig(
@@ -19,6 +21,7 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s — %(message)s",
 )
 logger = logging.getLogger(__name__)
+perf_logger = logging.getLogger("perf")
 
 async def ensure_frontend_schema() -> None:
     """
@@ -70,6 +73,18 @@ async def ensure_frontend_schema() -> None:
         "ALTER TABLE tenants DROP CONSTRAINT IF EXISTS tenants_business_category_check",
         # Public widget lead capture (Behavior tab "collect phone before chat").
         "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS visitor_phone VARCHAR(32)",
+        # Soft delete — see migrations/add_conversation_soft_delete.sql.
+        "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ",
+        "CREATE INDEX IF NOT EXISTS ix_conversations_deleted_at ON conversations (deleted_at)",
+        # Live-agent-handoff UI flag — see migrations/add_conversation_is_live.sql.
+        "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS is_live BOOLEAN NOT NULL DEFAULT FALSE",
+        # Presence tracking — see migrations/add_tenant_presence.sql.
+        "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS is_owner_online BOOLEAN NOT NULL DEFAULT FALSE",
+        "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ",
+        # Escalation wait timer — see migrations/add_conversation_live_wait.sql.
+        "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS live_wait_started_at TIMESTAMPTZ",
+        # Visitor presence — see migrations/add_conversation_visitor_presence.sql.
+        "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS visitor_last_seen_at TIMESTAMPTZ",
         # Plan-usage notification dedup — fire the 80%/100% warning once per
         # billing period_month, not on every message past the threshold.
         "ALTER TABLE usage_counts ADD COLUMN IF NOT EXISTS warned_80_percent BOOLEAN NOT NULL DEFAULT FALSE",
@@ -108,11 +123,12 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(stale_document_sweep_loop())
 
     from app.services.notification_service import weekly_summary_loop
-    from app.services.conversation_service import stale_conversation_sweep_loop
+    from app.services.conversation_service import stale_conversation_sweep_loop, trash_purge_loop
     # Held on app.state so these can't be garbage-collected mid-sleep —
     # asyncio.create_task() only keeps a weak reference to its result.
     app.state.weekly_summary_task = asyncio.create_task(weekly_summary_loop())
     app.state.conversation_sweep_task = asyncio.create_task(stale_conversation_sweep_loop())
+    app.state.trash_purge_task = asyncio.create_task(trash_purge_loop())
 
     logger.info(
         "%s API is running (debug=%s)",
@@ -144,13 +160,41 @@ async def rate_limit_handler(request, exc):
         content={"detail": "Rate limit exceeded. Please try again later."}
     )
 
+@app.middleware("http")
+async def perf_timing_middleware(request: Request, call_next):
+    """
+    Temporary latency-audit middleware — logs total wall time per request
+    plus a phase-by-phase breakdown for any endpoint using perf_timing.timed().
+    See app/core/perf_timing.py.
+    """
+    token = perf_timing.start()
+    t0 = time.perf_counter()
+    response = await call_next(request)
+    total_ms = (time.perf_counter() - t0) * 1000
+    segments = perf_timing.finish(token)
+    if segments:
+        accounted_ms = sum(ms for _, ms in segments)
+        breakdown = " | ".join(f"{label}={ms}ms" for label, ms in segments)
+        perf_logger.info(
+            "%s %s -> %s total=%.2fms accounted=%.2fms unaccounted=%.2fms | %s",
+            request.method, request.url.path, response.status_code,
+            total_ms, accounted_ms, total_ms - accounted_ms, breakdown,
+        )
+    else:
+        perf_logger.info(
+            "%s %s -> %s total=%.2fms",
+            request.method, request.url.path, response.status_code, total_ms,
+        )
+    response.headers["X-Process-Time-Ms"] = f"{total_ms:.2f}"
+    return response
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173", "http://localhost:5174", "http://localhost:5175", "http://localhost:3000", ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_headers=["Authorization", "Content-Type", "X-Widget-Key"],
     max_age=3600, )
 
 # Frontend-compat API — paths/shapes match Nexus-frontend/src/api/*.api.ts.

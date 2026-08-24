@@ -23,6 +23,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.core.background import fire_and_forget
 from app.core.email import send_email
 from app.database import AsyncSessionLocal
 from app.models.conversation import Conversation
@@ -82,10 +83,68 @@ async def notify_tenant(
 
     html = _build_notification_html(full_name or "there", title, body, link)
     text = f"{title}\n\n{body or ''}".strip()
+
+    # notify_tenant() sits directly in the request path of every chat
+    # message and every "talk to a human" click (see call sites in
+    # widget.py, chatbot.py, helpers.py's plan-usage check) — send_email()
+    # is a real outbound HTTP/SMTP call (up to a 15s timeout) that was
+    # blocking those user-facing responses on it. The email itself needs no
+    # DB session (recipient/html/text are already resolved above), so it's
+    # safe to fire-and-forget without the request-scoped `db` session
+    # closing out from under it — unlike the Notification row write above,
+    # which stays synchronous since the dashboard bell needs it to actually
+    # be committed before the response returns.
+    async def _send() -> None:
+        try:
+            await send_email(recipient_email, subject=title, html_content=html, text_content=text)
+        except Exception:
+            logger.exception("Failed to send notification email (type=%s) for tenant %s", notif_type, tenant_id)
+
+    fire_and_forget(_send())
+
+async def notify_visitor_of_reply(
+    visitor_email: str,
+    reply_text: str,
+    business_name: str,
+    owner_email: str,
+    owner_name: str,
+) -> None:
+    """
+    Sent when an agent replies to a conversation the visitor isn't actively
+    watching live (see NexusContext/LIVE_AGENT_HANDOFF_PLAN.md) and left
+    contact info for. Delivered via Nexus's own sender address (SPF/DKIM
+    stays valid — see send_email's docstring for why sending truly "from"
+    the owner's address isn't viable), but with the business's name as the
+    display name and the owner's real address as Reply-To, so hitting
+    "Reply" lands straight in the owner's inbox.
+    """
+    subject = f"{business_name} replied to your message"
+    text = f'{business_name} replied to your message:\n\n"{reply_text}"'
+    html = f"""
+    <!DOCTYPE html>
+    <html><head><meta charset="UTF-8"/></head>
+    <body style="font-family:Arial,sans-serif;background:#f4f4f4;margin:0;padding:0;">
+      <div style="max-width:500px;margin:40px auto;background:#fff;border-radius:8px;
+                  overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.1);">
+        <div style="background:#0f2027;padding:24px 32px;">
+          <h1 style="color:#fff;margin:0;font-size:20px;">{business_name}</h1>
+        </div>
+        <div style="padding:32px;">
+          <p>You've got a reply to your message:</p>
+          <blockquote style="margin:16px 0;padding:12px 16px;background:#f4f4f4;border-radius:8px;
+                              border-left:3px solid #0f2027;">{reply_text}</blockquote>
+          <p style="color:#888;font-size:13px;">Just reply to this email to continue the conversation.</p>
+        </div>
+      </div>
+    </body></html>
+    """
     try:
-        await send_email(recipient_email, subject=title, html_content=html, text_content=text)
+        await send_email(
+            visitor_email, subject=subject, html_content=html, text_content=text,
+            from_name=business_name, reply_to=owner_email, reply_to_name=owner_name,
+        )
     except Exception:
-        logger.exception("Failed to send notification email (type=%s) for tenant %s", notif_type, tenant_id)
+        logger.exception("Failed to send visitor-reply notification to %s", visitor_email)
 
 def _build_notification_html(full_name: str, title: str, body: Optional[str], link: Optional[str]) -> str:
     cta = (

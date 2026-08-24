@@ -35,6 +35,14 @@ class Tenant(Base):
         DateTime(timezone=True), nullable=True
     )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # Presence (live-agent-handoff). is_owner_online is a cache updated by
+    # POST /api/presence/ping; last_seen_at is the source of truth — any
+    # reader should compute actual online-ness as
+    # is_owner_online AND (now() - last_seen_at) < PRESENCE_ONLINE_WINDOW_SECONDS
+    # (see app/api/frontend/helpers.py:is_owner_currently_online), since
+    # nothing flips the boolean back to False on a dropped connection.
+    is_owner_online: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    last_seen_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

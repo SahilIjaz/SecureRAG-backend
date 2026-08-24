@@ -243,13 +243,24 @@ class FEConversationListItem(BaseModel):
     createdAt: str
     status: Literal["Open", "Handed off", "Resolved"]
     sentiment: Literal["Positive", "Neutral", "Negative"]
-    channel: Literal["Widget", "API"]
+    channel: Literal["Widget", "API", "Internal Test"]
+    isLive: bool = False
+    visitorEmail: Optional[str] = None
+    visitorPhone: Optional[str] = None
+    # Whether the visitor's widget still appears to have this chat open
+    # right now (see helpers.is_visitor_still_present) — separate from
+    # isLive, which only reflects whether an owner formally joined.
+    visitorPresent: bool = False
 
 class FEConversationMessage(BaseModel):
     id: str
     role: Literal["user", "agent", "bot"]
     text: str
-    time: str
+    # ISO-8601 with tz offset (UTC) — the frontend renders this in the
+    # viewer's own local time zone rather than trusting a server-formatted
+    # clock string, which is what caused dashboard message times to show the
+    # server's UTC hour instead of the owner's local hour.
+    createdAt: str
     sources: List[CitationSource] = []
 
 class FEConversationDetail(FEConversationListItem):
@@ -260,6 +271,9 @@ class FESendReplyRequest(BaseModel):
 
 class FESendReplyResponse(BaseModel):
     message: FEConversationMessage
+
+class FEPurgeMessagesResponse(BaseModel):
+    purged: int
 
 # ── Knowledge base ────────────────────────────────────────────────────────────
 

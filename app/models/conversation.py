@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, List, Optional
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -56,6 +56,37 @@ class Conversation(Base):
         server_default=func.now(),
         onupdate=func.now(),
         nullable=False,
+    )
+    # Soft delete: set when an owner deletes a conversation from the inbox.
+    # Excluded from all normal list/get queries; hard-purged by
+    # conversation_service.trash_purge_loop() after
+    # settings.CONVERSATION_TRASH_RETENTION_DAYS, giving a short recovery
+    # window for an accidental delete.
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    # True only once an owner has actively "joined" a real-time exchange with
+    # the visitor (see the live-agent-handoff plan). Deliberately NOT what
+    # gates whether the bot answers — that's status == "Handed off" (set the
+    # moment escalation starts, well before an owner may have joined). This
+    # flag only controls the live-polling UI once that plan's later steps
+    # wire it up; it exists now so the column is in place ahead of that.
+    is_live: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Set/reset every time a visitor escalates (POST /api/public/widget/escalate)
+    # or the automatic low-confidence handoff fires. Used to compute the
+    # connecting/unavailable state within LIVE_JOIN_TIMEOUT_SECONDS — see
+    # app/api/public/widget.py:_compute_live_state.
+    live_wait_started_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Bumped on every widget request tied to this conversation while
+    # escalated (escalate call, a message, or a live-status poll — the poll
+    # is the main signal, since it's what runs continuously while the tab
+    # is open and waiting). Lets join_conversation() refuse to go "live" if
+    # the visitor no longer appears to actually have the chat open — see
+    # helpers.is_visitor_still_present.
+    visitor_last_seen_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
 
     tenant: Mapped["Tenant"] = relationship("Tenant")

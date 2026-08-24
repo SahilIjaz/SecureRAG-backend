@@ -23,19 +23,21 @@ import json
 import logging
 import time
 import uuid
-from typing import List, Optional
+from datetime import datetime, timedelta, timezone
+from typing import List, Literal, Optional
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.frontend import helpers
+from app.config import settings
 from app.core.background import fire_and_forget
 from app.core.rate_limit import limiter
 from app.schemas.frontend import CitationSource
@@ -61,8 +63,7 @@ def _widget_key_or_ip(request: Request) -> str:
     key = request.headers.get("x-widget-key")
     return f"widget:{key}" if key else get_remote_address(request)
 
-async def _resolve_tenant(request: Request, db: AsyncSession) -> tuple[Tenant, ChatbotConfig]:
-    key = request.headers.get("x-widget-key", "")
+async def _resolve_tenant_by_key(key: str, request: Request, db: AsyncSession) -> tuple[Tenant, ChatbotConfig]:
     resolved = await helpers.get_tenant_by_widget_api_key(key, db)
     if resolved is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid widget API key.")
@@ -82,6 +83,9 @@ async def _resolve_tenant(request: Request, db: AsyncSession) -> tuple[Tenant, C
         )
     return tenant, config_record
 
+async def _resolve_tenant(request: Request, db: AsyncSession) -> tuple[Tenant, ChatbotConfig]:
+    return await _resolve_tenant_by_key(request.headers.get("x-widget-key", ""), request, db)
+
 async def _load_conversation(conversation_id: str, tenant_id: uuid.UUID, db: AsyncSession) -> Optional[Conversation]:
     try:
         cid = uuid.UUID(conversation_id)
@@ -93,6 +97,29 @@ async def _load_conversation(conversation_id: str, tenant_id: uuid.UUID, db: Asy
         .options(selectinload(Conversation.messages))
     )
     return result.scalar_one_or_none()
+
+LiveState = Literal["not_escalated", "connecting", "live", "unavailable"]
+
+def _compute_live_state(conversation: Conversation, tenant: Tenant) -> LiveState:
+    """
+    Single source of truth for what the widget's connect/wait UI should show
+    — see NexusContext/LIVE_AGENT_HANDOFF_PLAN.md §3. Deliberately stateless:
+    re-derived from current DB values every call rather than cached, so a
+    late owner join is always picked up on the next poll no matter how long
+    "unavailable" was already showing (edge case #5 in that doc).
+    """
+    if conversation.is_live:
+        return "live"
+    if conversation.status != "Handed off":
+        return "not_escalated"
+    if not helpers.is_owner_currently_online(tenant):
+        return "unavailable"
+    if conversation.live_wait_started_at is None:
+        return "unavailable"
+    waited = datetime.now(timezone.utc) - conversation.live_wait_started_at
+    if waited < timedelta(seconds=settings.LIVE_JOIN_TIMEOUT_SECONDS):
+        return "connecting"
+    return "unavailable"
 
 # ── GET /config ──────────────────────────────────────────────────────────────
 
@@ -192,12 +219,26 @@ async def post_widget_message(
             visitor_email=(lead.email or None),
             visitor_phone=(lead.phone or None),
             channel="Widget",
+            # Explicit, not relied on as a column default: with the flush
+            # deferred (see below), code further down reads .status before
+            # any flush runs — mapped_column(default=...) only applies at
+            # flush time, so an implicit default would leave this None until
+            # then and silently break the `conversation.status == "Open"`
+            # handoff check for a conversation's very first message.
+            status="Open",
         )
         db.add(conversation)
-        await db.flush()
+        # No flush here: conversation.id (a client-side uuid4 default) isn't
+        # populated until the INSERT actually runs, so the user-message
+        # insert below is attached via the `conversation` relationship
+        # rather than `conversation_id=conversation.id` — that lets
+        # SQLAlchemy's unit-of-work order both INSERTs correctly within the
+        # *single* flush() at t_flush, instead of paying for two separate
+        # round trips to Neon on every session-opening message.
     t_newconv = time.monotonic()
+    conversation.visitor_last_seen_at = datetime.now(timezone.utc)
 
-    db.add(ConversationMessage(conversation_id=conversation.id, role="user", text=body.message.strip()))
+    db.add(ConversationMessage(conversation=conversation, role="user", text=body.message.strip()))
 
     quota, usage = await helpers.get_quota_and_usage(tenant.id, db)
     t_quota = time.monotonic()
@@ -211,8 +252,23 @@ async def post_widget_message(
     unresolved_reason = None
     notif_type = None
     should_classify = False
+    # Already escalated (auto low-confidence handoff, or a future manual
+    # "talk to a human" trigger) — a human is expected to answer this, so
+    # the bot must not generate — or get billed quota for — a reply to it.
+    # Deliberately keyed off `status`, not `is_live`: status flips to
+    # "Handed off" the moment escalation starts, well before an owner may
+    # have actively joined, so gating on is_live alone would let the bot
+    # keep answering during that gap. Not persisted as a ConversationMessage
+    # (unlike the quota_exceeded reply below) — it's a transient UI
+    # acknowledgement, not a real reply, and persisting it on every message
+    # sent while waiting would spam the transcript.
+    already_handed_off = conversation.status == "Handed off"
 
-    if quota_exceeded:
+    if already_handed_off:
+        reply = "Thanks for the extra detail — a teammate will pick this up and reply here shortly."
+        sources, handoff = [], True
+        t_docs = t_gen_start = t_gen_done = time.monotonic()
+    elif quota_exceeded:
         reply, sources, handoff = fallback, [], False
         t_docs = t_gen_start = t_gen_done = time.monotonic()
     else:
@@ -255,9 +311,14 @@ async def post_widget_message(
             else:
                 reply, sources, handoff = result["answer"], result["sources"], False
 
-    db.add(ConversationMessage(conversation_id=conversation.id, role="bot", text=reply))
+    if not already_handed_off:
+        # Via the relationship, not conversation_id=conversation.id — for a
+        # brand-new conversation .id is still None here (no flush has run
+        # yet; see the comment above where it's constructed).
+        db.add(ConversationMessage(conversation=conversation, role="bot", text=reply))
     if handoff and conversation.status == "Open":
         conversation.status = "Handed off"
+        conversation.live_wait_started_at = datetime.now(timezone.utc)
     if unresolved_reason:
         conversation.unresolved_reason = unresolved_reason
     await db.flush()
@@ -348,12 +409,23 @@ async def post_widget_message_stream(
             visitor_email=(lead.email or None),
             visitor_phone=(lead.phone or None),
             channel="Widget",
+            # Explicit, not relied on as a column default: with the flush
+            # deferred (see below), code further down reads .status before
+            # any flush runs — mapped_column(default=...) only applies at
+            # flush time, so an implicit default would leave this None until
+            # then and silently break the `conversation.status == "Open"`
+            # handoff check for a conversation's very first message.
+            status="Open",
         )
         db.add(conversation)
-        await db.flush()
+        # No flush here — see post_widget_message()'s identical comment:
+        # the user-message insert below is attached via the `conversation`
+        # relationship so both INSERTs land in the one flush() at t_flush
+        # instead of two separate round trips to Neon.
     t_newconv = time.monotonic()
+    conversation.visitor_last_seen_at = datetime.now(timezone.utc)
 
-    db.add(ConversationMessage(conversation_id=conversation.id, role="user", text=body.message.strip()))
+    db.add(ConversationMessage(conversation=conversation, role="user", text=body.message.strip()))
 
     quota, usage = await helpers.get_quota_and_usage(tenant.id, db)
     t_quota = time.monotonic()
@@ -364,8 +436,15 @@ async def post_widget_message_stream(
         and usage.questions_used >= quota.max_questions_per_month
     )
 
+    # See post_widget_message()'s identical comment: already escalated (auto
+    # low-confidence handoff, or a future manual "talk to a human" trigger)
+    # means a human is expected to answer, so the bot must not generate — or
+    # get billed quota for — a reply. Keyed off `status`, not `is_live`, for
+    # the same reason given there.
+    already_handed_off = conversation.status == "Handed off"
+
     doc_names: dict = {}
-    if not quota_exceeded and behavior.get("showSources", True):
+    if not quota_exceeded and not already_handed_off and behavior.get("showSources", True):
         docs_result = await db.execute(
             select(Document.id, Document.original_filename).where(
                 Document.tenant_id == tenant.id, Document.is_active == True
@@ -374,7 +453,13 @@ async def post_widget_message_stream(
         doc_names = {str(doc_id): name for doc_id, name in docs_result.all()}
     t_docs = time.monotonic()
 
-    # Computable now — doesn't depend on generation.
+    await db.flush()
+    t_flush = time.monotonic()
+
+    # conversation.id (client-side uuid4 default) is only populated once the
+    # flush above actually runs the INSERT — computed after it, unlike
+    # before this change, when an earlier separate flush made it available
+    # sooner but cost an extra round trip.
     session_token = create_widget_session_token(str(tenant.id), str(conversation.id))
 
     # Plain locals only past this point — no ORM object may cross into the
@@ -383,11 +468,9 @@ async def post_widget_message_stream(
     conversation_id = conversation.id
     message = body.message
 
-    await db.flush()
-    t_flush = time.monotonic()
     logger.info(
         "widget /message/stream prep timing tenant=%s auth=%.0fms conv_load=%.0fms new_conv=%.0fms quota=%.0fms "
-        "docs=%.0fms token+flush=%.0fms prep_total=%.0fms",
+        "docs=%.0fms flush=%.0fms prep_total=%.0fms",
         tenant_id, (t_auth - t0) * 1000, (t_conv - t_auth) * 1000, (t_newconv - t_conv) * 1000,
         (t_quota - t_newconv) * 1000, (t_docs - t_quota) * 1000, (t_flush - t_docs) * 1000, (t_flush - t0) * 1000,
     )
@@ -403,7 +486,13 @@ async def post_widget_message_stream(
         notif_type = None
 
         try:
-            if quota_exceeded:
+            if already_handed_off:
+                ack = "Thanks for the extra detail — a teammate will pick this up and reply here shortly."
+                yield _sse("token", {"text": ack})
+                yield _sse("done", {"reply": ack, "sources": [], "handoff": True, "sessionToken": session_token})
+                final_text = ack
+                handoff = True
+            elif quota_exceeded:
                 yield _sse("token", {"text": fallback})
                 yield _sse("done", {"reply": fallback, "sources": [], "handoff": False, "sessionToken": session_token})
             else:
@@ -459,12 +548,18 @@ async def post_widget_message_stream(
         t_persist_start = time.monotonic()
         try:
             async with AsyncSessionLocal() as session:
-                session.add(ConversationMessage(conversation_id=conversation_id, role="bot", text=final_text or fallback))
+                # Not persisted for the already-handed-off ack — see
+                # post_widget_message()'s identical comment: it's a
+                # transient UI acknowledgement, not a real reply, and would
+                # spam the transcript if stored on every message sent while
+                # waiting for a human.
+                if not already_handed_off:
+                    session.add(ConversationMessage(conversation_id=conversation_id, role="bot", text=final_text or fallback))
                 if handoff:
                     await session.execute(
                         update(Conversation)
                         .where(Conversation.id == conversation_id, Conversation.status == "Open")
-                        .values(status="Handed off")
+                        .values(status="Handed off", live_wait_started_at=func.now())
                     )
                 if unresolved_reason:
                     await session.execute(
@@ -493,12 +588,209 @@ async def post_widget_message_stream(
 
     return StreamingResponse(event_stream(), media_type="text/event-stream", headers=SSE_HEADERS)
 
+# ── POST /escalate ───────────────────────────────────────────────────────────
+
+# Shown once per escalation, not repeated on every message while
+# waiting/live — the persistent status banner covers the rest. Persisted as
+# a real ConversationMessage (unlike the transient already_handed_off ack in
+# /message) so it survives a reload and shows up in the dashboard inbox too.
+_ESCALATE_ACK_TEXT = "Our team will get back to you shortly."
+
+class WidgetEscalateRequest(BaseModel):
+    sessionToken: str = Field(..., min_length=1)
+
+class WidgetEscalateMessage(BaseModel):
+    id: str
+    role: str
+    text: str
+    createdAt: str
+
+class WidgetEscalateResponse(BaseModel):
+    state: LiveState
+    message: Optional[WidgetEscalateMessage] = None
+    # Tells the widget whether to show the "want us to notify you?" prompt
+    # right away instead of waiting for the "unavailable" fallback — no
+    # point asking again if the pre-chat form (or an earlier escalate call
+    # in this same conversation) already collected one.
+    hasContactInfo: bool = False
+
+@router.post("/escalate", response_model=WidgetEscalateResponse)
+@limiter.limit("10/minute", key_func=_widget_key_or_ip)
+async def post_widget_escalate(
+    request: Request,
+    body: WidgetEscalateRequest,
+    db: AsyncSession = Depends(get_db),
+) -> WidgetEscalateResponse:
+    """Visitor clicked "Talk to a human". Marks the conversation Handed off
+    (if it wasn't already) and (re)starts the LIVE_JOIN_TIMEOUT_SECONDS
+    countdown the widget's connecting UI polls against."""
+    tenant, _ = await _resolve_tenant(request, db)
+
+    payload = decode_widget_session_token(body.sessionToken)
+    if not payload or payload["tenant_id"] != str(tenant.id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found.")
+    conversation = await _load_conversation(payload["conversation_id"], tenant.id, db)
+    if conversation is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found.")
+
+    now = datetime.now(timezone.utc)
+    conversation.visitor_last_seen_at = now
+    if conversation.status != "Handed off":
+        conversation.status = "Handed off"
+    conversation.live_wait_started_at = now
+    if not conversation.unresolved_reason:
+        # So this shows up in the dashboard's Conversations list at all —
+        # that list only surfaces conversations the bot didn't resolve on
+        # its own, see api/frontend/conversations.py:list_conversations.
+        conversation.unresolved_reason = "Visitor requested a human"
+
+    ack_message: Optional[WidgetEscalateMessage] = None
+    already_acked = any(m.role == "bot" and m.text == _ESCALATE_ACK_TEXT for m in conversation.messages)
+    if not already_acked:
+        ack = ConversationMessage(conversation_id=conversation.id, role="bot", text=_ESCALATE_ACK_TEXT)
+        db.add(ack)
+        await db.flush()
+        await db.refresh(ack)
+        ack_message = WidgetEscalateMessage(
+            id=str(ack.id), role=ack.role, text=ack.text,
+            createdAt=helpers._as_aware(ack.created_at).isoformat(),
+        )
+    await db.flush()
+
+    last_user_message = next(
+        (m.text for m in reversed(conversation.messages) if m.role == "user"),
+        "A visitor asked to talk to a human.",
+    )
+    await notify_tenant(
+        tenant.id, "unresolved_conversations",
+        *conversation_alert_copy("unresolved_conversations", last_user_message),
+        f"/dashboard/conversations?id={conversation.id}", db,
+    )
+
+    return WidgetEscalateResponse(
+        state=_compute_live_state(conversation, tenant),
+        message=ack_message,
+        hasContactInfo=bool(conversation.visitor_email or conversation.visitor_phone),
+    )
+
+# ── GET /live-status ─────────────────────────────────────────────────────────
+
+class WidgetLiveStatusResponse(BaseModel):
+    state: LiveState
+    hasContactInfo: bool = False
+
+@router.get("/live-status", response_model=WidgetLiveStatusResponse)
+@limiter.limit("30/minute", key_func=_widget_key_or_ip)
+async def get_widget_live_status(
+    request: Request,
+    sessionToken: str,
+    db: AsyncSession = Depends(get_db),
+) -> WidgetLiveStatusResponse:
+    """Polled by the widget while connecting/live — see _compute_live_state.
+    Also the main heartbeat behind helpers.is_visitor_still_present: this is
+    what runs continuously while the tab is open and waiting/live, so it's
+    the most reliable "the visitor is still here" signal available."""
+    tenant, _ = await _resolve_tenant(request, db)
+
+    payload = decode_widget_session_token(sessionToken)
+    if not payload or payload["tenant_id"] != str(tenant.id):
+        return WidgetLiveStatusResponse(state="not_escalated")
+    conversation = await _load_conversation(payload["conversation_id"], tenant.id, db)
+    if conversation is None:
+        return WidgetLiveStatusResponse(state="not_escalated")
+
+    conversation.visitor_last_seen_at = datetime.now(timezone.utc)
+    await db.flush()
+
+    return WidgetLiveStatusResponse(
+        state=_compute_live_state(conversation, tenant),
+        hasContactInfo=bool(conversation.visitor_email or conversation.visitor_phone),
+    )
+
+# ── POST /contact ────────────────────────────────────────────────────────────
+
+class WidgetContactRequest(BaseModel):
+    sessionToken: str = Field(..., min_length=1)
+    email: Optional[EmailStr] = None
+    phone: Optional[str] = Field(None, max_length=32)
+
+@router.post("/contact", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit("10/minute", key_func=_widget_key_or_ip)
+async def post_widget_contact(
+    request: Request,
+    body: WidgetContactRequest,
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """
+    Optional contact info offered only at the "unavailable" fallback moment
+    (see NexusContext/LIVE_AGENT_HANDOFF_PLAN.md §4) — never required, never
+    asked upfront. Only fills in what's actually missing: never overwrites
+    what the pre-chat lead form (or an earlier call to this same endpoint)
+    already collected.
+    """
+    tenant, _ = await _resolve_tenant(request, db)
+
+    payload = decode_widget_session_token(body.sessionToken)
+    if not payload or payload["tenant_id"] != str(tenant.id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found.")
+    conversation = await _load_conversation(payload["conversation_id"], tenant.id, db)
+    if conversation is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found.")
+
+    if body.email and not conversation.visitor_email:
+        conversation.visitor_email = body.email
+    phone = (body.phone or "").strip()
+    if phone and not conversation.visitor_phone:
+        conversation.visitor_phone = phone
+    await db.flush()
+
+# ── POST /leave ──────────────────────────────────────────────────────────────
+
+class WidgetLeaveRequest(BaseModel):
+    # Every other widget route takes its key via the X-Widget-Key header —
+    # this one carries it in the body instead, because it's fired from
+    # navigator.sendBeacon() on page unload, which can't set custom headers.
+    apiKey: str = Field(..., min_length=1)
+    sessionToken: str = Field(..., min_length=1)
+
+@router.post("/leave", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit("30/minute", key_func=_widget_key_or_ip)
+async def post_widget_leave(
+    request: Request,
+    body: WidgetLeaveRequest,
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """
+    Fired via sendBeacon when the visitor's tab actually closes or
+    navigates away (WidgetPage's `pagehide` handler) — clears
+    visitor_last_seen_at immediately so the owner's "Visitor active" badge
+    (helpers.is_visitor_still_present) flips to "not active" right away
+    instead of only after VISITOR_PRESENCE_WINDOW_SECONDS of silence.
+    Best-effort and silent on any failure: a beacon fired during unload has
+    no one listening for a response, so there's nothing to do with an error
+    besides swallow it — worst case, presence just falls back to the normal
+    staleness timeout.
+    """
+    try:
+        tenant, _ = await _resolve_tenant_by_key(body.apiKey, request, db)
+    except HTTPException:
+        return
+    payload = decode_widget_session_token(body.sessionToken)
+    if not payload or payload["tenant_id"] != str(tenant.id):
+        return
+    conversation = await _load_conversation(payload["conversation_id"], tenant.id, db)
+    if conversation is None:
+        return
+    conversation.visitor_last_seen_at = None
+    await db.flush()
+
 # ── GET /history ─────────────────────────────────────────────────────────────
 
 class WidgetHistoryMessage(BaseModel):
     id: str
     role: str
     text: str
+    createdAt: str
 
 class WidgetHistoryResponse(BaseModel):
     messages: List[WidgetHistoryMessage] = []
@@ -522,7 +814,11 @@ async def get_widget_history(
 
     return WidgetHistoryResponse(
         messages=[
-            WidgetHistoryMessage(id=str(m.id), role=m.role, text=m.text) for m in conversation.messages
+            WidgetHistoryMessage(
+                id=str(m.id), role=m.role, text=m.text,
+                createdAt=helpers._as_aware(m.created_at).isoformat(),
+            )
+            for m in conversation.messages
         ]
     )
 

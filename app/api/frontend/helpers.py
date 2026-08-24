@@ -7,6 +7,7 @@ lives here so the endpoint modules stay thin.
 """
 
 import secrets
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -14,8 +15,11 @@ from typing import Optional
 from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import make_transient_to_detached
 
+from app.config import settings
 from app.models.chatbot_config import ChatbotConfig
+from app.models.conversation import Conversation
 from app.models.document import Document, DocumentSource, DocumentStatus
 from app.models.subscription import PlanName, Subscription
 from app.models.tenant import Tenant
@@ -91,9 +95,6 @@ def time_ago(dt: Optional[datetime]) -> str:
 def format_date(dt: datetime) -> str:
     """'Jul 28, 2026' — matches the frontend mock data."""
     return f"{_as_aware(dt).strftime('%b')} {_as_aware(dt).day}, {_as_aware(dt).year}"
-
-def hhmm(dt: datetime) -> str:
-    return _as_aware(dt).strftime("%H:%M")
 
 def size_label(size_mb: float) -> str:
     if size_mb < 1:
@@ -279,6 +280,30 @@ def split_docs_and_urls(
     file_docs = [d for d in docs if d.source not in (DocumentSource.scraped, DocumentSource.faq)]
     return file_docs, url_docs, faq_docs
 
+# In-process cache for the widget key → (tenant, config) lookup — see
+# auth_service._user_cache for the identical pattern this mirrors, including
+# the db.merge(..., load=False) trick to splice cached column values back
+# into the *current* request's session as fully tracked instances with no
+# extra SELECT. Every route in the public widget router calls this on every
+# request (chat message, config load, escalate, live-status poll), so this
+# is the single highest-traffic cache candidate in the app — see
+# WIDGET_TENANT_CACHE_TTL_SECONDS's docstring for why.
+_TENANT_CACHE_COLUMNS = (
+    "id", "workspace_name", "slug", "business_category", "employee_count_range",
+    "has_documents", "onboarding_completed_at", "is_active", "is_owner_online",
+    "last_seen_at", "created_at", "updated_at",
+)
+_CONFIG_CACHE_COLUMNS = ("id", "tenant_id", "config", "created_at", "updated_at")
+_widget_tenant_cache: dict[str, tuple[float, dict, dict]] = {}
+
+def invalidate_widget_tenant_cache(widget_api_key: str) -> None:
+    """Call after any write that changes what this lookup would return: the
+    chatbot config itself (save_config), or the key rotating out from under
+    the old entry (regenerate_api_key) — otherwise a tenant's own edit
+    (e.g. narrowing allowedDomains) wouldn't take effect on the widget for
+    up to WIDGET_TENANT_CACHE_TTL_SECONDS."""
+    _widget_tenant_cache.pop(widget_api_key, None)
+
 async def get_tenant_by_widget_api_key(
     key: str, db: AsyncSession
 ) -> Optional[tuple[Tenant, ChatbotConfig]]:
@@ -291,16 +316,74 @@ async def get_tenant_by_widget_api_key(
     disjoint from get_current_user (dashboard JWT auth): a widget key can
     never authenticate a dashboard/knowledge-base/settings/billing request,
     and a dashboard login token can never authenticate a widget request.
+
+    Cached in-process for WIDGET_TENANT_CACHE_TTL_SECONDS, keyed by the raw
+    key string — this query (a JSONB ->> filter join) sits in front of every
+    single widget request and measured as the single largest fixed DB cost
+    on that path (see config.py). Safe to cache briefly: nothing in the
+    public widget flow mutates the returned Tenant/ChatbotConfig, so a stale
+    read within the TTL window can't be clobbered by this request's own
+    writes the way a mutated-and-cached object could.
     """
     if not key:
         return None
+
+    cached = _widget_tenant_cache.get(key)
+    if cached is not None and cached[0] > time.monotonic():
+        # Same trick as auth_service._load_user: db.merge(..., load=False)
+        # refuses a plain transient object (no identity key yet) —
+        # make_transient_to_detached synthesizes one from the primary key
+        # we already set, without touching the DB, so the cached values
+        # land in *this* session's identity map exactly as if they'd been
+        # queried — matters if something else in the same request also
+        # loads this Tenant/ChatbotConfig row, so both reads agree.
+        _, tenant_data, config_data = cached
+        tenant = Tenant(**tenant_data)
+        make_transient_to_detached(tenant)
+        config_record = ChatbotConfig(**config_data)
+        make_transient_to_detached(config_record)
+        return await db.merge(tenant, load=False), await db.merge(config_record, load=False)
+
     result = await db.execute(
         select(Tenant, ChatbotConfig)
         .join(ChatbotConfig, ChatbotConfig.tenant_id == Tenant.id)
         .where(ChatbotConfig.config["deploy"]["apiKey"].astext == key)
     )
     row = result.first()
-    return (row[0], row[1]) if row else None
+    if row is None:
+        return None
+    tenant, config_record = row[0], row[1]
+    _widget_tenant_cache[key] = (
+        time.monotonic() + settings.WIDGET_TENANT_CACHE_TTL_SECONDS,
+        {col: getattr(tenant, col) for col in _TENANT_CACHE_COLUMNS},
+        {col: getattr(config_record, col) for col in _CONFIG_CACHE_COLUMNS},
+    )
+    return tenant, config_record
+
+def is_owner_currently_online(tenant: Tenant) -> bool:
+    """
+    Computes actual presence rather than trusting Tenant.is_owner_online
+    alone — nothing flips that boolean back to False on a dropped
+    connection (laptop sleep, network loss, crash), so last_seen_at is the
+    real source of truth. See NexusContext/LIVE_AGENT_HANDOFF_PLAN.md §2.
+    """
+    if not tenant.is_owner_online or tenant.last_seen_at is None:
+        return False
+    age = _utcnow() - _as_aware(tenant.last_seen_at)
+    return age < timedelta(seconds=settings.PRESENCE_ONLINE_WINDOW_SECONDS)
+
+def is_visitor_still_present(conversation: Conversation) -> bool:
+    """
+    Whether the visitor's widget appears to still have this conversation
+    open — based on visitor_last_seen_at, bumped by escalate/message/
+    live-status calls (app/api/public/widget.py). Used to refuse
+    join_conversation() so an owner can't go "live" against a chat the
+    visitor already closed. See NexusContext/LIVE_AGENT_HANDOFF_PLAN.md.
+    """
+    if conversation.visitor_last_seen_at is None:
+        return False
+    age = _utcnow() - _as_aware(conversation.visitor_last_seen_at)
+    return age < timedelta(seconds=settings.VISITOR_PRESENCE_WINDOW_SECONDS)
 
 def fe_plan_for_subscription(subscription: Optional[Subscription]) -> str:
     if subscription is None:
