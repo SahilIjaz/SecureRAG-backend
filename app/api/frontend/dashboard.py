@@ -33,6 +33,7 @@ from app.schemas.frontend import (
     FEVolumePoint,
 )
 from app.services.auth_service import get_current_user
+from app.services.classification_service import UNCLASSIFIED_TOPIC
 
 router = APIRouter(prefix="/dashboard", tags=["Frontend — Dashboard"])
 
@@ -52,6 +53,14 @@ async def _conversations_since(
         query = query.options(selectinload(Conversation.messages))
     result = await db.execute(query.order_by(Conversation.created_at.desc()))
     return list(result.scalars().all())
+
+def _is_unresolved(convo: Conversation) -> bool:
+    """
+    Anything not Resolved still needs attention — including "Handed off", where
+    the bot failed and escalated. Counting only "Open" left genuinely
+    unanswered questions out of the gaps and unresolved cards entirely.
+    """
+    return convo.status != "Resolved"
 
 def _pct_change(current: float, previous: float) -> float:
     if previous == 0:
@@ -95,8 +104,8 @@ async def get_stats(
         resolved = sum(1 for c in convos if c.status == "Resolved")
         return round(resolved / len(convos) * 100, 1)
 
-    cur_unresolved = sum(1 for c in current if c.status == "Open")
-    prev_unresolved = sum(1 for c in previous if c.status == "Open")
+    cur_unresolved = sum(1 for c in current if _is_unresolved(c))
+    prev_unresolved = sum(1 for c in previous if _is_unresolved(c))
     cur_avg = _avg_response_seconds(current)
     prev_avg = _avg_response_seconds(previous)
 
@@ -150,30 +159,90 @@ async def get_sentiment(
     csat = round(min(5.0, max(1.0, 3 + 2 * (pos - neg) / total)), 1)
     return FESentimentData(positive=positive, neutral=neutral, negative=negative, csatScore=csat)
 
+def _question_tokens(text: str) -> set:
+    """Content words of a question, for similarity comparison."""
+    import re
+
+    cleaned = re.sub(r"[^a-z0-9\s]", " ", text.lower())
+    # Crude singular/plural fold so "emails"/"email" match.
+    return {
+        w[:-1] if len(w) > 3 and w.endswith("s") else w
+        for w in cleaned.split()
+        if w not in _STOPWORDS
+    }
+
+def _similar(a: set, b: set, threshold: float = 0.5) -> bool:
+    """Jaccard overlap — merges verbatim repeats and close rewordings."""
+    if not a or not b:
+        return False
+    return len(a & b) / len(a | b) >= threshold
+
+_STOPWORDS = {
+    "a", "an", "the", "is", "are", "do", "does", "did", "can", "could", "would",
+    "i", "we", "you", "my", "our", "your", "to", "of", "for", "on", "in", "it",
+    "how", "what", "where", "when", "why", "please", "hi", "hello", "there",
+}
+
 @router.get("/unresolved", response_model=List[FEUnresolvedQuestion])
 async def get_unresolved(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> List[FEUnresolvedQuestion]:
+    """
+    Unresolved questions, grouped so repeats are counted rather than listed
+    separately — ten visitors asking the same thing is one row with
+    askedCount 10, which is what makes the card actionable.
+    """
     conversations = await _conversations_since(
         current_user.tenant_id, _now() - timedelta(days=WINDOW_DAYS * 3), db, with_messages=True
     )
-    open_convos = [c for c in conversations if c.status == "Open"]
+    open_convos = [c for c in conversations if _is_unresolved(c)]
 
-    items: List[FEUnresolvedQuestion] = []
-    for convo in open_convos[:5]:
+    # Cluster by topic + token similarity, so the same question asked by five
+    # visitors is one row with askedCount 5 rather than five rows of 1.
+    groups: list = []
+    for convo in open_convos:
         first_user_msg = next((m.text for m in convo.messages if m.role == "user"), "")
-        question = first_user_msg if len(first_user_msg) <= 60 else first_user_msg[:57] + "..."
-        items.append(
-            FEUnresolvedQuestion(
-                id=str(convo.id),
-                question=question or "(no message)",
-                askedCount=1,
-                reason=convo.unresolved_reason or "No matching doc",
-                lastAsked=helpers.time_ago(convo.created_at),
-            )
+        if not first_user_msg:
+            continue
+        tokens = _question_tokens(first_user_msg)
+        created = helpers._as_aware(convo.created_at)
+        topic = convo.topic or ""
+
+        match = next(
+            (g for g in groups if g["topic"] == topic and _similar(g["tokens"], tokens)),
+            None,
         )
-    return items
+        if match is None:
+            groups.append({
+                "id": str(convo.id),
+                "topic": topic,
+                "tokens": tokens,
+                "question": first_user_msg,
+                "count": 1,
+                "reason": convo.unresolved_reason or "No matching doc",
+                "last_at": created,
+            })
+        else:
+            match["count"] += 1
+            match["tokens"] |= tokens
+            if created > match["last_at"]:
+                match["last_at"] = created
+                match["question"] = first_user_msg
+                match["id"] = str(convo.id)
+                match["reason"] = convo.unresolved_reason or match["reason"]
+
+    ranked = sorted(groups, key=lambda g: (-g["count"], -g["last_at"].timestamp()))
+    return [
+        FEUnresolvedQuestion(
+            id=g["id"],
+            question=g["question"] if len(g["question"]) <= 60 else g["question"][:57] + "...",
+            askedCount=g["count"],
+            reason=g["reason"],
+            lastAsked=helpers.time_ago(g["last_at"]),
+        )
+        for g in ranked[:5]
+    ]
 
 def _priority_for(count: int) -> str:
     if count >= 10:
@@ -191,7 +260,7 @@ async def get_gaps(
         current_user.tenant_id, _now() - timedelta(days=WINDOW_DAYS * 3), db
     )
     open_topics = Counter(
-        (c.topic or "General") for c in conversations if c.status == "Open"
+        (c.topic or UNCLASSIFIED_TOPIC) for c in conversations if _is_unresolved(c)
     )
     gaps = [
         FEKnowledgeGap(id=str(i + 1), topic=topic, queryCount=count, priority=_priority_for(count))
@@ -210,7 +279,7 @@ async def get_topics(
     total = len(conversations)
     if total == 0:
         return []
-    topic_counts = Counter((c.topic or "Other") for c in conversations)
+    topic_counts = Counter((c.topic or UNCLASSIFIED_TOPIC) for c in conversations)
     return [
         FEConversationTopic(label=topic, percentage=round(count / total * 100))
         for topic, count in topic_counts.most_common(5)

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, List, Optional
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, func
@@ -122,8 +122,12 @@ class ConversationMessage(Base):
     # Citation data for a bot reply — [{documentId, documentName, snippet, page, score}, ...].
     # Only ever populated for role="bot"; null for user/agent messages.
     sources: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+    # Python-side default (not just server_default): Postgres now() returns the
+    # TRANSACTION start time, so a user message and its bot reply written in one
+    # transaction would share a timestamp and make response time compute to 0.
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
         server_default=func.now(),
         nullable=False,
         index=True,

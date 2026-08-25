@@ -15,9 +15,10 @@ Frontend-compat conversations endpoints (/api/conversations/...).
 
 import uuid
 from datetime import datetime, timezone
-from typing import List
+from typing import List, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -125,6 +126,28 @@ async def get_conversation(
         **_list_item(convo).model_dump(),
         messages=[_message(m) for m in convo.messages],
     )
+
+class FEUpdateStatusRequest(BaseModel):
+    status: Literal["Open", "Handed off", "Resolved"]
+
+@router.put("/{conversation_id}/status", response_model=FEConversationListItem)
+async def update_status(
+    conversation_id: str,
+    body: FEUpdateStatusRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> FEConversationListItem:
+    """
+    Manually set a conversation's status — lets an agent mark a chat Resolved
+    (or reopen it) from the Conversations page, which feeds the resolution-rate
+    metric on the Overview page.
+    """
+    convo = await _get_conversation_or_404(conversation_id, current_user, db)
+    convo.status = body.status
+    if body.status == "Resolved":
+        convo.unresolved_reason = None
+    await db.flush()
+    return _list_item(convo)
 
 @router.post("/{conversation_id}/reply", response_model=FESendReplyResponse)
 async def send_reply(
