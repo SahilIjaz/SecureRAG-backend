@@ -1,4 +1,4 @@
-import random
+import secrets
 import string
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -75,8 +75,12 @@ def decode_token(token: str) -> Dict[str, Any]:
 _otp_context = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=6)
 
 def generate_otp() -> str:
-    """Return a random 6-digit OTP string (zero-padded, e.g. '034911')."""
-    return "".join(random.choices(string.digits, k=6))
+    """Return a cryptographically-random 6-digit OTP string (zero-padded).
+
+    Uses `secrets`, not `random` — `random` is a deterministic Mersenne-Twister
+    PRNG whose output can be predicted from prior values, which is unacceptable
+    for a security token."""
+    return "".join(secrets.choice(string.digits) for _ in range(6))
 
 def hash_otp(otp: str) -> str:
     """Return a bcrypt hash of the plain OTP code for safe storage."""

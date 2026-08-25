@@ -105,6 +105,8 @@ async def ensure_frontend_schema() -> None:
         "ALTER TABLE tenant_quotas ADD COLUMN IF NOT EXISTS max_storage_mb INTEGER NOT NULL DEFAULT 200",
         # Session revocation on password change (Phase 2).
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 0",
+        # OTP brute-force lockout (Phase 2).
+        "ALTER TABLE email_verifications ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0",
     ]
     async with async_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

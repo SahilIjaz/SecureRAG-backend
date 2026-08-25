@@ -107,7 +107,7 @@ async def login(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password.")
 
     with perf_timing.timed("create_access_token"):
-        token = create_access_token({"sub": str(user.id), "tenant_id": str(user.tenant_id)})
+        token = create_access_token({"sub": str(user.id), "tenant_id": str(user.tenant_id), "tv": user.token_version})
     with perf_timing.timed("build_fe_user"):
         fe_user = await _fe_user(user, db)
     return FELoginResponse(success=True, token=token, user=fe_user)
@@ -180,12 +180,31 @@ async def google_login(
         db.add(user)
         await db.flush()
 
-    token = create_access_token({"sub": str(user.id), "tenant_id": str(user.tenant_id)})
+    token = create_access_token({"sub": str(user.id), "tenant_id": str(user.tenant_id), "tv": user.token_version})
     return FELoginResponse(success=True, token=token, user=await _fe_user(user, db))
 
 async def _verify_otp_async(plain_otp: str, hashed_otp: str) -> bool:
     """bcrypt verify off the event loop — see login()'s password check for why."""
     return await asyncio.get_event_loop().run_in_executor(None, verify_otp, plain_otp, hashed_otp)
+
+async def _fail_otp_attempt(otp_record, db: AsyncSession, kind: str = "code") -> None:
+    """Record one wrong guess against an OTP and lock the code once the attempt
+    ceiling is hit (marking it used so _latest_valid_otp stops returning it and
+    the caller must request a fresh code). Always raises — never returns."""
+    otp_record.attempts = (otp_record.attempts or 0) + 1
+    locked = otp_record.attempts >= settings.OTP_MAX_ATTEMPTS
+    if locked:
+        otp_record.is_used = True
+    await db.flush()
+    if locked:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Too many incorrect attempts. Please request a new {kind}.",
+        )
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail=f"Invalid {kind}. Please try again.",
+    )
 
 async def _latest_valid_otp(
     user_id, purpose: OTPPurpose, db: AsyncSession
@@ -232,14 +251,14 @@ async def verify_otp_endpoint(
         with perf_timing.timed("bcrypt_verify_otp"):
             otp_ok = await _verify_otp_async(body.otp, otp_record.otp_code)
         if not otp_ok:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid OTP code.")
+            await _fail_otp_attempt(otp_record, db, kind="OTP code")
 
         otp_record.is_used = True
         user.is_email_verified = True
         with perf_timing.timed("db_flush"):
             await db.flush()
 
-        token = create_access_token({"sub": str(user.id), "tenant_id": str(user.tenant_id)})
+        token = create_access_token({"sub": str(user.id), "tenant_id": str(user.tenant_id), "tv": user.token_version})
         with perf_timing.timed("build_fe_user"):
             fe_user = await _fe_user(user, db)
         return FEOtpVerifyResponse(success=True, token=token, user=fe_user)
@@ -249,7 +268,7 @@ async def verify_otp_endpoint(
     if otp_record is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Reset code has expired or does not exist. Please request a new one.")
     if not await _verify_otp_async(body.otp, otp_record.otp_code):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid reset code.")
+        await _fail_otp_attempt(otp_record, db, kind="reset code")
 
     # Deliberately NOT marked used — /reset-password consumes it.
     return FEOtpVerifyResponse(success=True)
@@ -310,10 +329,13 @@ async def reset_password(
     if otp_record is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Reset code has expired or does not exist. Please request a new one.")
     if not await _verify_otp_async(body.otp, otp_record.otp_code):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid reset code.")
+        await _fail_otp_attempt(otp_record, db, kind="reset code")
 
     otp_record.is_used = True
     loop = asyncio.get_event_loop()
     user.password_hash = await loop.run_in_executor(None, hash_password, body.newPassword)
+    # Password reset must also invalidate existing sessions.
+    user.token_version = (user.token_version or 0) + 1
     await db.flush()
+    auth_service.invalidate_user_cache(user.id)
     return FESuccessResponse()

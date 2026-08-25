@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_ID: str = ""
 
     OTP_EXPIRE_MINUTES: int = 10
+    # Wrong OTP guesses allowed before the code is locked and a new one is
+    # required — caps brute-force at 5 tries per issued code.
+    OTP_MAX_ATTEMPTS: int = 5
 
     FRONTEND_URL: str = "http://localhost:5173"
 

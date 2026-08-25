@@ -88,7 +88,7 @@ def _first_of_month() -> datetime:
 _USER_CACHE_COLUMNS = (
     "id", "tenant_id", "full_name", "email", "password_hash",
     "auth_provider", "provider_uid", "avatar_url",
-    "is_email_verified", "is_active", "created_at", "updated_at",
+    "is_email_verified", "is_active", "token_version", "created_at", "updated_at",
 )
 _user_cache: dict[str, tuple[float, dict]] = {}
 
@@ -235,6 +235,18 @@ async def get_current_user(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Account is deactivated.",
+        )
+
+    # Session revocation on password change: the token embeds the token_version
+    # it was minted under. A password change bumps user.token_version, so every
+    # token issued before it (missing claim => 0) no longer matches and is
+    # rejected. (Bounded by AUTH_USER_CACHE_TTL_SECONDS unless the cache is
+    # invalidated on change — see invalidate_user_cache.)
+    if payload.get("tv", 0) != (user.token_version or 0):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Your session has ended. Please log in again.",
+            headers={"WWW-Authenticate": "Bearer"},
         )
 
     return user
@@ -550,7 +562,10 @@ async def reset_password(
     loop = asyncio.get_event_loop()
     pw_hash = await loop.run_in_executor(None, hash_password, new_password)
     user.password_hash = pw_hash
+    # Invalidate every existing session — a reset must log out all devices.
+    user.token_version = (user.token_version or 0) + 1
     await db.commit()
+    invalidate_user_cache(user.id)
 
     return {"message": "Password reset successfully. You can now sign in with your new password."}
 
