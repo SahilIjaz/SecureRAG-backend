@@ -32,6 +32,10 @@ from app.models.document import Document
 from app.models.tenant import Tenant
 from app.schemas.frontend import FEChatbotAppearance, FEChatbotIdentity
 from app.services.classification_service import schedule_classification
+from app.core.widget_auth import (
+    create_widget_session_token,
+    decode_widget_session_token,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -45,13 +49,19 @@ class FEPublicBotResponse(BaseModel):
 
 class FEPublicChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=4000)
-    conversationId: Optional[str] = None
+    # Signed session token from a previous reply — NOT a raw conversation id.
+    # A raw client-supplied id would let anyone read/append to another visitor's
+    # conversation by guessing UUIDs; the token binds the caller to exactly one
+    # (tenant, conversation) pair and is tamper-proof.
+    sessionToken: Optional[str] = None
     visitorName: Optional[str] = Field(None, max_length=255)
     visitorEmail: Optional[EmailStr] = None
 
 class FEPublicChatResponse(BaseModel):
     reply: str
-    conversationId: str
+    # Opaque signed token the client must echo back on the next turn to stay in
+    # the same conversation. Replaces the old plaintext conversationId.
+    sessionToken: str
     handoff: bool = False
 
 async def _get_live_bot(slug: str, db: AsyncSession) -> tuple:
@@ -140,18 +150,22 @@ async def public_chat(
             detail="This chatbot has reached its monthly message limit.",
         )
 
-    # Find or create the visitor's conversation.
+    # Find or create the visitor's conversation. The conversation is resolved
+    # ONLY from a valid signed session token whose tenant matches this bot —
+    # never from a raw client-supplied id. An invalid/expired/foreign token is
+    # treated as "no session" and a fresh conversation is started.
     conversation = None
-    if body.conversationId:
+    payload = decode_widget_session_token(body.sessionToken)
+    if payload and payload.get("tenant_id") == str(tenant.id):
         try:
-            cid = uuid.UUID(body.conversationId)
+            cid = uuid.UUID(payload["conversation_id"])
             result = await db.execute(
                 select(Conversation).where(
                     Conversation.id == cid, Conversation.tenant_id == tenant.id
                 )
             )
             conversation = result.scalar_one_or_none()
-        except ValueError:
+        except (ValueError, KeyError):
             conversation = None
     if conversation is None:
         conversation = Conversation(
@@ -188,7 +202,9 @@ async def public_chat(
         # Still record the failure gracefully for the visitor.
         db.add(ConversationMessage(conversation_id=conversation.id, role="bot", text=fallback))
         await db.flush()
-        return FEPublicChatResponse(reply=fallback, conversationId=str(conversation.id))
+        await db.commit()
+        session_token = create_widget_session_token(str(tenant.id), str(conversation.id))
+        return FEPublicChatResponse(reply=fallback, sessionToken=session_token)
 
     if usage is not None:
         usage.questions_used = (usage.questions_used or 0) + 1
@@ -215,6 +231,7 @@ async def public_chat(
     # cards get real data without delaying the visitor's reply.
     schedule_classification(conversation.id)
 
+    session_token = create_widget_session_token(str(tenant.id), str(conversation.id))
     return FEPublicChatResponse(
-        reply=reply, conversationId=str(conversation.id), handoff=handoff
+        reply=reply, sessionToken=session_token, handoff=handoff
     )
