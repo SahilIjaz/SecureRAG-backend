@@ -16,6 +16,7 @@ api/frontend/helpers.py's FE_TO_BE_PLAN.
 import asyncio
 import logging
 from datetime import datetime, timezone
+from typing import Optional
 
 import stripe
 from sqlalchemy import select
@@ -51,6 +52,14 @@ def _price_to_plan() -> dict[str, PlanName]:
 
 def _plan_to_price() -> dict[PlanName, str]:
     return {v: k for k, v in _price_to_plan().items()}
+
+def plan_from_price_id(price_id: Optional[str]) -> Optional[PlanName]:
+    """Public, server-authoritative price→plan resolution. Returns None if the
+    price is unknown/empty. Use this to derive a tenant's plan from the Stripe
+    price stored on their subscription rather than trusting any client input."""
+    if not price_id:
+        return None
+    return _price_to_plan().get(price_id)
 
 def _plan_quotas() -> dict[PlanName, dict]:
     # Imported lazily to avoid a circular import (auth_service imports
@@ -122,26 +131,46 @@ async def start_trial_subscription(
         except stripe.error.StripeError as e:
             logger.warning("Could not cancel stale trial subscription %s: %s", subscription.stripe_subscription_id, e)
 
+    # One-time trial: a tenant gets the 3-day trial only on their very first
+    # subscription. Once trial_used_at is set, any later checkout creates a
+    # subscription with NO trial period, so the card is charged immediately —
+    # this closes the cancel-then-recheckout loophole that granted unlimited
+    # free trials.
+    is_first_trial = subscription.trial_used_at is None
+    create_kwargs = dict(
+        customer=customer_id,
+        items=[{"price": price_id}],
+        payment_behavior="default_incomplete",
+        payment_settings={"save_default_payment_method": "on_subscription"},
+        expand=["pending_setup_intent", "latest_invoice.payment_intent"],
+    )
+    if is_first_trial:
+        create_kwargs["trial_period_days"] = TRIAL_DAYS
+
     with perf_timing.timed("stripe_api_subscription_create"):
-        stripe_sub = await _run(
-            stripe.Subscription.create,
-            customer=customer_id,
-            items=[{"price": price_id}],
-            trial_period_days=TRIAL_DAYS,
-            payment_behavior="default_incomplete",
-            payment_settings={"save_default_payment_method": "on_subscription"},
-            expand=["pending_setup_intent"],
-        )
+        stripe_sub = await _run(stripe.Subscription.create, **create_kwargs)
 
     subscription.stripe_subscription_id = stripe_sub.id
     subscription.stripe_price_id = price_id
+    if is_first_trial:
+        subscription.trial_used_at = datetime.now(timezone.utc)
     with perf_timing.timed("db_flush"):
         await db.flush()
 
+    # First trial: a trialing subscription has no invoice yet, so Stripe hands
+    # back a SetupIntent to collect (not charge) the card. Repeat checkout: the
+    # subscription bills right away, so the client secret lives on the first
+    # invoice's PaymentIntent instead. Return whichever this checkout produced.
     setup_intent = stripe_sub.pending_setup_intent
-    if setup_intent is None or not setup_intent.client_secret:
-        raise RuntimeError("Stripe did not return a SetupIntent for the trial subscription.")
-    return setup_intent.client_secret
+    if setup_intent is not None and setup_intent.client_secret:
+        return setup_intent.client_secret
+
+    invoice = getattr(stripe_sub, "latest_invoice", None)
+    payment_intent = getattr(invoice, "payment_intent", None) if invoice else None
+    if payment_intent is not None and getattr(payment_intent, "client_secret", None):
+        return payment_intent.client_secret
+
+    raise RuntimeError("Stripe returned neither a SetupIntent nor a PaymentIntent client secret.")
 
 # ── Post-trial plan changes ─────────────────────────────────────────────────
 
@@ -246,6 +275,10 @@ async def mark_subscription_cancelled(stripe_sub: dict, db: AsyncSession) -> Non
     if subscription is None:
         return
     subscription.status = SubscriptionStatus.cancelled
+    # Drop the paid entitlements back to the free tier — otherwise a cancelled
+    # tenant kept their paid quota (docs/messages/storage) indefinitely.
+    subscription.plan_name = PlanName.free
+    await _apply_quota(subscription.tenant_id, PlanName.free, db)
     await db.flush()
 
 async def _get_or_create_payment_method_row(tenant_id, db: AsyncSession) -> PaymentMethod:

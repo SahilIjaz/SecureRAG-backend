@@ -41,6 +41,7 @@ from app.schemas.frontend import (
 )
 from app.services import document_service
 from app.services.auth_service import get_current_user
+from app.core.subscription_guard import require_active_subscription
 from app.services.indexing_service import schedule_document_processing, schedule_url_scrape
 
 logger = logging.getLogger(__name__)
@@ -118,7 +119,7 @@ async def list_documents(
 async def upload_documents(
     request: Request,
     files: List[UploadFile] = File(...),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_active_subscription),
     db: AsyncSession = Depends(get_db),
 ) -> List[FEKnowledgeDocument]:
     saved = await document_service.upload_documents(current_user, files, db)
@@ -191,7 +192,7 @@ async def list_urls(
 async def add_url(
     request: Request,
     body: FEAddUrlRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_active_subscription),
     db: AsyncSession = Depends(get_db),
 ) -> FEAddUrlResponse:
     """
@@ -252,7 +253,7 @@ async def list_faqs(
 async def add_faq(
     request: Request,
     body: FEAddFaqRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_active_subscription),
     db: AsyncSession = Depends(get_db),
 ) -> FEAddFaqResponse:
     saved = await document_service.add_faq_entries(
@@ -267,7 +268,7 @@ async def update_faq(
     request: Request,
     faq_id: str,
     body: FEUpdateFaqRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_active_subscription),
     db: AsyncSession = Depends(get_db),
 ) -> FEFaqEntry:
     try:
@@ -285,7 +286,7 @@ async def update_faq(
 @limiter.limit("3/minute")
 async def reindex_all(
     request: Request,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_active_subscription),
     db: AsyncSession = Depends(get_db),
 ) -> FESuccessResponse:
     """

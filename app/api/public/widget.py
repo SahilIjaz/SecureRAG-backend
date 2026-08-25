@@ -40,6 +40,7 @@ from app.api.frontend import helpers
 from app.config import settings
 from app.core.background import fire_and_forget
 from app.core.rate_limit import limiter
+from app.core.subscription_guard import is_subscription_usable
 from app.schemas.frontend import CitationSource
 from app.core.widget_auth import create_widget_session_token, decode_widget_session_token, is_origin_allowed
 from app.database import AsyncSessionLocal, get_db
@@ -249,6 +250,12 @@ async def post_widget_message(
         and usage.questions_used >= quota.max_questions_per_month
     )
 
+    # Owner's subscription lapsed → degrade to the fallback message (same soft
+    # path as quota exhaustion) rather than answering and burning LLM cost.
+    subscription = await helpers.get_subscription(tenant.id, db)
+    if not await is_subscription_usable(subscription, db):
+        quota_exceeded = True
+
     unresolved_reason = None
     notif_type = None
     should_classify = False
@@ -435,6 +442,12 @@ async def post_widget_message_stream(
         and quota.max_questions_per_month != -1
         and usage.questions_used >= quota.max_questions_per_month
     )
+
+    # Owner's subscription lapsed → degrade to the fallback message (same soft
+    # path as quota exhaustion) rather than answering and burning LLM cost.
+    subscription = await helpers.get_subscription(tenant.id, db)
+    if not await is_subscription_usable(subscription, db):
+        quota_exceeded = True
 
     # See post_widget_message()'s identical comment: already escalated (auto
     # low-confidence handoff, or a future manual "talk to a human" trigger)

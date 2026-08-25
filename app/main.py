@@ -97,6 +97,14 @@ async def ensure_frontend_schema() -> None:
         "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS stripe_price_id VARCHAR(255)",
         "CREATE UNIQUE INDEX IF NOT EXISTS ix_subscriptions_stripe_subscription_id "
         "ON subscriptions (stripe_subscription_id)",
+        # One-time trial guard — see app/models/subscription.py.
+        "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS trial_used_at TIMESTAMPTZ",
+        # Per-plan storage ceiling (Phase 3) and hybrid-search chunk store are
+        # created by Base.metadata.create_all; this only patches columns onto
+        # pre-existing tables.
+        "ALTER TABLE tenant_quotas ADD COLUMN IF NOT EXISTS max_storage_mb INTEGER NOT NULL DEFAULT 200",
+        # Session revocation on password change (Phase 2).
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 0",
     ]
     async with async_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

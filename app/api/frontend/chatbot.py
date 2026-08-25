@@ -33,6 +33,7 @@ from app.schemas.frontend import (
     FESaveChatbotConfigResponse,
 )
 from app.services.auth_service import get_current_user
+from app.core.subscription_guard import require_active_subscription
 from app.services.notification_service import notify_tenant
 
 logger = logging.getLogger(__name__)
@@ -240,7 +241,7 @@ class FETestChatResponse(BaseModel):
 async def test_chat(
     request: Request,
     body: FETestChatRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_active_subscription),
     db: AsyncSession = Depends(get_db),
 ) -> FETestChatResponse:
     """
@@ -370,7 +371,7 @@ SSE_HEADERS = {"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel
 async def test_chat_stream(
     request: Request,
     body: FETestChatRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_active_subscription),
     db: AsyncSession = Depends(get_db),
 ) -> StreamingResponse:
     """

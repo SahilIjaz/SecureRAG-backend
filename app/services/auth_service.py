@@ -27,6 +27,7 @@ from sqlalchemy.orm import make_transient_to_detached
 from app.config import settings
 from app.core.email import send_otp_email
 from app.core import perf_timing
+from app.core.entitlements import PLAN_ENTITLEMENTS
 from app.core.security import (
     create_access_token,
     decode_token,
@@ -46,27 +47,12 @@ logger = logging.getLogger(__name__)
 
 _bearer_scheme = HTTPBearer(auto_error=False)
 
-# Keyed by the internal PlanName enum (free/pro/pro_plus), which no longer
-# matches the user-facing names — see FE_TO_BE_PLAN in api/frontend/helpers.py
-# for the free→Starter/pro→Growth/pro_plus→Business remap. Values are the
-# real costed quotas from the Stripe pricing model (Starter $10, Growth $22,
-# Business $105/mo).
+# Backwards-compatible view over the single source of truth in
+# app/core/entitlements.py. Kept as a dict keyed by PlanName so the existing
+# `PLAN_QUOTAS[plan]["max_documents"]` call sites keep working; new code should
+# prefer entitlements.get_entitlements(subscription) directly.
 PLAN_QUOTAS: dict[PlanName, dict] = {
-    PlanName.free: {
-        "max_documents": 25,
-        "max_file_size_mb": 20,
-        "max_questions_per_month": 500,
-    },
-    PlanName.pro: {
-        "max_documents": 150,
-        "max_file_size_mb": 50,
-        "max_questions_per_month": 5000,
-    },
-    PlanName.pro_plus: {
-        "max_documents": 1000,
-        "max_file_size_mb": 100,
-        "max_questions_per_month": 12000,
-    },
+    plan: ent.quota_dict() for plan, ent in PLAN_ENTITLEMENTS.items()
 }
 
 def _slugify(text: str) -> str:

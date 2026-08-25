@@ -178,14 +178,47 @@ async def get_quota(tenant_id: uuid.UUID, db: AsyncSession) -> Optional[TenantQu
     )
     return result.scalar_one_or_none()
 
+def _first_of_current_month():
+    now = _utcnow()
+    return now.replace(day=1).date()
+
 async def get_current_usage(tenant_id: uuid.UUID, db: AsyncSession) -> Optional[UsageCount]:
+    """Return the usage row for the CURRENT month, rolling over lazily.
+
+    Previously this returned the single most-recent row regardless of month, so
+    for a tenant created months ago the "monthly" message quota was really a
+    lifetime cap (questions_used never reset). Now, if the latest row is from a
+    past month, we create a fresh row for the current month — resetting the
+    monthly message counter and warning flags, but carrying forward the
+    cumulative document/storage totals (those track current state, not a
+    monthly delta).
+    """
     result = await db.execute(
         select(UsageCount)
         .where(UsageCount.tenant_id == tenant_id)
         .order_by(UsageCount.period_month.desc())
         .limit(1)
     )
-    return result.scalar_one_or_none()
+    latest = result.scalar_one_or_none()
+    if latest is None:
+        return None
+
+    current_month = _first_of_current_month()
+    if latest.period_month >= current_month:
+        return latest
+
+    rolled = UsageCount(
+        tenant_id=tenant_id,
+        period_month=current_month,
+        questions_used=0,
+        documents_count=latest.documents_count,
+        storage_used_mb=latest.storage_used_mb,
+        warned_80_percent=False,
+        warned_100_percent=False,
+    )
+    db.add(rolled)
+    await db.flush()
+    return rolled
 
 async def increment_questions_used(tenant_id: uuid.UUID, db: AsyncSession) -> None:
     """

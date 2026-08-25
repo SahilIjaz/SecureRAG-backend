@@ -36,6 +36,7 @@ from app.core.widget_auth import (
     create_widget_session_token,
     decode_widget_session_token,
 )
+from app.core.subscription_guard import ensure_subscription_active
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +143,10 @@ async def public_chat(
     behavior = config.get("behavior", {})
     identity = config.get("identity", {})
     fallback = identity.get("fallbackMessage", "I'm not sure about that yet.")
+
+    # Block chat when the owner's subscription has lapsed (flips expired lazily).
+    subscription = await helpers.get_subscription(tenant.id, db)
+    await ensure_subscription_active(subscription, db)
 
     # Monthly quota — visitor messages consume it like any other question.
     quota = await helpers.get_quota(tenant.id, db)

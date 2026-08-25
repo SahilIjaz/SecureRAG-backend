@@ -338,7 +338,15 @@ async def complete(
             detail="Complete plan selection (Step 3) before finishing onboarding.",
         )
 
-    plan_name = helpers.FE_TO_BE_PLAN[body.plan]
+    # SECURITY: derive the plan from the Stripe price on the subscription row
+    # (set server-side at /checkout), never from body.plan. Trusting body.plan
+    # let a client POST plan="business" and receive Business quotas for free.
+    plan_name = stripe_service.plan_from_price_id(subscription.stripe_price_id)
+    if plan_name is None:
+        # No confirmed Stripe price yet (e.g. checkout not completed) — fall
+        # back to whatever plan the subscription row already carries, which is
+        # the conservative placeholder until the webhook confirms the trial.
+        plan_name = subscription.plan_name
     quotas = PLAN_QUOTAS[plan_name]
 
     with perf_timing.timed("db_get_quota_and_usage"):
