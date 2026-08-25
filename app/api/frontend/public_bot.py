@@ -42,6 +42,13 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/public/bot", tags=["Public — Chatbot"])
 limiter = Limiter(key_func=get_remote_address)
 
+
+def _ip_and_slug(request: Request) -> str:
+    """Rate-limit key combining caller IP and target bot slug, so one IP's
+    budget is per-bot (can't spread abuse across many bots) and one bot can't
+    have its budget exhausted by a single IP for every other visitor."""
+    return f"{get_remote_address(request)}:{request.path_params.get('slug', '')}"
+
 class FEPublicBotResponse(BaseModel):
     identity: FEChatbotIdentity
     appearance: FEChatbotAppearance
@@ -122,7 +129,7 @@ async def get_public_bot(
     )
 
 @router.post("/{slug}/chat", response_model=FEPublicChatResponse)
-@limiter.limit("15/minute")
+@limiter.limit("15/minute", key_func=_ip_and_slug)
 async def public_chat(
     request: Request,
     slug: str,
