@@ -52,8 +52,32 @@ class Settings(BaseSettings):
     # Wrong OTP guesses allowed before the code is locked and a new one is
     # required — caps brute-force at 5 tries per issued code.
     OTP_MAX_ATTEMPTS: int = 5
+    # Reject widget API calls that carry no Origin header (non-browser callers).
+    # Real embeds always send one; this closes the scraped-key quota-burning
+    # bypass. Set false only for a trusted non-browser integration.
+    WIDGET_REQUIRE_ORIGIN: bool = True
 
     FRONTEND_URL: str = "http://localhost:5173"
+    # Extra browser origins allowed by CORS beyond FRONTEND_URL and the local
+    # dev ports — comma-separated (e.g. "https://app.example.com,https://example.com").
+    CORS_EXTRA_ORIGINS: str = ""
+
+    @property
+    def cors_allowed_origins(self) -> list[str]:
+        """The full allow-list: the configured frontend origin, the common
+        local dev ports, and any CORS_EXTRA_ORIGINS. Deduplicated, order
+        preserved. Driving this from config means production no longer silently
+        breaks on a hardcoded localhost-only list."""
+        origins = [
+            self.FRONTEND_URL,
+            "http://localhost:5173",
+            "http://localhost:5174",
+            "http://localhost:5175",
+            "http://localhost:3000",
+        ]
+        origins += [o.strip() for o in self.CORS_EXTRA_ORIGINS.split(",") if o.strip()]
+        seen: set[str] = set()
+        return [o for o in origins if o and not (o in seen or seen.add(o))]
 
     UPLOAD_DIR: str = "storage/uploads"
     MAX_UPLOAD_SIZE_MB: int = 50

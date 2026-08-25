@@ -18,6 +18,7 @@ ACCESS token, never the short-lived onboarding token from the v1 flow.
 """
 
 import asyncio
+import secrets
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -55,6 +56,11 @@ from app.services import auth_service
 
 router = APIRouter(prefix="/auth", tags=["Frontend — Auth"])
 
+# A fixed bcrypt hash (of a random unknowable string) used to spend the same
+# CPU verifying a password when the email doesn't exist, so login timing can't
+# be used to enumerate registered emails. Never matches any real password.
+_DUMMY_PASSWORD_HASH = hash_password(secrets.token_urlsafe(32))
+
 async def _fe_user(user: User, db: AsyncSession) -> FEUser:
     tenant, subscription = await helpers.get_tenant_and_subscription(user, db)
     company = tenant.workspace_name if tenant.workspace_name != "__pending__" else user.full_name
@@ -91,20 +97,28 @@ async def login(
         result = await db.execute(select(User).where(User.email == body.email.lower().strip()))
         user = result.scalar_one_or_none()
 
-    if user is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No account found with this email address.")
+    # Anti-enumeration: an unknown email and a wrong password must be
+    # indistinguishable — same status, same message, and the same ~100ms bcrypt
+    # cost (verify against a dummy hash when the user doesn't exist) so timing
+    # can't reveal which emails are registered.
+    invalid_credentials = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid email or password.",
+    )
+    password_hash = user.password_hash if user is not None else _DUMMY_PASSWORD_HASH
+    with perf_timing.timed("bcrypt_verify_password"):
+        password_ok = bool(password_hash) and await asyncio.get_event_loop().run_in_executor(
+            None, verify_password, body.password, password_hash
+        )
+    if user is None or not password_ok:
+        raise invalid_credentials
+
+    # Beyond this point the credentials are valid, so surfacing account state
+    # no longer leaks whether the email exists.
     if not user.is_email_verified:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Email not verified. Please verify your email first.")
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is deactivated.")
-    # bcrypt verify is deliberately CPU-slow — run off the event loop so one
-    # login doesn't stall every other concurrent request for ~100ms+.
-    with perf_timing.timed("bcrypt_verify_password"):
-        password_ok = bool(user.password_hash) and await asyncio.get_event_loop().run_in_executor(
-            None, verify_password, body.password, user.password_hash
-        )
-    if not password_ok:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password.")
 
     with perf_timing.timed("create_access_token"):
         token = create_access_token({"sub": str(user.id), "tenant_id": str(user.tenant_id), "tv": user.token_version})

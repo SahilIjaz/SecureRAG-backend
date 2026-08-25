@@ -156,9 +156,11 @@ app = FastAPI(
         "with per-tenant isolation, quota enforcement, and subscription management."
     ),
     lifespan=lifespan,
-    docs_url="/docs",
-    redoc_url="/redoc",
-    openapi_url="/openapi.json",
+    # Interactive API docs expose the entire schema; only serve them in DEBUG
+    # so they aren't a free recon surface in production.
+    docs_url="/docs" if settings.DEBUG else None,
+    redoc_url="/redoc" if settings.DEBUG else None,
+    openapi_url="/openapi.json" if settings.DEBUG else None,
 )
 
 app.state.limiter = limiter
@@ -198,10 +200,24 @@ async def perf_timing_middleware(request: Request, call_next):
     response.headers["X-Process-Time-Ms"] = f"{total_ms:.2f}"
     return response
 
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    """Baseline security response headers. Conservative set that's safe for a
+    JSON API (no CSP, which is the frontend's concern) — prevents MIME sniffing,
+    clickjacking, and referrer leakage, and asks browsers to stick to HTTPS."""
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    if not settings.DEBUG:
+        response.headers.setdefault(
+            "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+        )
+    return response
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173", "http://localhost:5174", "http://localhost:5175", "http://localhost:3000", ],
+    allow_origins=settings.cors_allowed_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
     allow_headers=["Authorization", "Content-Type", "X-Widget-Key"],

@@ -105,7 +105,9 @@ async def get_me(
     )
 
 @router.put("/password", response_model=FESuccessResponse)
+@limiter.limit("5/minute")
 async def change_password(
+    request: Request,
     body: FEChangePasswordRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),

@@ -16,7 +16,9 @@ import asyncio
 import uuid
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+
+from app.core.rate_limit import limiter
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -209,7 +211,9 @@ async def get_billing(
     return await _billing_info(current_user, db)
 
 @router.post("/billing/checkout", response_model=FECheckoutResponse)
+@limiter.limit("10/minute")
 async def start_checkout(
+    request: Request,
     body: FECheckoutRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -300,7 +304,9 @@ async def list_api_keys(
     ]
 
 @router.post("/api-keys", response_model=FECreateApiKeyResponse, status_code=status.HTTP_201_CREATED)
+@limiter.limit("10/minute")
 async def create_api_key(
+    request: Request,
     body: FECreateApiKeyRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
