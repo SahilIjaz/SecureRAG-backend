@@ -28,10 +28,12 @@ class User(Base):
         default=uuid.uuid4,
         index=True,
     )
+    # No longer unique: a tenant can now have multiple users (owner + invited
+    # agents). The one-user-per-tenant DB constraint is dropped at startup
+    # (see app/main.py). Membership + role live in tenant_users.
     tenant_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("tenants.id", ondelete="CASCADE"),
-        unique=True,
         nullable=False,
         index=True,
     )
@@ -66,7 +68,7 @@ class User(Base):
 
     tenant: Mapped["Tenant"] = relationship(
         "Tenant",
-        back_populates="user",
+        back_populates="users",
     )
     email_verifications: Mapped[List["EmailVerification"]] = relationship(
         "EmailVerification",

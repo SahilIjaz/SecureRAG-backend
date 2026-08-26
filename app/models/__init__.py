@@ -10,6 +10,10 @@ from app.models.chatbot_config import ChatbotConfig
 from app.models.conversation import Conversation, ConversationMessage
 from app.models.tenant_settings import ApiKey, NotificationSetting, PaymentMethod
 from app.models.revoked_token import RevokedToken
+from app.models.processed_stripe_event import ProcessedStripeEvent
+from app.models.document_chunk import DocumentChunk
+from app.models.tenant_user import TenantUser, TenantRole
+from app.models.invite import Invite
 from app.models.notification import Notification
 
 __all__ = [
@@ -28,5 +32,10 @@ __all__ = [
     "NotificationSetting",
     "PaymentMethod",
     "RevokedToken",
+    "ProcessedStripeEvent",
+    "DocumentChunk",
+    "TenantUser",
+    "TenantRole",
+    "Invite",
     "Notification",
 ]

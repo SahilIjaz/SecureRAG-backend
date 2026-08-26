@@ -176,6 +176,9 @@ async def register_user(
         is_email_verified=False,
     )
     db.add(user)
+    # RBAC: the account creator owns the workspace.
+    from app.models.tenant_user import TenantUser, TenantRole
+    db.add(TenantUser(tenant_id=tenant_id, user_id=user.id, role=TenantRole.owner))
 
     await _create_and_send_otp(user, db)
 

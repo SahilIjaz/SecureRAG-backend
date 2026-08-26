@@ -77,6 +77,7 @@ async def _apply_quota(tenant_id, plan_name: PlanName, db: AsyncSession) -> None
     quota.max_documents = quotas["max_documents"]
     quota.max_file_size_mb = quotas["max_file_size_mb"]
     quota.max_questions_per_month = quotas["max_questions_per_month"]
+    quota.max_storage_mb = quotas["max_storage_mb"]
 
 # ── Customer / trial subscription ───────────────────────────────────────────
 

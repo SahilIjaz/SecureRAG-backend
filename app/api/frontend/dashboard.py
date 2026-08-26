@@ -14,6 +14,8 @@ from datetime import datetime, timedelta, timezone
 from typing import List
 
 from fastapi import APIRouter, Depends
+
+from app.core.rbac import require_admin
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -35,7 +37,13 @@ from app.schemas.frontend import (
 from app.services.auth_service import get_current_user
 from app.services.classification_service import UNCLASSIFIED_TOPIC
 
-router = APIRouter(prefix="/dashboard", tags=["Frontend — Dashboard"])
+# Dashboard analytics are owner/admin territory — agents see the conversation
+# inbox, not workspace-wide metrics.
+router = APIRouter(
+    prefix="/dashboard",
+    tags=["Frontend — Dashboard"],
+    dependencies=[Depends(require_admin)],
+)
 
 WINDOW_DAYS = 30
 
@@ -346,5 +354,7 @@ async def get_usage(
         docsTotal=docs_total,
         urlsUsed=len(url_docs),
         urlsTotal=display["urls"],
+        storageUsedMb=round((usage.storage_used_mb if usage else 0.0) or 0.0, 2),
+        storageTotalMb=float(quota.max_storage_mb) if quota else 0.0,
         resetsOn=helpers.format_date(helpers.first_of_next_month()),
     )

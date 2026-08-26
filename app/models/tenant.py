@@ -65,10 +65,10 @@ class Tenant(Base):
     # crashes since tenant_id is NOT NULL everywhere. passive_deletes=True
     # tells the ORM to leave deletion of children entirely to the database's
     # own ON DELETE CASCADE instead.
-    user: Mapped[Optional["User"]] = relationship(
+    # Now a collection: a tenant can have an owner plus invited agents.
+    users: Mapped[List["User"]] = relationship(
         "User",
         back_populates="tenant",
-        uselist=False,
         passive_deletes=True,
     )
     subscription: Mapped[Optional["Subscription"]] = relationship(

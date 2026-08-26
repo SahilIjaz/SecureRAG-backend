@@ -45,6 +45,17 @@ async def lock_quota_row(tenant_id: uuid.UUID, db: AsyncSession) -> Optional[Ten
     )
     return result.scalar_one_or_none()
 
+async def _tenant_entitlements(tenant_id: uuid.UUID, db: AsyncSession):
+    """Resolve the tenant's plan entitlements (feature flags + sub-limits like
+    max_faqs/max_urls that TenantQuota doesn't store) from its subscription."""
+    from app.core.entitlements import get_entitlements
+    from app.models.subscription import Subscription
+
+    result = await db.execute(
+        select(Subscription).where(Subscription.tenant_id == tenant_id)
+    )
+    return get_entitlements(result.scalar_one_or_none())
+
 class DocumentWithCategory:
     """Wraps a Document and adds business_category from its owner's tenant."""
     def __init__(self, doc: Document, business_category: str) -> None:
@@ -177,6 +188,20 @@ async def upload_documents(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"Document quota exceeded. Your plan allows {quota.max_documents} documents.",
         )
+
+    # Aggregate storage cap (-1 = unlimited). Uses the tenant's current
+    # storage_used_mb plus this batch's total.
+    max_storage = getattr(quota, "max_storage_mb", -1) if quota else -1
+    if max_storage != -1:
+        used = (usage.storage_used_mb if usage else 0.0) or 0.0
+        if used + total_new_storage > max_storage:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    f"Storage limit exceeded. Your plan allows {max_storage}MB "
+                    f"and you've used {used:.1f}MB."
+                ),
+            )
 
     saved_documents: List[Document] = []
     failures: List[str] = []
@@ -588,6 +613,23 @@ async def add_faq_entries(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"Document quota exceeded. Your plan allows {quota.max_documents} documents.",
         )
+
+    # Per-plan FAQ sub-limit (in addition to the shared document quota above).
+    ent = await _tenant_entitlements(user.tenant_id, db)
+    if ent.max_faqs != -1:
+        faq_count_result = await db.execute(
+            select(func.count()).select_from(Document).where(
+                Document.tenant_id == user.tenant_id,
+                Document.is_active == True,
+                Document.source == DocumentSource.faq,
+            )
+        )
+        existing_faqs = faq_count_result.scalar_one()
+        if existing_faqs + len(entries) > ent.max_faqs:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"FAQ limit exceeded. Your plan allows {ent.max_faqs} FAQs.",
+            )
 
     saved_documents: List[Document] = []
     for question, answer in entries:

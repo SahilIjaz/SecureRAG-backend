@@ -99,21 +99,46 @@ async def _load_conversation(conversation_id: str, tenant_id: uuid.UUID, db: Asy
     )
     return result.scalar_one_or_none()
 
+def _should_start_fresh(conversation: Conversation) -> bool:
+    """Whether the next message should open a NEW conversation rather than
+    continue this one — true if it's already resolved, or if it has been idle
+    longer than WIDGET_CONVERSATION_IDLE_MINUTES. A live/handed-off conversation
+    is never split (a human may be mid-reply)."""
+    if conversation.is_live or conversation.status == "Handed off":
+        return False
+    if conversation.status == "Resolved":
+        return True
+    last_activity = None
+    if conversation.messages:
+        last_activity = max((m.created_at for m in conversation.messages), default=None)
+    last_activity = last_activity or conversation.visitor_last_seen_at
+    if last_activity is None:
+        return False
+    if last_activity.tzinfo is None:
+        last_activity = last_activity.replace(tzinfo=timezone.utc)
+    idle = datetime.now(timezone.utc) - last_activity
+    return idle > timedelta(minutes=settings.WIDGET_CONVERSATION_IDLE_MINUTES)
+
 LiveState = Literal["not_escalated", "connecting", "live", "unavailable"]
 
-def _compute_live_state(conversation: Conversation, tenant: Tenant) -> LiveState:
+def _compute_live_state(
+    conversation: Conversation, tenant: Tenant, anyone_online: bool
+) -> LiveState:
     """
     Single source of truth for what the widget's connect/wait UI should show
     — see NexusContext/LIVE_AGENT_HANDOFF_PLAN.md §3. Deliberately stateless:
     re-derived from current DB values every call rather than cached, so a
     late owner join is always picked up on the next poll no matter how long
     "unavailable" was already showing (edge case #5 in that doc).
+
+    `anyone_online` is whether any team member (owner or agent) is currently
+    around — computed by the caller via helpers.is_any_member_online.
     """
     if conversation.is_live:
         return "live"
     if conversation.status != "Handed off":
         return "not_escalated"
-    if not helpers.is_owner_currently_online(tenant):
+    if not anyone_online:
         return "unavailable"
     if conversation.live_wait_started_at is None:
         return "unavailable"
@@ -131,6 +156,8 @@ class WidgetConfigResponse(BaseModel):
     collectNameBeforeChat: bool
     collectPhoneBeforeChat: bool
     showSources: bool
+    # Quick-reply menu the widget renders as tappable chips (empty if none).
+    menu: list = []
 
 @router.get("/config", response_model=WidgetConfigResponse)
 @limiter.limit("30/minute", key_func=_widget_key_or_ip)
@@ -148,14 +175,15 @@ async def get_widget_config(
         collectNameBeforeChat=behavior.get("collectNameBeforeChat", False),
         collectPhoneBeforeChat=behavior.get("collectPhoneBeforeChat", False),
         showSources=behavior.get("showSources", True),
+        menu=config.get("menu", []) or [],
     )
 
 # ── POST /message ────────────────────────────────────────────────────────────
 
 class WidgetLeadInfo(BaseModel):
-    name: Optional[str] = None
-    email: Optional[str] = None
-    phone: Optional[str] = None
+    name: Optional[str] = Field(None, max_length=255)
+    email: Optional[EmailStr] = None
+    phone: Optional[str] = Field(None, max_length=32)
 
 class WidgetMessageRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=4000)
@@ -189,6 +217,12 @@ async def post_widget_message(
     conversation: Optional[Conversation] = None
     if session_payload and session_payload["tenant_id"] == str(tenant.id):
         conversation = await _load_conversation(session_payload["conversation_id"], tenant.id, db)
+        # Auto-split: don't append to a conversation that's already resolved or
+        # has gone idle — start a fresh one instead. This stops unrelated chats
+        # (and, on a shared device, different visitors) from being merged, and
+        # avoids reopening a conversation the owner already closed.
+        if conversation is not None and _should_start_fresh(conversation):
+            conversation = None
     t_conv = time.monotonic()
 
     # Snapshot prior turns from an existing conversation *before* possibly
@@ -389,6 +423,12 @@ async def post_widget_message_stream(
     conversation: Optional[Conversation] = None
     if session_payload and session_payload["tenant_id"] == str(tenant.id):
         conversation = await _load_conversation(session_payload["conversation_id"], tenant.id, db)
+        # Auto-split: don't append to a conversation that's already resolved or
+        # has gone idle — start a fresh one instead. This stops unrelated chats
+        # (and, on a shared device, different visitors) from being merged, and
+        # avoids reopening a conversation the owner already closed.
+        if conversation is not None and _should_start_fresh(conversation):
+            conversation = None
     t_conv = time.monotonic()
 
     # See post_widget_message()'s identical comment: only a conversation
@@ -681,7 +721,9 @@ async def post_widget_escalate(
     )
 
     return WidgetEscalateResponse(
-        state=_compute_live_state(conversation, tenant),
+        state=_compute_live_state(
+            conversation, tenant, await helpers.is_any_member_online(tenant.id, db)
+        ),
         message=ack_message,
         hasContactInfo=bool(conversation.visitor_email or conversation.visitor_phone),
     )
@@ -716,7 +758,9 @@ async def get_widget_live_status(
     await db.flush()
 
     return WidgetLiveStatusResponse(
-        state=_compute_live_state(conversation, tenant),
+        state=_compute_live_state(
+            conversation, tenant, await helpers.is_any_member_online(tenant.id, db)
+        ),
         hasContactInfo=bool(conversation.visitor_email or conversation.visitor_phone),
     )
 

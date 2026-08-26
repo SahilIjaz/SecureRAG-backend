@@ -29,9 +29,17 @@ from app.models.user import User
 from app.services.auth_service import get_current_user
 
 
-# Statuses that may still use the product. `trial` and `active` are usable;
-# `expired` and `cancelled` are not.
-_USABLE_STATUSES = {SubscriptionStatus.trial, SubscriptionStatus.active}
+# Statuses that still have paid/trial time on the clock. `cancelled` is INCLUDED
+# on purpose: cancelling sets cancel_at_period_end on Stripe, so the customer
+# keeps access until expires_at (the trial end, or the end of the month they
+# already paid for) — they are only actually blocked once that date passes. The
+# single rule is therefore "usable while expires_at is in the future", checked
+# below; only `expired` is unconditionally blocked.
+_TIME_REMAINING_STATUSES = {
+    SubscriptionStatus.trial,
+    SubscriptionStatus.active,
+    SubscriptionStatus.cancelled,
+}
 
 
 def _is_expired_now(subscription: Subscription) -> bool:
@@ -43,28 +51,38 @@ def _is_expired_now(subscription: Subscription) -> bool:
     return datetime.now(timezone.utc) >= expires
 
 
+async def _resolve_usable(subscription: Subscription, db: AsyncSession) -> bool:
+    """Shared core: a subscription is usable while it still has time on the
+    clock (trial/active/cancelled) AND that time hasn't run out. Once the period
+    has elapsed, flip it to `expired` (so it stays blocked without re-checking
+    the clock) and treat it as unusable."""
+    if subscription.status not in _TIME_REMAINING_STATUSES:
+        return False  # already expired (or any future terminal state)
+    if _is_expired_now(subscription):
+        # The trial/paid period is over — now it's genuinely blocked.
+        if subscription.status != SubscriptionStatus.expired:
+            subscription.status = SubscriptionStatus.expired
+            await db.flush()
+        return False
+    # Still within the trial or paid period — cancelled-but-not-yet-expired
+    # keeps working exactly like active, matching Stripe's own behaviour.
+    return True
+
+
 async def ensure_subscription_active(
     subscription: Optional[Subscription],
     db: AsyncSession,
 ) -> None:
-    """Flip an elapsed subscription to `expired`, then raise 403 if the
-    subscription can no longer be used. A missing subscription is treated as
-    not-usable (fails closed). Safe to call on every request — the status
-    write only happens on the transition."""
+    """Raise 402 if the subscription can no longer be used, flipping it to
+    `expired` on the transition. A missing subscription fails closed. Safe to
+    call on every request — the status write only happens on the transition."""
     if subscription is None:
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail="No active subscription. Please choose a plan to continue.",
         )
 
-    if (
-        subscription.status in _USABLE_STATUSES
-        and _is_expired_now(subscription)
-    ):
-        subscription.status = SubscriptionStatus.expired
-        await db.flush()
-
-    if subscription.status not in _USABLE_STATUSES:
+    if not await _resolve_usable(subscription, db):
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail="Your subscription has ended. Renew your plan to keep using the chatbot.",
@@ -75,16 +93,12 @@ async def is_subscription_usable(
     subscription: Optional[Subscription],
     db: AsyncSession,
 ) -> bool:
-    """Soft, non-raising counterpart to ensure_subscription_active — flips an
-    elapsed subscription to `expired`, then returns whether it may still be
-    used. For surfaces (the public widget) that degrade gracefully to a
-    fallback message instead of erroring the visitor's request."""
+    """Soft, non-raising counterpart to ensure_subscription_active — for
+    surfaces (the public widget) that degrade gracefully to a fallback message
+    instead of erroring the visitor's request."""
     if subscription is None:
         return False
-    if subscription.status in _USABLE_STATUSES and _is_expired_now(subscription):
-        subscription.status = SubscriptionStatus.expired
-        await db.flush()
-    return subscription.status in _USABLE_STATUSES
+    return await _resolve_usable(subscription, db)
 
 
 async def require_active_subscription(

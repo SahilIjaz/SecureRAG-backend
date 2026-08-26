@@ -19,7 +19,7 @@ from typing import List, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -27,7 +27,9 @@ from app.api.frontend import helpers
 from app.core.background import fire_and_forget
 from app.database import get_db
 from app.models.conversation import Conversation, ConversationMessage
+from app.models.tenant_user import TenantUser
 from app.models.user import User
+from app.core.rbac import require_owner
 from app.schemas.frontend import (
     FEConversationDetail,
     FEConversationListItem,
@@ -46,7 +48,8 @@ def _preview(convo: Conversation) -> str:
     first_user_msg = next((m.text for m in convo.messages if m.role == "user"), "")
     return first_user_msg if len(first_user_msg) <= 60 else first_user_msg[:57] + "..."
 
-def _list_item(convo: Conversation) -> FEConversationListItem:
+def _list_item(convo: Conversation, name_map: dict | None = None) -> FEConversationListItem:
+    assigned_id = str(convo.assigned_user_id) if convo.assigned_user_id else None
     return FEConversationListItem(
         id=str(convo.id),
         name=convo.visitor_name,
@@ -61,7 +64,17 @@ def _list_item(convo: Conversation) -> FEConversationListItem:
         visitorEmail=convo.visitor_email,
         visitorPhone=convo.visitor_phone,
         visitorPresent=helpers.is_visitor_still_present(convo),
+        assignedUserId=assigned_id,
+        assignedToName=(name_map or {}).get(assigned_id),
     )
+
+async def _member_name_map(tenant_id, db: AsyncSession) -> dict:
+    """Map of user_id (str) → display name for this tenant's members, for
+    labelling 'assigned to' on conversation rows."""
+    rows = await db.execute(
+        select(User.id, User.full_name).where(User.tenant_id == tenant_id)
+    )
+    return {str(uid): name or "" for uid, name in rows.all()}
 
 def _message(msg: ConversationMessage) -> FEConversationMessage:
     return FEConversationMessage(
@@ -96,14 +109,18 @@ async def _get_conversation_or_404(
 
 @router.get("", response_model=List[FEConversationListItem])
 async def list_conversations(
+    assigned: Literal["mine", "unassigned", "all"] = "all",
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> List[FEConversationListItem]:
     """Every stored conversation for this tenant (soft-deleted ones excluded) —
-    bot-resolved and human-handled alike. unresolved_reason still gets set
-    on handoff (auto low-confidence, or /escalate) so it's available as a
-    signal/filter elsewhere, but it no longer hides anything from this list."""
-    result = await db.execute(
+    bot-resolved and human-handled alike. The `assigned` filter powers the
+    Mine / Unassigned / All tabs of the multi-agent inbox:
+      - mine:       assigned to the caller
+      - unassigned: live/handed-off chats sitting in the shared queue
+      - all:        everything (default)
+    """
+    stmt = (
         select(Conversation)
         .where(
             Conversation.tenant_id == current_user.tenant_id,
@@ -113,7 +130,17 @@ async def list_conversations(
         .order_by(Conversation.created_at.desc())
         .limit(200)
     )
-    return [_list_item(c) for c in result.scalars().all()]
+    if assigned == "mine":
+        stmt = stmt.where(Conversation.assigned_user_id == current_user.id)
+    elif assigned == "unassigned":
+        stmt = stmt.where(
+            Conversation.assigned_user_id.is_(None),
+            Conversation.status == "Handed off",
+        )
+    result = await db.execute(stmt)
+    convos = result.scalars().all()
+    name_map = await _member_name_map(current_user.tenant_id, db)
+    return [_list_item(c, name_map) for c in convos]
 
 @router.get("/{conversation_id}", response_model=FEConversationDetail)
 async def get_conversation(
@@ -122,8 +149,9 @@ async def get_conversation(
     db: AsyncSession = Depends(get_db),
 ) -> FEConversationDetail:
     convo = await _get_conversation_or_404(conversation_id, current_user, db)
+    name_map = await _member_name_map(current_user.tenant_id, db)
     return FEConversationDetail(
-        **_list_item(convo).model_dump(),
+        **_list_item(convo, name_map).model_dump(),
         messages=[_message(m) for m in convo.messages],
     )
 
@@ -157,6 +185,25 @@ async def send_reply(
     db: AsyncSession = Depends(get_db),
 ) -> FESendReplyResponse:
     convo = await _get_conversation_or_404(conversation_id, current_user, db)
+
+    # Reply gate: while a chat is live (being handled by a human), only its
+    # assignee or an owner/admin may reply — one agent can't talk over another's
+    # conversation. An unassigned live chat is open to any member (they should
+    # claim it, but replying implicitly claims it below).
+    role = await helpers.role_for(current_user, db)
+    if (
+        convo.is_live
+        and convo.assigned_user_id is not None
+        and convo.assigned_user_id != current_user.id
+        and role not in ("owner", "admin")
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This conversation is being handled by another agent.",
+        )
+    # Replying to an unassigned live chat implicitly claims it for this agent.
+    if convo.is_live and convo.assigned_user_id is None:
+        convo.assigned_user_id = current_user.id
 
     reply_text = body.text.strip()
     msg = ConversationMessage(
@@ -195,9 +242,81 @@ async def resolve_conversation(
     convo = await _get_conversation_or_404(conversation_id, current_user, db)
     convo.status = "Resolved"
     convo.is_live = False
+    # Credit whoever resolved it (survives even if the chat is later reassigned).
+    convo.resolved_by_user_id = current_user.id
     await db.flush()
     return FEConversationDetail(
         **_list_item(convo).model_dump(),
+        messages=[_message(m) for m in convo.messages],
+    )
+
+class FEClaimResponse(BaseModel):
+    conversation: FEConversationDetail
+
+@router.post("/{conversation_id}/claim", response_model=FEConversationDetail)
+async def claim_conversation(
+    conversation_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> FEConversationDetail:
+    """First-accept-wins: atomically take an unassigned chat out of the shared
+    queue. The UPDATE ... WHERE assigned_user_id IS NULL guarantees exactly one
+    agent wins even under a simultaneous double-accept; the loser gets 409."""
+    try:
+        cid = uuid.UUID(conversation_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found.")
+
+    result = await db.execute(
+        sa_update(Conversation)
+        .where(
+            Conversation.id == cid,
+            Conversation.tenant_id == current_user.tenant_id,
+            Conversation.deleted_at.is_(None),
+            Conversation.assigned_user_id.is_(None),
+        )
+        .values(assigned_user_id=current_user.id, is_live=True)
+    )
+    if result.rowcount == 0:
+        # Either it doesn't exist, or someone already claimed it.
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Already taken.")
+    await db.flush()
+    convo = await _get_conversation_or_404(conversation_id, current_user, db)
+    name_map = await _member_name_map(current_user.tenant_id, db)
+    return FEConversationDetail(
+        **_list_item(convo, name_map).model_dump(),
+        messages=[_message(m) for m in convo.messages],
+    )
+
+class FETransferRequest(BaseModel):
+    toUserId: str
+
+@router.post("/{conversation_id}/transfer", response_model=FEConversationDetail)
+async def transfer_conversation(
+    conversation_id: str,
+    body: FETransferRequest,
+    current_user: User = Depends(require_owner),
+    db: AsyncSession = Depends(get_db),
+) -> FEConversationDetail:
+    """Owner reassigns a live chat to a specific team member."""
+    convo = await _get_conversation_or_404(conversation_id, current_user, db)
+    try:
+        target = uuid.UUID(body.toUserId)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Member not found.")
+    membership = await db.execute(
+        select(TenantUser.id).where(
+            TenantUser.tenant_id == current_user.tenant_id, TenantUser.user_id == target
+        )
+    )
+    if membership.scalar_one_or_none() is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Member not found.")
+    convo.assigned_user_id = target
+    convo.is_live = True
+    await db.flush()
+    name_map = await _member_name_map(current_user.tenant_id, db)
+    return FEConversationDetail(
+        **_list_item(convo, name_map).model_dump(),
         messages=[_message(m) for m in convo.messages],
     )
 
@@ -227,6 +346,9 @@ async def join_conversation(
                 detail="This visitor no longer appears to have the chat open.",
             )
         convo.is_live = True
+        # Record which team member is handling this chat (RBAC groundwork —
+        # with a single owner today this is just that owner).
+        convo.assigned_user_id = current_user.id
         if convo.status == "Open":
             convo.status = "Handed off"
         await db.flush()

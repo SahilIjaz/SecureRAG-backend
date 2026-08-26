@@ -358,6 +358,7 @@ async def complete(
         quota.max_documents = quotas["max_documents"]
         quota.max_file_size_mb = quotas["max_file_size_mb"]
         quota.max_questions_per_month = quotas["max_questions_per_month"]
+        quota.max_storage_mb = quotas["max_storage_mb"]
 
     if usage is None:
         usage = UsageCount(tenant_id=tenant.id, period_month=_first_of_month().date())

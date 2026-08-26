@@ -179,6 +179,11 @@ async def public_chat(
             conversation = result.scalar_one_or_none()
         except (ValueError, KeyError):
             conversation = None
+        # Auto-split: a resolved conversation starts a fresh one (same rule as
+        # the widget). Idle-based splitting isn't applied here because this
+        # endpoint doesn't eager-load messages; resolution is the common case.
+        if conversation is not None and conversation.status == "Resolved":
+            conversation = None
     if conversation is None:
         conversation = Conversation(
             tenant_id=tenant.id,

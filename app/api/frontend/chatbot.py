@@ -34,11 +34,17 @@ from app.schemas.frontend import (
 )
 from app.services.auth_service import get_current_user
 from app.core.subscription_guard import require_active_subscription
+from app.core.rbac import require_admin
 from app.services.notification_service import notify_tenant
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/chatbot", tags=["Frontend — Chatbot"])
+# Chatbot config/deploy/keys are owner/admin territory.
+router = APIRouter(
+    prefix="/chatbot",
+    tags=["Frontend — Chatbot"],
+    dependencies=[Depends(require_admin)],
+)
 
 def _default_config(workspace_name: str, slug: str) -> dict:
     return {
@@ -141,13 +147,34 @@ async def save_config(
     db: AsyncSession = Depends(get_db),
 ) -> FESaveChatbotConfigResponse:
     record = await _get_or_create_config(current_user, db)
-    record.config = body.model_dump()
+
+    # The widget API key is server-generated and only rotated via the dedicated
+    # regenerate endpoint — never trust a client-supplied value in the config
+    # body (which would let a tenant set an arbitrary/duplicate key). Preserve
+    # whatever key the record already has; the old cache entry is invalidated
+    # under that same (unchanged) key.
+    existing_key = (record.config or {}).get("deploy", {}).get("apiKey", "")
+    new_config = body.model_dump()
+    new_config.setdefault("deploy", {})["apiKey"] = existing_key
+
+    # Menu is a paid feature — drop it on save if the plan doesn't include it,
+    # so a lower tier can't persist (or serve) a menu.
+    from app.core.entitlements import get_entitlements
+    subscription = await helpers.get_subscription(current_user.tenant_id, db)
+    if not get_entitlements(subscription).menu:
+        new_config["menu"] = []
+        body.menu = []
+
+    record.config = new_config
     await db.flush()
     # The widget's tenant+config lookup caches on the API key (see
     # helpers.get_tenant_by_widget_api_key) — without this, an edit here
     # (allowedDomains, identity, behavior...) wouldn't reach the live widget
     # for up to WIDGET_TENANT_CACHE_TTL_SECONDS.
-    helpers.invalidate_widget_tenant_cache(record.config.get("deploy", {}).get("apiKey", ""))
+    helpers.invalidate_widget_tenant_cache(existing_key)
+    # Reflect the preserved key back to the caller so the response matches
+    # what was persisted.
+    body.deploy.apiKey = existing_key
     return FESaveChatbotConfigResponse(success=True, config=body)
 
 MAX_AVATAR_MB = 2

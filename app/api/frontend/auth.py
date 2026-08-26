@@ -42,6 +42,7 @@ from app.schemas.frontend import (
     FEForgotPasswordRequest,
     FEGoogleLoginRequest,
     FELoginRequest,
+    FEAcceptInviteRequest,
     FELoginResponse,
     FEOtpVerifyRequest,
     FEOtpVerifyResponse,
@@ -69,6 +70,7 @@ async def _fe_user(user: User, db: AsyncSession) -> FEUser:
         email=user.email,
         companyName=company,
         onboardingCompleted=helpers.onboarding_completed(subscription),
+        role=await helpers.role_for(user, db),
     )
 
 @router.post("/signup", response_model=FESignupResponse, status_code=status.HTTP_201_CREATED)
@@ -192,6 +194,10 @@ async def google_login(
             is_email_verified=True,
         )
         db.add(user)
+        await db.flush()
+        # RBAC: the account creator owns the workspace.
+        from app.models.tenant_user import TenantUser, TenantRole
+        db.add(TenantUser(tenant_id=placeholder_tenant.id, user_id=user.id, role=TenantRole.owner))
         await db.flush()
 
     token = create_access_token({"sub": str(user.id), "tenant_id": str(user.tenant_id), "tv": user.token_version})
@@ -353,3 +359,21 @@ async def reset_password(
     await db.flush()
     auth_service.invalidate_user_cache(user.id)
     return FESuccessResponse()
+
+@router.post("/accept-invite", response_model=FELoginResponse)
+@limiter.limit("5/minute")
+async def accept_invite(
+    request: Request,
+    body: FEAcceptInviteRequest,
+    db: AsyncSession = Depends(get_db),
+) -> FELoginResponse:
+    """Public endpoint for an invited agent to create their account from the
+    emailed one-time link. On success they're logged straight in (an agent
+    joins an already-onboarded tenant, so they skip onboarding entirely)."""
+    from app.services import team_service
+
+    user = await team_service.accept_invite(body.token, body.name, body.password, db)
+    await db.commit()
+    token = create_access_token({"sub": str(user.id), "tenant_id": str(user.tenant_id), "tv": user.token_version})
+    fe_user = await _fe_user(user, db)
+    return FELoginResponse(success=True, token=token, user=fe_user)

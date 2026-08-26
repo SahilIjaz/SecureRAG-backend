@@ -33,6 +33,8 @@ class Entitlements:
     max_faqs: int
     max_chunks: int
     max_storage_mb: int
+    # Max human support agents the owner can invite (excludes the owner).
+    max_agents: int
     # Feature flags
     live_handoff: bool
     remove_branding: bool
@@ -40,11 +42,12 @@ class Entitlements:
     menu: bool
 
     def quota_dict(self) -> dict:
-        """The three fields TenantQuota persists, for writing a quota row."""
+        """The fields TenantQuota persists, for writing a quota row."""
         return {
             "max_documents": self.max_documents,
             "max_file_size_mb": self.max_file_size_mb,
             "max_questions_per_month": self.max_questions_per_month,
+            "max_storage_mb": self.max_storage_mb,
         }
 
 
@@ -58,6 +61,7 @@ PLAN_ENTITLEMENTS: dict[PlanName, Entitlements] = {
         max_faqs=50,
         max_chunks=2000,
         max_storage_mb=200,
+        max_agents=0,
         live_handoff=False,
         remove_branding=False,
         lead_capture=False,
@@ -71,6 +75,7 @@ PLAN_ENTITLEMENTS: dict[PlanName, Entitlements] = {
         max_faqs=300,
         max_chunks=12000,
         max_storage_mb=1024,
+        max_agents=2,
         live_handoff=True,
         remove_branding=False,
         lead_capture=True,
@@ -84,6 +89,7 @@ PLAN_ENTITLEMENTS: dict[PlanName, Entitlements] = {
         max_faqs=2000,
         max_chunks=80000,
         max_storage_mb=5120,
+        max_agents=5,
         live_handoff=True,
         remove_branding=True,
         lead_capture=True,

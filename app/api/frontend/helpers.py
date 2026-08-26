@@ -405,6 +405,22 @@ def is_owner_currently_online(tenant: Tenant) -> bool:
     age = _utcnow() - _as_aware(tenant.last_seen_at)
     return age < timedelta(seconds=settings.PRESENCE_ONLINE_WINDOW_SECONDS)
 
+async def is_any_member_online(tenant_id: uuid.UUID, db: AsyncSession) -> bool:
+    """Multi-agent availability: True if ANY team member (owner or agent) has
+    pinged presence within the online window. Used so the widget can offer
+    "talk to a human" whenever at least one agent is around, not only the owner.
+    """
+    from app.models.tenant_user import TenantUser
+    cutoff = _utcnow() - timedelta(seconds=settings.PRESENCE_ONLINE_WINDOW_SECONDS)
+    result = await db.execute(
+        select(TenantUser.id).where(
+            TenantUser.tenant_id == tenant_id,
+            TenantUser.last_seen_at.isnot(None),
+            TenantUser.last_seen_at >= cutoff,
+        ).limit(1)
+    )
+    return result.scalar_one_or_none() is not None
+
 def is_visitor_still_present(conversation: Conversation) -> bool:
     """
     Whether the visitor's widget appears to still have this conversation
@@ -425,3 +441,16 @@ def fe_plan_for_subscription(subscription: Optional[Subscription]) -> str:
 
 def onboarding_completed(subscription: Optional[Subscription]) -> bool:
     return subscription is not None
+
+async def role_for(user: User, db: AsyncSession) -> str:
+    """The user's workspace role as a string ('owner'/'admin'/'agent'), from the
+    tenant_users membership. Missing row → 'owner' (single-user fallback)."""
+    from app.models.tenant_user import TenantUser
+    result = await db.execute(
+        select(TenantUser.role).where(
+            TenantUser.tenant_id == user.tenant_id,
+            TenantUser.user_id == user.id,
+        )
+    )
+    role = result.scalar_one_or_none()
+    return role.value if role is not None else "owner"

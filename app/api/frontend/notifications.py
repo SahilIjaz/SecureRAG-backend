@@ -13,7 +13,7 @@ import uuid
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.frontend import helpers
@@ -44,9 +44,12 @@ async def list_notifications(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> FENotificationListResponse:
+    # A member sees whole-tenant notices (user_id NULL) plus ones addressed to
+    # them — never notices meant for another agent.
+    visible = or_(Notification.user_id.is_(None), Notification.user_id == current_user.id)
     result = await db.execute(
         select(Notification)
-        .where(Notification.tenant_id == current_user.tenant_id)
+        .where(Notification.tenant_id == current_user.tenant_id, visible)
         .order_by(Notification.created_at.desc())
         .limit(_LIST_LIMIT)
     )
@@ -55,7 +58,11 @@ async def list_notifications(
     unread_result = await db.execute(
         select(func.count())
         .select_from(Notification)
-        .where(Notification.tenant_id == current_user.tenant_id, Notification.is_read == False)
+        .where(
+            Notification.tenant_id == current_user.tenant_id,
+            visible,
+            Notification.is_read == False,
+        )
     )
     unread_count = unread_result.scalar_one()
 
@@ -87,7 +94,11 @@ async def mark_all_read(
 ) -> FESuccessResponse:
     await db.execute(
         update(Notification)
-        .where(Notification.tenant_id == current_user.tenant_id, Notification.is_read == False)
+        .where(
+            Notification.tenant_id == current_user.tenant_id,
+            or_(Notification.user_id.is_(None), Notification.user_id == current_user.id),
+            Notification.is_read == False,
+        )
         .values(is_read=True)
     )
     return FESuccessResponse()
@@ -108,7 +119,12 @@ async def clear_all(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> FESuccessResponse:
-    await db.execute(delete(Notification).where(Notification.tenant_id == current_user.tenant_id))
+    await db.execute(
+        delete(Notification).where(
+            Notification.tenant_id == current_user.tenant_id,
+            or_(Notification.user_id.is_(None), Notification.user_id == current_user.id),
+        )
+    )
     return FESuccessResponse()
 
 @router.delete("/{notification_id}", response_model=FESuccessResponse)

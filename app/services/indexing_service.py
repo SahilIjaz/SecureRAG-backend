@@ -21,7 +21,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy import update as sa_update
 
 from app.config import settings
@@ -292,11 +292,34 @@ async def _process_document(document_id: uuid.UUID) -> None:
         ).scalar_one_or_none()
         if doc is None:
             return
+        # Mirror chunk text into Postgres for the keyword half of hybrid search.
+        # Runs regardless of whether Pinecone is configured, so lexical search
+        # works even without a vector store. Replace any prior rows first so a
+        # re-index doesn't leave stale chunks behind.
+        await _write_keyword_chunks(str(doc.tenant_id), document_id, chunks, db)
         doc.chunk_count = len(chunks)
         doc.status = DocumentStatus.ready
         await db.commit()
 
     logger.info("Indexed document %s: %d chunks", document_id, len(chunks))
+
+async def _write_keyword_chunks(tenant_id: str, document_id, chunks: list[dict], db) -> None:
+    """Replace the Postgres keyword-search rows for a document with the current
+    chunk set. Text is capped to keep a pathological chunk from bloating the row
+    (the same 8000-char cap the Pinecone metadata uses)."""
+    from app.models.document_chunk import DocumentChunk
+
+    await db.execute(
+        delete(DocumentChunk).where(DocumentChunk.document_id == document_id)
+    )
+    for c in chunks:
+        db.add(DocumentChunk(
+            tenant_id=uuid.UUID(tenant_id) if isinstance(tenant_id, str) else tenant_id,
+            document_id=document_id,
+            chunk_id=str(c.get("chunk_id", c.get("sequence", 0))),
+            sequence=int(c.get("sequence", 0)),
+            text=(c["text"] or "")[:8000],
+        ))
 
 async def _download(url: str, public_id: str = None) -> bytes:
     async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:

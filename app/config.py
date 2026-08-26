@@ -81,6 +81,10 @@ class Settings(BaseSettings):
 
     UPLOAD_DIR: str = "storage/uploads"
     MAX_UPLOAD_SIZE_MB: int = 50
+    # Hard ceiling on a whole upload request body (multipart), rejected from
+    # Content-Length before buffering. Must exceed the largest plan's per-file
+    # cap (100MB) plus room for small batches + overhead.
+    MAX_REQUEST_BODY_MB: int = 120
     ALLOWED_MIME_TYPES: str = (
         "application/pdf,"
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document,"
@@ -153,6 +157,19 @@ class Settings(BaseSettings):
     RAG_CHUNK_SIZE: int = 500
     RAG_CHUNK_OVERLAP: int = 50
     RAG_SEARCH_TOP_K: int = 5
+    # A widget conversation that has been idle longer than this auto-splits: the
+    # next message starts a fresh conversation instead of appending to the old
+    # one. Prevents unrelated chats (and, on a shared device, different people)
+    # from being merged into a single conversation thread.
+    WIDGET_CONVERSATION_IDLE_MINUTES: int = 30
+    # Minimum cosine score a dense match must clear to be used as context.
+    # Below this, a match is treated as noise (off-topic question returning
+    # weak neighbours), so it isn't fed to the LLM. e5-large on cosine tends to
+    # score genuinely-relevant chunks well above this.
+    RAG_MIN_VECTOR_SCORE: float = 0.30
+    # Toggle hybrid (vector + keyword) retrieval. When off, retrieval is the
+    # original pure-vector path.
+    RAG_HYBRID_SEARCH: bool = True
 
     # Background-job recovery: how long a document may sit in "processing"
     # before a startup sweep assumes the worker died and reschedules it.

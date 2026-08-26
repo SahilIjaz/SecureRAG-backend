@@ -18,9 +18,10 @@ import uuid
 from typing import List
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.frontend import helpers
+from app.config import settings
 from app.core import vector_store
 from app.core.rate_limit import limiter
 from app.core.storage import delete_file_from_cloudinary
@@ -42,11 +43,18 @@ from app.schemas.frontend import (
 from app.services import document_service
 from app.services.auth_service import get_current_user
 from app.core.subscription_guard import require_active_subscription
+from app.core.rbac import require_admin
 from app.services.indexing_service import schedule_document_processing, schedule_url_scrape
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/knowledge", tags=["Frontend — Knowledge"])
+# Knowledge base is owner/admin territory — agents handle conversations only,
+# so every knowledge route (read and write) requires an admin+ role.
+router = APIRouter(
+    prefix="/knowledge",
+    tags=["Frontend — Knowledge"],
+    dependencies=[Depends(require_admin)],
+)
 
 def _fe_document(doc: Document) -> FEKnowledgeDocument:
     return FEKnowledgeDocument(
@@ -122,6 +130,18 @@ async def upload_documents(
     current_user: User = Depends(require_active_subscription),
     db: AsyncSession = Depends(get_db),
 ) -> List[FEKnowledgeDocument]:
+    # Reject an oversized request from its Content-Length before buffering the
+    # whole multipart body into memory (the per-file/quota checks happen after
+    # reading otherwise). Ceiling is generous — the largest plan's per-file cap
+    # plus multipart overhead — so legitimate batch uploads still pass.
+    content_length = request.headers.get("content-length")
+    if content_length and content_length.isdigit():
+        max_body_bytes = int(settings.MAX_REQUEST_BODY_MB) * 1024 * 1024
+        if int(content_length) > max_body_bytes:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"Upload too large. Maximum request size is {settings.MAX_REQUEST_BODY_MB}MB.",
+            )
     saved = await document_service.upload_documents(current_user, files, db)
     schedule_document_processing([d.id for d in saved])
     return [_fe_document(d) for d in saved]
@@ -151,6 +171,12 @@ async def delete_document(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
 
     doc.is_active = False
+
+    # Documents are soft-deleted (is_active=False), so the FK cascade never
+    # fires — purge the keyword-search chunks explicitly, or a deleted doc's
+    # text would keep matching hybrid search.
+    from app.models.document_chunk import DocumentChunk
+    await db.execute(delete(DocumentChunk).where(DocumentChunk.document_id == doc.id))
 
     usage = await helpers.get_current_usage(current_user.tenant_id, db)
     if usage is not None:
@@ -208,6 +234,20 @@ async def add_url(
     if not url.startswith(("http://", "https://")):
         url = f"https://{url}"
 
+    # SSRF: reject URLs that resolve to private/loopback/link-local IPs up front
+    # (defence in depth — the scraper re-validates after every redirect too).
+    # validate_url_safe does blocking DNS, so run it off the event loop.
+    import asyncio as _asyncio
+    from app.core.ip_validator import validate_url_safe
+
+    try:
+        await _asyncio.get_event_loop().run_in_executor(None, validate_url_safe, url)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"This URL can't be added: {e}",
+        )
+
     quota = await document_service.lock_quota_row(current_user.tenant_id, db)
     if quota and quota.max_documents != -1:
         result = await db.execute(
@@ -221,6 +261,22 @@ async def add_url(
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Document quota exceeded. Your plan allows {quota.max_documents} documents.",
+            )
+
+    # Per-plan URL sub-limit (in addition to the shared document quota).
+    ent = await document_service._tenant_entitlements(current_user.tenant_id, db)
+    if ent.max_urls != -1:
+        url_count_result = await db.execute(
+            select(func.count()).select_from(Document).where(
+                Document.tenant_id == current_user.tenant_id,
+                Document.is_active == True,
+                Document.source == DocumentSource.scraped,
+            )
+        )
+        if url_count_result.scalar_one() + 1 > ent.max_urls:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"URL limit exceeded. Your plan allows {ent.max_urls} URLs.",
             )
 
     doc = Document(

@@ -21,6 +21,9 @@ class FEUser(BaseModel):
     email: EmailStr
     companyName: str
     onboardingCompleted: Optional[bool] = None
+    # Workspace role — the frontend uses this to route agents to the inbox and
+    # hide owner-only navigation. Defaults to owner for the single-user case.
+    role: Literal["owner", "admin", "agent"] = "owner"
 
 class FESignupRequest(BaseModel):
     email: EmailStr
@@ -41,7 +44,7 @@ class FELoginResponse(BaseModel):
     user: FEUser
 
 class FEGoogleLoginRequest(BaseModel):
-    idToken: str = Field(..., description="Google ID token (credential) from Google Identity Services")
+    idToken: str = Field(..., max_length=8192, description="Google ID token (credential) from Google Identity Services")
 
 class FEOtpVerifyRequest(BaseModel):
     email: EmailStr
@@ -67,14 +70,14 @@ class FESuccessResponse(BaseModel):
     success: bool = True
 
 class FEChangePasswordRequest(BaseModel):
-    currentPassword: str
+    currentPassword: str = Field(..., max_length=128)
     newPassword: str = Field(..., min_length=8, max_length=128)
 
 # ── Onboarding ────────────────────────────────────────────────────────────────
 
 class FEOnboardingStep1(BaseModel):
-    businessCategory: str
-    teamSize: str
+    businessCategory: str = Field(..., max_length=255)
+    teamSize: str = Field(..., max_length=50)
 
 class FEOnboardingStep2(BaseModel):
     workspaceName: str = Field(..., min_length=2, max_length=100)
@@ -86,8 +89,8 @@ class FEOnboardingStep4(BaseModel):
     hasDocuments: bool
 
 class FECompleteOnboardingRequest(BaseModel):
-    businessCategory: str
-    teamSize: str
+    businessCategory: str = Field(..., max_length=255)
+    teamSize: str = Field(..., max_length=50)
     workspaceName: str = Field(..., min_length=2, max_length=100)
     plan: FEPlanId
     hasDocuments: bool
@@ -114,8 +117,8 @@ class FEUploadDocumentsResponse(BaseModel):
     uploadedUrls: int
 
 class FESaveOnboardingDetailsRequest(BaseModel):
-    businessCategory: str
-    teamSize: str
+    businessCategory: str = Field(..., max_length=255)
+    teamSize: str = Field(..., max_length=50)
 
 # ── Dashboard ─────────────────────────────────────────────────────────────────
 
@@ -173,17 +176,22 @@ class FEPlanUsage(BaseModel):
     docsTotal: int
     urlsUsed: int
     urlsTotal: int
+    # Aggregate storage (MB). storageTotalMb is -1 when the plan is unlimited.
+    storageUsedMb: float = 0.0
+    storageTotalMb: float = 0.0
     resetsOn: str
 
 # ── Chatbot config ────────────────────────────────────────────────────────────
 
 class FEChatbotIdentity(BaseModel):
-    name: str
-    avatarUrl: Optional[str] = None
-    welcomeMessage: str
-    persona: str
-    language: str
-    fallbackMessage: str
+    # These strings are interpolated into the LLM prompt, so they are bounded
+    # to keep the prompt from being blown out with attacker-controlled text.
+    name: str = Field(..., max_length=100)
+    avatarUrl: Optional[str] = Field(None, max_length=2048)
+    welcomeMessage: str = Field(..., max_length=2000)
+    persona: str = Field(..., max_length=50)
+    language: str = Field(..., max_length=20)
+    fallbackMessage: str = Field(..., max_length=2000)
 
 class FEChatbotBehavior(BaseModel):
     handoffToHuman: bool
@@ -193,11 +201,11 @@ class FEChatbotBehavior(BaseModel):
     collectPhoneBeforeChat: bool = False
     showSources: bool
     stayOnTopic: bool
-    tone: str
+    tone: str = Field(..., max_length=50)
     maxResponseLength: Literal["short", "medium", "long"]
 
 class FEChatbotAppearance(BaseModel):
-    accentColor: str
+    accentColor: str = Field(..., max_length=32)
     bubblePosition: Literal["bottom-right", "bottom-left"]
     showPoweredBy: bool
     widgetTheme: Literal["light", "dark", "auto"]
@@ -205,16 +213,31 @@ class FEChatbotAppearance(BaseModel):
 
 class FEChatbotDeploy(BaseModel):
     status: Literal["live", "draft"]
-    deployedDomain: str
-    allowedDomains: str
-    botSlug: str
-    apiKey: str
+    deployedDomain: str = Field(..., max_length=255)
+    allowedDomains: str = Field(..., max_length=4096)
+    botSlug: str = Field(..., max_length=120)
+    # apiKey is server-generated; a client-supplied value is ignored on save
+    # (see chatbot.save_config). Bounded here only as defence in depth.
+    apiKey: str = Field(..., max_length=128)
+
+class FEMenuItem(BaseModel):
+    name: str = Field(..., max_length=120)
+    description: str = Field("", max_length=1000)
+    price: str = Field("", max_length=40)
+
+class FEMenuCategory(BaseModel):
+    label: str = Field(..., max_length=120)
+    items: List[FEMenuItem] = Field(default_factory=list, max_length=100)
 
 class FEChatbotConfig(BaseModel):
     identity: FEChatbotIdentity
     behavior: FEChatbotBehavior
     appearance: FEChatbotAppearance
     deploy: FEChatbotDeploy
+    # Optional quick-reply menu (e.g. a restaurant's categories → items). The
+    # widget renders these as tappable chips; a tap sends the item as a normal
+    # message. Empty/absent means no menu. Gated by the plan's `menu` feature.
+    menu: List[FEMenuCategory] = Field(default_factory=list, max_length=50)
 
 class FESaveChatbotConfigResponse(BaseModel):
     success: bool
@@ -251,6 +274,10 @@ class FEConversationListItem(BaseModel):
     # right now (see helpers.is_visitor_still_present) — separate from
     # isLive, which only reflects whether an owner formally joined.
     visitorPresent: bool = False
+    # Which team member is handling this chat (multi-agent queue). null = in the
+    # shared queue / unassigned.
+    assignedUserId: Optional[str] = None
+    assignedToName: Optional[str] = None
 
 class FEConversationMessage(BaseModel):
     id: str
@@ -267,7 +294,7 @@ class FEConversationDetail(FEConversationListItem):
     messages: List[FEConversationMessage]
 
 class FESendReplyRequest(BaseModel):
-    text: str = Field(..., min_length=1)
+    text: str = Field(..., min_length=1, max_length=8000)
 
 class FESendReplyResponse(BaseModel):
     message: FEConversationMessage
@@ -301,7 +328,9 @@ class FEKnowledgeStats(BaseModel):
     chunksLimit: int
 
 class FEAddUrlRequest(BaseModel):
-    url: str
+    # source_url column is String(2048); cap here so an over-long URL is a 422
+    # rather than a DB DataError. Scheme/SSRF validation happens in the handler.
+    url: str = Field(..., min_length=1, max_length=2048)
 
 class FEAddUrlResponse(BaseModel):
     url: FEKnowledgeUrl
@@ -356,9 +385,9 @@ class FEUpdateFaqRequest(BaseModel):
 # ── Settings ──────────────────────────────────────────────────────────────────
 
 class FEWorkspaceSettings(BaseModel):
-    name: str
-    urlSlug: str
-    industry: str
+    name: str = Field(..., max_length=255)
+    urlSlug: str = Field(..., max_length=255)
+    industry: str = Field(..., max_length=255)
 
 class FESaveWorkspaceSettingsResponse(BaseModel):
     success: bool
@@ -415,6 +444,35 @@ class FECreateApiKeyRequest(BaseModel):
 class FECreateApiKeyResponse(BaseModel):
     key: FEApiKey
     rawKey: str
+
+# ── Team / RBAC ───────────────────────────────────────────────────────────────
+
+class FEMember(BaseModel):
+    id: str
+    name: str
+    email: str
+    role: Literal["owner", "admin", "agent"]
+    online: bool = False
+
+class FEPendingInvite(BaseModel):
+    id: str
+    email: str
+    role: Literal["owner", "admin", "agent"]
+    invitedLabel: str
+
+class FETeamRoster(BaseModel):
+    members: List[FEMember]
+    pendingInvites: List[FEPendingInvite]
+    agentsUsed: int
+    agentsLimit: int
+
+class FEInviteRequest(BaseModel):
+    email: EmailStr
+
+class FEAcceptInviteRequest(BaseModel):
+    token: str = Field(..., min_length=1, max_length=256)
+    name: str = Field(..., min_length=1, max_length=255)
+    password: str = Field(..., min_length=8, max_length=128)
 
 # ── Profile ───────────────────────────────────────────────────────────────────
 

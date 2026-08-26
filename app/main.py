@@ -107,6 +107,25 @@ async def ensure_frontend_schema() -> None:
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 0",
         # OTP brute-force lockout (Phase 2).
         "ALTER TABLE email_verifications ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0",
+        # RBAC: conversation assignee + resolver (Phases 6 / multi-agent). The
+        # tenant_users and invites tables and the tenantrole enum are created by
+        # Base.metadata.create_all above.
+        "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS assigned_user_id UUID REFERENCES users(id) ON DELETE SET NULL",
+        "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS resolved_by_user_id UUID REFERENCES users(id) ON DELETE SET NULL",
+        # Multi-user tenancy: a tenant may now have an owner plus invited agents,
+        # so the one-user-per-tenant unique constraint must go. Postgres names a
+        # column UNIQUE constraint <table>_<col>_key by default.
+        "ALTER TABLE users DROP CONSTRAINT IF EXISTS users_tenant_id_key",
+        # Per-user presence (multi-agent): last_seen_at on the membership row.
+        "ALTER TABLE tenant_users ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ",
+        # Per-user notifications: NULL user_id = whole-tenant (preserves old rows).
+        "ALTER TABLE notifications ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users(id) ON DELETE CASCADE",
+        # Backfill: every existing user is the owner of their tenant, so seed an
+        # owner membership row for any user that doesn't have one yet.
+        "INSERT INTO tenant_users (id, tenant_id, user_id, role) "
+        "SELECT gen_random_uuid(), u.tenant_id, u.id, 'owner' FROM users u "
+        "WHERE NOT EXISTS (SELECT 1 FROM tenant_users tu WHERE tu.user_id = u.id) "
+        "ON CONFLICT DO NOTHING",
     ]
     async with async_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -133,12 +152,17 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(stale_document_sweep_loop())
 
     from app.services.notification_service import weekly_summary_loop
-    from app.services.conversation_service import stale_conversation_sweep_loop, trash_purge_loop
+    from app.services.conversation_service import (
+        stale_conversation_sweep_loop,
+        trash_purge_loop,
+        release_orphaned_live_chats_loop,
+    )
     # Held on app.state so these can't be garbage-collected mid-sleep —
     # asyncio.create_task() only keeps a weak reference to its result.
     app.state.weekly_summary_task = asyncio.create_task(weekly_summary_loop())
     app.state.conversation_sweep_task = asyncio.create_task(stale_conversation_sweep_loop())
     app.state.trash_purge_task = asyncio.create_task(trash_purge_loop())
+    app.state.release_orphaned_task = asyncio.create_task(release_orphaned_live_chats_loop())
 
     logger.info(
         "%s API is running (debug=%s)",

@@ -72,6 +72,23 @@ class Conversation(Base):
     # flag only controls the live-polling UI once that plan's later steps
     # wire it up; it exists now so the column is in place ahead of that.
     is_live: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Which team member (tenant_users) is handling this live conversation, once
+    # RBAC introduces multiple agents. Null = unassigned. Set when an agent
+    # joins (POST /api/conversations/{id}/join).
+    assigned_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    # Who resolved the conversation — assignment credit that must survive a
+    # later transfer, so it's stored separately from assigned_user_id.
+    resolved_by_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     # Set/reset every time a visitor escalates (POST /api/public/widget/escalate)
     # or the automatic low-confidence handoff fires. Used to compute the
     # connecting/unavailable state within LIVE_JOIN_TIMEOUT_SECONDS — see

@@ -20,6 +20,7 @@ from app.api.frontend import (
     presence,
     public_bot,
     settings,
+    team,
     user,
 )
 
@@ -36,3 +37,4 @@ router.include_router(settings.router)
 router.include_router(notifications.router)
 router.include_router(presence.router)
 router.include_router(public_bot.router)
+router.include_router(team.router)

@@ -87,7 +87,7 @@ async def _profile(user: User, db: AsyncSession) -> FEUserProfile:
         email=user.email,
         companyName=company,
         avatarUrl=user.avatar_url,
-        role="Owner",
+        role=(await helpers.role_for(user, db)).capitalize(),
     )
 
 @router.get("/me", response_model=FEUser)
@@ -102,6 +102,7 @@ async def get_me(
         email=current_user.email,
         companyName=company,
         onboardingCompleted=helpers.onboarding_completed(subscription),
+        role=await helpers.role_for(current_user, db),
     )
 
 @router.put("/password", response_model=FESuccessResponse)
