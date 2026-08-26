@@ -70,6 +70,14 @@ async def stripe_webhook(
                         await stripe_service.sync_payment_method_from_stripe(
                             payment_method_id, subscription.tenant_id, db
                         )
+            elif event_type == "checkout.session.completed":
+                # Wallet top-ups only — subscription checkout (the trial
+                # flow) is a Subscription object created directly via the
+                # API, not a Checkout Session, so this only ever fires for
+                # create_wallet_topup_checkout_session's sessions. See
+                # stripe_service.credit_wallet_from_checkout_session for the
+                # idempotency guard (Stripe redelivers webhook events).
+                await stripe_service.credit_wallet_from_checkout_session(data, db)
             elif event_type == "invoice.payment_failed":
                 customer_id = data.get("customer")
                 if customer_id:

@@ -13,7 +13,7 @@ import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -61,6 +61,56 @@ async def auto_resolve_stale_conversations() -> int:
         logger.info("Auto-resolved %d stale conversation(s) (no activity for %d+ days)",
                     len(stale_ids), settings.CONVERSATION_AUTO_RESOLVE_DAYS)
         return len(stale_ids)
+
+_LIVE_FLAG_SWEEP_INTERVAL_SECONDS = 60
+
+async def live_flag_sweep_loop() -> None:
+    """Recurring background sweep, started once from the app lifespan — same
+    fire-and-forget pattern as stale_conversation_sweep_loop() above, just on
+    a much shorter interval to match VISITOR_PRESENCE_WINDOW_SECONDS's scale
+    (minutes) instead of CONVERSATION_AUTO_RESOLVE_DAYS's (a week)."""
+    while True:
+        try:
+            await clear_stale_live_flags()
+        except Exception:
+            logger.exception("Live-flag sweep iteration failed")
+        await asyncio.sleep(_LIVE_FLAG_SWEEP_INTERVAL_SECONDS)
+
+async def clear_stale_live_flags() -> int:
+    """
+    Drop is_live back to False once the visitor who triggered it has been
+    gone longer than VISITOR_PRESENCE_WINDOW_SECONDS.
+
+    is_live is otherwise only ever cleared by an explicit "Mark resolved" or
+    by auto_resolve_stale_conversations() above — and that sweep only fires
+    after CONVERSATION_AUTO_RESOLVE_DAYS (a week) of total silence. Without
+    this, a conversation an owner joined keeps showing the dashboard's green
+    "Live" badge for up to a week after the visitor actually left, even
+    though real-time presence (visitor_last_seen_at) already knows better.
+
+    Only the flag moves — status is untouched, so a "Handed off" chat just
+    falls back to its normal amber "waiting" badge instead of green "Live"
+    (see ConversationRow.tsx's isLive / status=="Handed off" branches).
+    Returns the number cleared.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=settings.VISITOR_PRESENCE_WINDOW_SECONDS)
+
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            update(Conversation)
+            .where(
+                Conversation.is_live == True,
+                or_(
+                    Conversation.visitor_last_seen_at < cutoff,
+                    Conversation.visitor_last_seen_at.is_(None),
+                ),
+            )
+            .values(is_live=False)
+        )
+        await db.commit()
+        if result.rowcount:
+            logger.info("Cleared stale is_live flag on %d conversation(s)", result.rowcount)
+        return result.rowcount
 
 async def trash_purge_loop() -> None:
     """Recurring background sweep, started once from the app lifespan — same

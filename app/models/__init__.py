@@ -11,6 +11,8 @@ from app.models.conversation import Conversation, ConversationMessage
 from app.models.tenant_settings import ApiKey, NotificationSetting, PaymentMethod
 from app.models.revoked_token import RevokedToken
 from app.models.notification import Notification
+from app.models.wallet_transaction import WalletTransaction
+from app.models.llm_usage_log import LLMUsageLog
 
 __all__ = [
     "Tenant",
@@ -29,4 +31,6 @@ __all__ = [
     "PaymentMethod",
     "RevokedToken",
     "Notification",
+    "WalletTransaction",
+    "LLMUsageLog",
 ]

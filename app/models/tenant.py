@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, List, Optional
 
-from sqlalchemy import Boolean, DateTime, String, func
+from sqlalchemy import Boolean, DateTime, Integer, Numeric, String, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -43,6 +43,27 @@ class Tenant(Base):
     # nothing flips the boolean back to False on a dropped connection.
     is_owner_online: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     last_seen_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # ── Prepaid wallet + one-time signup trial (see app/services/wallet_service.py) ──
+    balance_usd: Mapped[Numeric] = mapped_column(Numeric(10, 4), default=0, nullable=False)
+    # Both caps checked together — whichever is hit first ends the trial,
+    # permanently (trial_ended_at, once set, is never cleared by any code
+    # path). trial_messages_used only counts real answer calls, never the
+    # background sentiment/topic classifier — see wallet_service.record_usage.
+    trial_messages_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    trial_ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Mirrors UsageCount.warned_80_percent's "fire once, not on every call
+    # past the threshold" shape — reset to False on a top-up that brings the
+    # balance back above the alert threshold (see stripe_service).
+    wallet_low_balance_warned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    # Tenant's chosen LLM provider/model for their chatbot — null means "use
+    # the platform default chain" (today's behavior). Kept directly on
+    # Tenant (not a separate settings table) since it's read on every widget
+    # chat request, the same hot path balance_usd/trial fields are on.
+    preferred_llm_provider: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
+    preferred_llm_model: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

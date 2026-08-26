@@ -275,6 +275,14 @@ class FESendReplyResponse(BaseModel):
 class FEPurgeMessagesResponse(BaseModel):
     purged: int
 
+class FEConversationLiveSummary(BaseModel):
+    """GET /api/conversations/live-summary — lets the dashboard show how many
+    conversations are simultaneously live/waiting without opening each one
+    (sidebar badge, Conversations list summary strip). See
+    NexusContext/LIVE_AGENT_HANDOFF_PLAN.md §7."""
+    liveCount: int
+    waitingCount: int
+
 # ── Knowledge base ────────────────────────────────────────────────────────────
 
 class FEKnowledgeDocument(BaseModel):
@@ -390,6 +398,15 @@ class FEBillingInfo(BaseModel):
     renewsOn: str
     paymentMethod: FEPaymentMethod
     trialEndsOn: Optional[str] = None
+    # Prepaid wallet — separate concept from the plan above (plan quota
+    # covers document/storage limits; the wallet covers real LLM $ cost).
+    # See NexusContext plan doc i-want-to-implement-floofy-hickey.md
+    # section C. trialMessagesRemaining/trialDaysRemaining are None once
+    # the trial has ended (see Tenant.trial_ended_at) — at that point every
+    # provider, including the default, draws from walletBalanceUsd.
+    walletBalanceUsd: float = 0.0
+    trialMessagesRemaining: Optional[int] = None
+    trialDaysRemaining: Optional[int] = None
 
 class FEChangePlanRequest(BaseModel):
     planId: FEPlanId
@@ -402,6 +419,25 @@ class FECheckoutResponse(BaseModel):
 
 class FESetupIntentResponse(BaseModel):
     clientSecret: str
+
+class FEWalletTopupRequest(BaseModel):
+    amountUsd: float = Field(..., ge=0.50, le=1000)
+
+class FEWalletTopupResponse(BaseModel):
+    checkoutUrl: str
+
+class FEWalletTransaction(BaseModel):
+    id: str
+    type: Literal["topup", "deduction", "refund"]
+    amountUsd: float
+    balanceAfterUsd: Optional[float] = None
+    createdAt: str
+
+class FEWalletTransactionsResponse(BaseModel):
+    transactions: List[FEWalletTransaction]
+    total: int
+    page: int
+    pageSize: int
 
 class FEApiKey(BaseModel):
     id: str
