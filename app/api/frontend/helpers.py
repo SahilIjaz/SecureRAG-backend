@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import make_transient_to_detached
 
@@ -196,39 +196,19 @@ async def increment_questions_used(tenant_id: uuid.UUID, db: AsyncSession) -> No
     callers must run this against a *fresh* session opened after the stream
     completes, not the one injected into the endpoint.
 
-    Also the single choke point for the plan-usage-warning notification —
-    every questions_used increment (dashboard test-chat and the public
-    widget, streaming and non-streaming) already runs through here, so the
-    80%/100% threshold check only needs to live in one place.
+    Purely informational now — this count no longer gates whether a message
+    gets answered (see app/services/wallet_service.py for what does). Kept
+    so the dashboard can still show "N messages this month" for a tenant's
+    own visibility. The old 80%/100% quota-warning notification this used
+    to fire is gone too, deliberately — it would otherwise fire alongside
+    the new (and now actually meaningful) low-balance wallet alert, which
+    would be two confusing, contradictory warning systems for the same
+    underlying "you're running out of something" concern.
     """
     usage = await get_current_usage(tenant_id, db)
     if usage is None:
         return
     usage.questions_used = (usage.questions_used or 0) + 1
-    await _maybe_warn_plan_usage(tenant_id, usage, db)
-
-async def _maybe_warn_plan_usage(tenant_id: uuid.UUID, usage: UsageCount, db: AsyncSession) -> None:
-    quota = await get_quota(tenant_id, db)
-    if quota is None or quota.max_questions_per_month == -1:
-        return
-    ratio = usage.questions_used / quota.max_questions_per_month
-
-    if ratio >= 1.0 and not usage.warned_100_percent:
-        usage.warned_100_percent = True
-        await notify_tenant(
-            tenant_id, "plan_usage_warnings",
-            "You've reached 100% of your plan's monthly message limit",
-            "New chat messages will keep working, but consider upgrading so you don't run into a hard cap later.",
-            "/dashboard/settings?tab=billing", db,
-        )
-    elif ratio >= 0.8 and not usage.warned_80_percent:
-        usage.warned_80_percent = True
-        await notify_tenant(
-            tenant_id, "plan_usage_warnings",
-            "You've used 80% of your plan's monthly message limit",
-            "Consider upgrading before you hit your limit.",
-            "/dashboard/settings?tab=billing", db,
-        )
 
 async def get_quota_and_usage(
     tenant_id: uuid.UUID, db: AsyncSession
@@ -268,6 +248,23 @@ async def get_active_documents(tenant_id: uuid.UUID, db: AsyncSession) -> list[D
     )
     return list(result.scalars().all())
 
+async def get_active_document_counts(
+    tenant_id: uuid.UUID, db: AsyncSession
+) -> dict[DocumentSource, int]:
+    """
+    Per-source row counts for the plan-usage card (messages/docs/urls bars).
+    Only counts are needed there, not the documents themselves, so this
+    aggregates with GROUP BY instead of get_active_documents()'s full-row
+    fetch — avoids hydrating every active Document just to call len() on a
+    filtered slice of them.
+    """
+    result = await db.execute(
+        select(Document.source, func.count(Document.id))
+        .where(Document.tenant_id == tenant_id, Document.is_active == True)
+        .group_by(Document.source)
+    )
+    return dict(result.all())
+
 def split_docs_and_urls(
     docs: list[Document],
 ) -> tuple[list[Document], list[Document], list[Document]]:
@@ -292,6 +289,11 @@ _TENANT_CACHE_COLUMNS = (
     "id", "workspace_name", "slug", "business_category", "employee_count_range",
     "has_documents", "onboarding_completed_at", "is_active", "is_owner_online",
     "last_seen_at", "created_at", "updated_at",
+    # Prepaid wallet + trial (see app/services/wallet_service.py) — read on
+    # every widget chat request via this same cached lookup, so they must be
+    # cached too or a cache-hit request would see stale/missing values.
+    "balance_usd", "trial_messages_used", "trial_ended_at", "wallet_low_balance_warned",
+    "preferred_llm_provider", "preferred_llm_model",
 )
 _CONFIG_CACHE_COLUMNS = ("id", "tenant_id", "config", "created_at", "updated_at")
 _widget_tenant_cache: dict[str, tuple[float, dict, dict]] = {}

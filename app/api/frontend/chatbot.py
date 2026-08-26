@@ -259,17 +259,16 @@ async def test_chat(
     from app.services.rag_service import answer_question, store_conversation_classification
     from app.core.background import fire_and_forget
     from app.services.notification_service import notify_tenant, conversation_alert_copy
+    from app.services import wallet_service
 
     quota, usage = await helpers.get_quota_and_usage(current_user.tenant_id, db)
-    if (
-        quota is not None
-        and usage is not None
-        and quota.max_questions_per_month != -1
-        and usage.questions_used >= quota.max_questions_per_month
-    ):
+    tenant = await helpers.get_tenant(current_user, db)
+    tenant_provider = tenant.preferred_llm_provider or wallet_service.DEFAULT_PROVIDER
+    gate = await wallet_service.check_can_generate(tenant, tenant_provider, db)
+    if not gate.allowed:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Monthly message quota reached. Upgrade your plan to continue.",
+            detail="Your free trial has ended — add funds to your wallet to keep testing your chatbot.",
         )
 
     # The dashboard always sends its current draft — skip the DB round trip
@@ -284,18 +283,19 @@ async def test_chat(
     behavior = config.get("behavior", {})
     fallback = identity.get("fallbackMessage", "I'm not sure about that yet.")
 
-    # Map document ids → filenames so answers can cite sources by name —
-    # only needed when the tenant actually wants sources cited.
-    doc_names: dict = {}
-    if behavior.get("showSources", True):
-        from app.models.document import Document
+    # Map document ids → filenames — used both for citing sources by name
+    # (only shown to the caller when the tenant wants that) and, regardless
+    # of that toggle, as the active-document allowlist rag_service filters
+    # retrieved chunks against (a deleted document's chunks can still linger
+    # in Pinecone; see _prepare_generation).
+    from app.models.document import Document
 
-        docs_result = await db.execute(
-            select(Document.id, Document.original_filename).where(
-                Document.tenant_id == current_user.tenant_id, Document.is_active == True
-            )
+    docs_result = await db.execute(
+        select(Document.id, Document.original_filename).where(
+            Document.tenant_id == current_user.tenant_id, Document.is_active == True
         )
-        doc_names = {str(doc_id): name for doc_id, name in docs_result.all()}
+    )
+    doc_names = {str(doc_id): name for doc_id, name in docs_result.all()}
 
     convo: Optional[Conversation] = None
     if body.simulateReal:
@@ -309,6 +309,7 @@ async def test_chat(
             config=config,
             doc_names=doc_names,
             history=[m.model_dump() for m in body.history],
+            tenant_provider=tenant_provider,
         )
     except Exception as e:
         logger.exception("Test chat failed for tenant %s", current_user.tenant_id)
@@ -319,6 +320,13 @@ async def test_chat(
 
     if usage is not None:
         await helpers.increment_questions_used(current_user.tenant_id, db)
+    try:
+        await wallet_service.record_usage(
+            tenant_id=current_user.tenant_id, conversation_id=(convo.id if convo is not None else None),
+            call_type="answer", usage=result.get("usage"), db=db,
+        )
+    except Exception:
+        logger.exception("Failed to record LLM usage for tenant %s", current_user.tenant_id)
 
     confidence = result.get("confidence")
     threshold = behavior.get("confidenceThreshold", 60)
@@ -383,17 +391,16 @@ async def test_chat_stream(
     from app.services.rag_service import answer_question_stream, store_conversation_classification
     from app.core.background import fire_and_forget
     from app.services.notification_service import notify_tenant, conversation_alert_copy
+    from app.services import wallet_service
 
     quota, usage = await helpers.get_quota_and_usage(current_user.tenant_id, db)
-    if (
-        quota is not None
-        and usage is not None
-        and quota.max_questions_per_month != -1
-        and usage.questions_used >= quota.max_questions_per_month
-    ):
+    tenant = await helpers.get_tenant(current_user, db)
+    tenant_provider = tenant.preferred_llm_provider or wallet_service.DEFAULT_PROVIDER
+    gate = await wallet_service.check_can_generate(tenant, tenant_provider, db)
+    if not gate.allowed:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Monthly message quota reached. Upgrade your plan to continue.",
+            detail="Your free trial has ended — add funds to your wallet to keep testing your chatbot.",
         )
 
     if body.config:
@@ -403,16 +410,14 @@ async def test_chat_stream(
         config = record.config
     behavior = config.get("behavior", {})
 
-    doc_names: dict = {}
-    if behavior.get("showSources", True):
-        from app.models.document import Document
+    from app.models.document import Document
 
-        docs_result = await db.execute(
-            select(Document.id, Document.original_filename).where(
-                Document.tenant_id == current_user.tenant_id, Document.is_active == True
-            )
+    docs_result = await db.execute(
+        select(Document.id, Document.original_filename).where(
+            Document.tenant_id == current_user.tenant_id, Document.is_active == True
         )
-        doc_names = {str(doc_id): name for doc_id, name in docs_result.all()}
+    )
+    doc_names = {str(doc_id): name for doc_id, name in docs_result.all()}
 
     conversation_id: Optional[uuid.UUID] = None
     if body.simulateReal:
@@ -432,19 +437,21 @@ async def test_chat_stream(
         succeeded = False
         final_text = None
         final_sources: list = []
+        final_usage = None
         unresolved_reason = None
         notif_type = None
         handoff = False
         try:
             async for ev in answer_question_stream(
                 tenant_id=str(tenant_id), query=message, config=config,
-                doc_names=doc_names, history=history,
+                doc_names=doc_names, history=history, tenant_provider=tenant_provider,
             ):
                 if ev["type"] == "token":
                     yield _sse("token", {"text": ev["text"]})
                 elif ev["type"] == "final":
                     succeeded = True
                     final_text = ev["answer"]
+                    final_usage = ev.get("usage")
                     handoff = ev["handoff"]
                     # Check handoff *before* sources: answer_question_stream()
                     # deliberately blanks sources to [] for a suppressed
@@ -473,6 +480,13 @@ async def test_chat_stream(
                 try:
                     async with AsyncSessionLocal() as session:
                         await helpers.increment_questions_used(tenant_id, session)
+                        try:
+                            await wallet_service.record_usage(
+                                tenant_id=tenant_id, conversation_id=conversation_id,
+                                call_type="answer", usage=final_usage, db=session,
+                            )
+                        except Exception:
+                            logger.exception("Failed to record LLM usage for tenant %s", tenant_id)
                         if conversation_id is not None:
                             session.add(ConversationMessage(
                                 conversation_id=conversation_id, role="bot", text=final_text or "",

@@ -114,6 +114,57 @@ class Settings(BaseSettings):
     # what just happened above.
     GEMINI_CLASSIFICATION_MODEL: str = "gemini-flash-lite-latest"
 
+    # Platform-owner-controlled provider fallback order — NOT per-tenant.
+    # A tenant's own selected provider (app/models/tenant_settings.py) is
+    # tried first; if every model in that provider's own chain fails, the
+    # router falls through to this chain before giving up entirely. With
+    # the default single entry, the router reproduces the pre-refactor
+    # Gemini-only retry behavior exactly.
+    LLM_PROVIDER_CHAIN: str = "gemini"  # comma-separated, e.g. "gemini,anthropic"
+
+    # Externalized rather than hardcoded (the pre-refactor commented-out
+    # Anthropic block had "claude-sonnet-5" baked into the code) — same
+    # reasoning as GEMINI_ANSWER_MODEL: a provider-side rename shouldn't
+    # need a redeploy.
+    ANTHROPIC_ANSWER_MODEL: str = "claude-sonnet-5"
+    ANTHROPIC_REQUEST_TIMEOUT_SECONDS: float = 20.0
+
+    # $ per 1M tokens, "provider:model:input_price:output_price" entries,
+    # comma-separated. Every provider/model this build can route to needs
+    # a real entry here — there is no "$0, skip billing" branch in code;
+    # the only free usage in the system is the signup trial (a separate
+    # message/day counter, not a pricing lookup). Confirm these numbers
+    # against each provider's current pricing page before relying on them
+    # for real billing — they are config, not verified-at-write-time facts.
+    LLM_PRICING_TABLE: str = (
+        "gemini:gemini-flash-lite-latest:0.10:0.40,"
+        "gemini:gemini-flash-latest:0.30:2.50,"
+        "anthropic:claude-sonnet-5:3.00:15.00"
+    )
+
+    # ── Prepaid wallet + one-time signup trial ──────────────────────────
+    # There is no permanent free tier — see NexusContext plan doc
+    # i-want-to-implement-floofy-hickey.md section C. A new tenant gets a
+    # small, one-time, non-renewing trial on the platform default provider
+    # only (message count AND day window, whichever hits first); once it
+    # ends, every provider — including the default — draws real $ from the
+    # tenant's wallet at raw cost * WALLET_MARKUP_MULTIPLIER.
+    TRIAL_MESSAGE_LIMIT: int = 50
+    TRIAL_DURATION_DAYS: int = 3
+    WALLET_MARKUP_MULTIPLIER: float = 1.30
+    WALLET_LOW_BALANCE_ALERT_THRESHOLD_USD: float = 2.0
+
+    # One-time rollout migration credit for tenants that already existed
+    # before this feature shipped — without it, their trial's day-cap fails
+    # on their very first post-rollout message (their signup date is
+    # already older than TRIAL_DURATION_DAYS) with balance_usd=0, which
+    # would silently break every existing tenant's chatbot the moment this
+    # deploys. See ensure_frontend_schema()'s migration backfill, guarded by
+    # LLM_BILLING_MIGRATION_CUTOFF so it only ever applies once, to tenants
+    # that existed before that fixed date — never to a real new signup.
+    EXISTING_TENANT_MIGRATION_CREDIT_USD: float = 5.0
+    LLM_BILLING_MIGRATION_CUTOFF: str = "2026-08-25"
+
     # Hard per-attempt ceiling on a Gemini generation call. Without this, a
     # stalled upstream request blocks the whole retry chain from ever
     # reaching the fallback model within a reasonable time — confirmed live
@@ -126,6 +177,14 @@ class Settings(BaseSettings):
     RAG_CHUNK_SIZE: int = 500
     RAG_CHUNK_OVERLAP: int = 50
     RAG_SEARCH_TOP_K: int = 5
+    # Below this cosine similarity, the top retrieved chunk is treated as "not
+    # actually relevant" — same fallback path as zero chunks (see
+    # _prepare_generation) instead of handing the LLM a best-effort context it
+    # has to independently judge as off-topic. multilingual-e5-large's cosine
+    # scores for a genuinely on-topic match on this project's documents run
+    # noticeably higher than for an unrelated query; tune against real query
+    # logs if false negatives/positives show up.
+    RAG_MIN_RELEVANCE_SCORE: float = 0.75
 
     # Background-job recovery: how long a document may sit in "processing"
     # before a startup sweep assumes the worker died and reschedules it.
@@ -196,6 +255,18 @@ class Settings(BaseSettings):
         its startup reachability check, so the parsing logic lives once."""
         chain = [self.GEMINI_ANSWER_MODEL]
         for name in self.GEMINI_FALLBACK_MODELS.split(","):
+            name = name.strip()
+            if name and name not in chain:
+                chain.append(name)
+        return chain
+
+    @property
+    def LLM_PROVIDER_CHAIN_LIST(self) -> list[str]:
+        """LLM_PROVIDER_CHAIN parsed the same "skip blanks/dedupe" way as
+        GEMINI_MODEL_CHAIN — shared by app/services/llm/router.py and its
+        startup reachability check."""
+        chain: list[str] = []
+        for name in self.LLM_PROVIDER_CHAIN.split(","):
             name = name.strip()
             if name and name not in chain:
                 chain.append(name)
