@@ -69,6 +69,13 @@ class Subscription(Base):
         DateTime(timezone=True),
         nullable=True,
     )
+    # Set the first time this tenant starts a 3-day trial; once set, they never
+    # get another free trial — a re-checkout charges the card immediately
+    # (see stripe_service.start_trial_subscription).
+    trial_used_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

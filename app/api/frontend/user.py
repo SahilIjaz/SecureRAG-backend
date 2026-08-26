@@ -87,7 +87,7 @@ async def _profile(user: User, db: AsyncSession) -> FEUserProfile:
         email=user.email,
         companyName=company,
         avatarUrl=user.avatar_url,
-        role="Owner",
+        role=(await helpers.role_for(user, db)).capitalize(),
     )
 
 @router.get("/me", response_model=FEUser)
@@ -102,10 +102,13 @@ async def get_me(
         email=current_user.email,
         companyName=company,
         onboardingCompleted=helpers.onboarding_completed(subscription),
+        role=await helpers.role_for(current_user, db),
     )
 
 @router.put("/password", response_model=FESuccessResponse)
+@limiter.limit("5/minute")
 async def change_password(
+    request: Request,
     body: FEChangePasswordRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -115,14 +118,22 @@ async def change_password(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="This account uses Google sign-in and has no password.",
         )
-    if not verify_password(body.currentPassword, current_user.password_hash):
+    loop = asyncio.get_event_loop()
+    # Offload bcrypt verify to a thread — it blocks the event loop otherwise
+    # (this endpoint previously verified synchronously).
+    valid = await loop.run_in_executor(
+        None, verify_password, body.currentPassword, current_user.password_hash
+    )
+    if not valid:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Current password is incorrect.",
         )
 
-    loop = asyncio.get_event_loop()
     current_user.password_hash = await loop.run_in_executor(None, hash_password, body.newPassword)
+    # Invalidate every existing session for this user — a password change must
+    # log out other devices.
+    current_user.token_version = (current_user.token_version or 0) + 1
     await db.flush()
     invalidate_user_cache(current_user.id)
     return FESuccessResponse()

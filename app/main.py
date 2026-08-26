@@ -99,6 +99,35 @@ async def ensure_frontend_schema() -> None:
         "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS stripe_price_id VARCHAR(255)",
         "CREATE UNIQUE INDEX IF NOT EXISTS ix_subscriptions_stripe_subscription_id "
         "ON subscriptions (stripe_subscription_id)",
+        # One-time trial guard — see app/models/subscription.py.
+        "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS trial_used_at TIMESTAMPTZ",
+        # Per-plan storage ceiling (Phase 3) and hybrid-search chunk store are
+        # created by Base.metadata.create_all; this only patches columns onto
+        # pre-existing tables.
+        "ALTER TABLE tenant_quotas ADD COLUMN IF NOT EXISTS max_storage_mb INTEGER NOT NULL DEFAULT 200",
+        # Session revocation on password change (Phase 2).
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 0",
+        # OTP brute-force lockout (Phase 2).
+        "ALTER TABLE email_verifications ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0",
+        # RBAC: conversation assignee + resolver (Phases 6 / multi-agent). The
+        # tenant_users and invites tables and the tenantrole enum are created by
+        # Base.metadata.create_all above.
+        "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS assigned_user_id UUID REFERENCES users(id) ON DELETE SET NULL",
+        "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS resolved_by_user_id UUID REFERENCES users(id) ON DELETE SET NULL",
+        # Multi-user tenancy: a tenant may now have an owner plus invited agents,
+        # so the one-user-per-tenant unique constraint must go. Postgres names a
+        # column UNIQUE constraint <table>_<col>_key by default.
+        "ALTER TABLE users DROP CONSTRAINT IF EXISTS users_tenant_id_key",
+        # Per-user presence (multi-agent): last_seen_at on the membership row.
+        "ALTER TABLE tenant_users ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ",
+        # Per-user notifications: NULL user_id = whole-tenant (preserves old rows).
+        "ALTER TABLE notifications ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users(id) ON DELETE CASCADE",
+        # Backfill: every existing user is the owner of their tenant, so seed an
+        # owner membership row for any user that doesn't have one yet.
+        "INSERT INTO tenant_users (id, tenant_id, user_id, role) "
+        "SELECT gen_random_uuid(), u.tenant_id, u.id, 'owner' FROM users u "
+        "WHERE NOT EXISTS (SELECT 1 FROM tenant_users tu WHERE tu.user_id = u.id) "
+        "ON CONFLICT DO NOTHING",
         # Prepaid wallet + one-time signup trial — see
         # app/services/wallet_service.py and NexusContext plan doc
         # i-want-to-implement-floofy-hickey.md section C.
@@ -158,12 +187,14 @@ async def lifespan(app: FastAPI):
         live_flag_sweep_loop,
         stale_conversation_sweep_loop,
         trash_purge_loop,
+        release_orphaned_live_chats_loop,
     )
     # Held on app.state so these can't be garbage-collected mid-sleep —
     # asyncio.create_task() only keeps a weak reference to its result.
     app.state.weekly_summary_task = asyncio.create_task(weekly_summary_loop())
     app.state.conversation_sweep_task = asyncio.create_task(stale_conversation_sweep_loop())
     app.state.trash_purge_task = asyncio.create_task(trash_purge_loop())
+    app.state.release_orphaned_task = asyncio.create_task(release_orphaned_live_chats_loop())
     app.state.live_flag_sweep_task = asyncio.create_task(live_flag_sweep_loop())
 
     logger.info(
@@ -182,9 +213,11 @@ app = FastAPI(
         "with per-tenant isolation, quota enforcement, and subscription management."
     ),
     lifespan=lifespan,
-    docs_url="/docs",
-    redoc_url="/redoc",
-    openapi_url="/openapi.json",
+    # Interactive API docs expose the entire schema; only serve them in DEBUG
+    # so they aren't a free recon surface in production.
+    docs_url="/docs" if settings.DEBUG else None,
+    redoc_url="/redoc" if settings.DEBUG else None,
+    openapi_url="/openapi.json" if settings.DEBUG else None,
 )
 
 app.state.limiter = limiter
@@ -224,10 +257,24 @@ async def perf_timing_middleware(request: Request, call_next):
     response.headers["X-Process-Time-Ms"] = f"{total_ms:.2f}"
     return response
 
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    """Baseline security response headers. Conservative set that's safe for a
+    JSON API (no CSP, which is the frontend's concern) — prevents MIME sniffing,
+    clickjacking, and referrer leakage, and asks browsers to stick to HTTPS."""
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    if not settings.DEBUG:
+        response.headers.setdefault(
+            "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+        )
+    return response
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173", "http://localhost:5174", "http://localhost:5175", "http://localhost:3000", ],
+    allow_origins=settings.cors_allowed_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
     allow_headers=["Authorization", "Content-Type", "X-Widget-Key"],

@@ -27,6 +27,7 @@ from sqlalchemy.orm import make_transient_to_detached
 from app.config import settings
 from app.core.email import send_otp_email
 from app.core import perf_timing
+from app.core.entitlements import PLAN_ENTITLEMENTS
 from app.core.security import (
     create_access_token,
     decode_token,
@@ -46,27 +47,12 @@ logger = logging.getLogger(__name__)
 
 _bearer_scheme = HTTPBearer(auto_error=False)
 
-# Keyed by the internal PlanName enum (free/pro/pro_plus), which no longer
-# matches the user-facing names — see FE_TO_BE_PLAN in api/frontend/helpers.py
-# for the free→Starter/pro→Growth/pro_plus→Business remap. Values are the
-# real costed quotas from the Stripe pricing model (Starter $10, Growth $22,
-# Business $105/mo).
+# Backwards-compatible view over the single source of truth in
+# app/core/entitlements.py. Kept as a dict keyed by PlanName so the existing
+# `PLAN_QUOTAS[plan]["max_documents"]` call sites keep working; new code should
+# prefer entitlements.get_entitlements(subscription) directly.
 PLAN_QUOTAS: dict[PlanName, dict] = {
-    PlanName.free: {
-        "max_documents": 25,
-        "max_file_size_mb": 20,
-        "max_questions_per_month": 500,
-    },
-    PlanName.pro: {
-        "max_documents": 150,
-        "max_file_size_mb": 50,
-        "max_questions_per_month": 5000,
-    },
-    PlanName.pro_plus: {
-        "max_documents": 1000,
-        "max_file_size_mb": 100,
-        "max_questions_per_month": 12000,
-    },
+    plan: ent.quota_dict() for plan, ent in PLAN_ENTITLEMENTS.items()
 }
 
 def _slugify(text: str) -> str:
@@ -102,7 +88,7 @@ def _first_of_month() -> datetime:
 _USER_CACHE_COLUMNS = (
     "id", "tenant_id", "full_name", "email", "password_hash",
     "auth_provider", "provider_uid", "avatar_url",
-    "is_email_verified", "is_active", "created_at", "updated_at",
+    "is_email_verified", "is_active", "token_version", "created_at", "updated_at",
 )
 _user_cache: dict[str, tuple[float, dict]] = {}
 
@@ -190,6 +176,9 @@ async def register_user(
         is_email_verified=False,
     )
     db.add(user)
+    # RBAC: the account creator owns the workspace.
+    from app.models.tenant_user import TenantUser, TenantRole
+    db.add(TenantUser(tenant_id=tenant_id, user_id=user.id, role=TenantRole.owner))
 
     await _create_and_send_otp(user, db)
 
@@ -249,6 +238,18 @@ async def get_current_user(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Account is deactivated.",
+        )
+
+    # Session revocation on password change: the token embeds the token_version
+    # it was minted under. A password change bumps user.token_version, so every
+    # token issued before it (missing claim => 0) no longer matches and is
+    # rejected. (Bounded by AUTH_USER_CACHE_TTL_SECONDS unless the cache is
+    # invalidated on change — see invalidate_user_cache.)
+    if payload.get("tv", 0) != (user.token_version or 0):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Your session has ended. Please log in again.",
+            headers={"WWW-Authenticate": "Bearer"},
         )
 
     return user
@@ -564,7 +565,10 @@ async def reset_password(
     loop = asyncio.get_event_loop()
     pw_hash = await loop.run_in_executor(None, hash_password, new_password)
     user.password_hash = pw_hash
+    # Invalidate every existing session — a reset must log out all devices.
+    user.token_version = (user.token_version or 0) + 1
     await db.commit()
+    invalidate_user_cache(user.id)
 
     return {"message": "Password reset successfully. You can now sign in with your new password."}
 

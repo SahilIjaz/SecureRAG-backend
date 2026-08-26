@@ -178,14 +178,47 @@ async def get_quota(tenant_id: uuid.UUID, db: AsyncSession) -> Optional[TenantQu
     )
     return result.scalar_one_or_none()
 
+def _first_of_current_month():
+    now = _utcnow()
+    return now.replace(day=1).date()
+
 async def get_current_usage(tenant_id: uuid.UUID, db: AsyncSession) -> Optional[UsageCount]:
+    """Return the usage row for the CURRENT month, rolling over lazily.
+
+    Previously this returned the single most-recent row regardless of month, so
+    for a tenant created months ago the "monthly" message quota was really a
+    lifetime cap (questions_used never reset). Now, if the latest row is from a
+    past month, we create a fresh row for the current month — resetting the
+    monthly message counter and warning flags, but carrying forward the
+    cumulative document/storage totals (those track current state, not a
+    monthly delta).
+    """
     result = await db.execute(
         select(UsageCount)
         .where(UsageCount.tenant_id == tenant_id)
         .order_by(UsageCount.period_month.desc())
         .limit(1)
     )
-    return result.scalar_one_or_none()
+    latest = result.scalar_one_or_none()
+    if latest is None:
+        return None
+
+    current_month = _first_of_current_month()
+    if latest.period_month >= current_month:
+        return latest
+
+    rolled = UsageCount(
+        tenant_id=tenant_id,
+        period_month=current_month,
+        questions_used=0,
+        documents_count=latest.documents_count,
+        storage_used_mb=latest.storage_used_mb,
+        warned_80_percent=False,
+        warned_100_percent=False,
+    )
+    db.add(rolled)
+    await db.flush()
+    return rolled
 
 async def increment_questions_used(tenant_id: uuid.UUID, db: AsyncSession) -> None:
     """
@@ -374,6 +407,22 @@ def is_owner_currently_online(tenant: Tenant) -> bool:
     age = _utcnow() - _as_aware(tenant.last_seen_at)
     return age < timedelta(seconds=settings.PRESENCE_ONLINE_WINDOW_SECONDS)
 
+async def is_any_member_online(tenant_id: uuid.UUID, db: AsyncSession) -> bool:
+    """Multi-agent availability: True if ANY team member (owner or agent) has
+    pinged presence within the online window. Used so the widget can offer
+    "talk to a human" whenever at least one agent is around, not only the owner.
+    """
+    from app.models.tenant_user import TenantUser
+    cutoff = _utcnow() - timedelta(seconds=settings.PRESENCE_ONLINE_WINDOW_SECONDS)
+    result = await db.execute(
+        select(TenantUser.id).where(
+            TenantUser.tenant_id == tenant_id,
+            TenantUser.last_seen_at.isnot(None),
+            TenantUser.last_seen_at >= cutoff,
+        ).limit(1)
+    )
+    return result.scalar_one_or_none() is not None
+
 def is_visitor_still_present(conversation: Conversation) -> bool:
     """
     Whether the visitor's widget appears to still have this conversation
@@ -394,3 +443,16 @@ def fe_plan_for_subscription(subscription: Optional[Subscription]) -> str:
 
 def onboarding_completed(subscription: Optional[Subscription]) -> bool:
     return subscription is not None
+
+async def role_for(user: User, db: AsyncSession) -> str:
+    """The user's workspace role as a string ('owner'/'admin'/'agent'), from the
+    tenant_users membership. Missing row → 'owner' (single-user fallback)."""
+    from app.models.tenant_user import TenantUser
+    result = await db.execute(
+        select(TenantUser.role).where(
+            TenantUser.tenant_id == user.tenant_id,
+            TenantUser.user_id == user.id,
+        )
+    )
+    role = result.scalar_one_or_none()
+    return role.value if role is not None else "owner"

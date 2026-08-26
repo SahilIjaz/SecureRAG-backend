@@ -19,7 +19,9 @@ from app.api.frontend import (
     notifications,
     onboarding,
     presence,
+    public_bot,
     settings,
+    team,
     user,
 )
 
@@ -35,4 +37,6 @@ router.include_router(knowledge.router)
 router.include_router(settings.router)
 router.include_router(notifications.router)
 router.include_router(presence.router)
+router.include_router(public_bot.router)
+router.include_router(team.router)
 router.include_router(model_options.router)

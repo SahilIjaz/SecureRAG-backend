@@ -62,6 +62,46 @@ async def auto_resolve_stale_conversations() -> int:
                     len(stale_ids), settings.CONVERSATION_AUTO_RESOLVE_DAYS)
         return len(stale_ids)
 
+async def release_orphaned_live_chats_loop() -> None:
+    """Multi-agent: return a live chat to the shared queue when the agent
+    handling it drops offline (closed the tab, lost network), so it doesn't sit
+    stuck on an absent agent. Runs frequently (presence-window granularity)."""
+    while True:
+        try:
+            await release_orphaned_live_chats()
+        except Exception:
+            logger.exception("Orphaned-live-chat release iteration failed")
+        await asyncio.sleep(settings.PRESENCE_ONLINE_WINDOW_SECONDS)
+
+async def release_orphaned_live_chats() -> int:
+    """Unassign live chats whose assignee hasn't pinged presence within the
+    online window. Returns how many were released back to the queue."""
+    from app.models.tenant_user import TenantUser
+
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=settings.PRESENCE_ONLINE_WINDOW_SECONDS)
+    async with AsyncSessionLocal() as db:
+        # Assignees currently considered offline (stale or never-pinged).
+        offline = await db.execute(
+            select(TenantUser.user_id).where(
+                or_(TenantUser.last_seen_at.is_(None), TenantUser.last_seen_at < cutoff)
+            )
+        )
+        offline_ids = [row[0] for row in offline.all()]
+        if not offline_ids:
+            return 0
+        result = await db.execute(
+            update(Conversation)
+            .where(
+                Conversation.is_live == True,  # noqa: E712
+                Conversation.assigned_user_id.in_(offline_ids),
+            )
+            .values(assigned_user_id=None)
+        )
+        await db.commit()
+        if result.rowcount:
+            logger.info("Released %d orphaned live chat(s) back to the queue", result.rowcount)
+        return result.rowcount or 0
+
 _LIVE_FLAG_SWEEP_INTERVAL_SECONDS = 60
 
 async def live_flag_sweep_loop() -> None:

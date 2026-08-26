@@ -42,11 +42,30 @@ async def stripe_webhook(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid webhook signature.")
 
     event_type = event["type"]
+    event_id = event.get("id")
     data = event["data"]["object"]
 
     # Own session, not Depends(get_db) — this route has no per-request auth
     # dependency chain to piggyback a session off of.
     async with AsyncSessionLocal() as db:
+        # Idempotency: Stripe delivers at-least-once, so record the event id and
+        # skip anything we've already processed. The INSERT is inside the same
+        # transaction as the handler, so a crash mid-handling rolls back the
+        # marker too and the retry re-processes cleanly.
+        if event_id:
+            from sqlalchemy import select
+            from app.models.processed_stripe_event import ProcessedStripeEvent
+
+            already = await db.execute(
+                select(ProcessedStripeEvent.event_id).where(
+                    ProcessedStripeEvent.event_id == event_id
+                )
+            )
+            if already.scalar_one_or_none() is not None:
+                logger.info("Skipping already-processed Stripe event %s", event_id)
+                return {"received": True, "duplicate": True}
+            db.add(ProcessedStripeEvent(event_id=event_id))
+
         try:
             if event_type in ("customer.subscription.created", "customer.subscription.updated"):
                 await stripe_service.sync_subscription_from_stripe(data, db)

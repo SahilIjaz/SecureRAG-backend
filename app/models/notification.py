@@ -45,6 +45,15 @@ class Notification(Base):
         nullable=False,
         index=True,
     )
+    # Multi-agent targeting: NULL = a whole-tenant notice everyone sees
+    # (preserves all existing rows); a set user_id addresses one member only
+    # (e.g. "a reply landed on your chat").
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
     type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     body: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

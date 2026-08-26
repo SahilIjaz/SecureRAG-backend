@@ -15,6 +15,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Awaitable, Callable, List, TypeVar
 
 from fastapi import APIRouter, Depends
+
+from app.core.rbac import require_admin
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -35,8 +37,15 @@ from app.schemas.frontend import (
     FEVolumePoint,
 )
 from app.services.auth_service import get_current_user
+from app.services.classification_service import UNCLASSIFIED_TOPIC
 
-router = APIRouter(prefix="/dashboard", tags=["Frontend — Dashboard"])
+# Dashboard analytics are owner/admin territory — agents see the conversation
+# inbox, not workspace-wide metrics.
+router = APIRouter(
+    prefix="/dashboard",
+    tags=["Frontend — Dashboard"],
+    dependencies=[Depends(require_admin)],
+)
 
 WINDOW_DAYS = 30
 
@@ -75,6 +84,14 @@ async def _conversations_since(
         query = query.options(selectinload(Conversation.messages))
     result = await db.execute(query.order_by(Conversation.created_at.desc()))
     return list(result.scalars().all())
+
+def _is_unresolved(convo: Conversation) -> bool:
+    """
+    Anything not Resolved still needs attention — including "Handed off", where
+    the bot failed and escalated. Counting only "Open" left genuinely
+    unanswered questions out of the gaps and unresolved cards entirely.
+    """
+    return convo.status != "Resolved"
 
 def _pct_change(current: float, previous: float) -> float:
     if previous == 0:
@@ -119,8 +136,8 @@ async def get_stats(
             resolved = sum(1 for c in convos if c.status == "Resolved")
             return round(resolved / len(convos) * 100, 1)
 
-        cur_unresolved = sum(1 for c in current if c.status == "Open")
-        prev_unresolved = sum(1 for c in previous if c.status == "Open")
+        cur_unresolved = sum(1 for c in current if _is_unresolved(c))
+        prev_unresolved = sum(1 for c in previous if _is_unresolved(c))
         cur_avg = _avg_response_seconds(current)
         prev_avg = _avg_response_seconds(previous)
 
@@ -181,6 +198,30 @@ async def get_sentiment(
         return FESentimentData(positive=positive, neutral=neutral, negative=negative, csatScore=csat)
 
     return await _cached(("sentiment", current_user.tenant_id), _load)
+
+def _question_tokens(text: str) -> set:
+    """Content words of a question, for similarity comparison."""
+    import re
+
+    cleaned = re.sub(r"[^a-z0-9\s]", " ", text.lower())
+    # Crude singular/plural fold so "emails"/"email" match.
+    return {
+        w[:-1] if len(w) > 3 and w.endswith("s") else w
+        for w in cleaned.split()
+        if w not in _STOPWORDS
+    }
+
+def _similar(a: set, b: set, threshold: float = 0.5) -> bool:
+    """Jaccard overlap — merges verbatim repeats and close rewordings."""
+    if not a or not b:
+        return False
+    return len(a & b) / len(a | b) >= threshold
+
+_STOPWORDS = {
+    "a", "an", "the", "is", "are", "do", "does", "did", "can", "could", "would",
+    "i", "we", "you", "my", "our", "your", "to", "of", "for", "on", "in", "it",
+    "how", "what", "where", "when", "why", "please", "hi", "hello", "there",
+}
 
 @router.get("/unresolved", response_model=List[FEUnresolvedQuestion])
 async def get_unresolved(
@@ -349,5 +390,7 @@ async def get_usage(
         docsTotal=docs_total,
         urlsUsed=url_count,
         urlsTotal=display["urls"],
+        storageUsedMb=round((usage.storage_used_mb if usage else 0.0) or 0.0, 2),
+        storageTotalMb=float(quota.max_storage_mb) if quota else 0.0,
         resetsOn=helpers.format_date(helpers.first_of_next_month()),
     )

@@ -45,14 +45,20 @@ def is_origin_allowed(origin_header: Optional[str], allowed_domains_csv: str) ->
     "evil-example.com" or "example.com.evil.net".
 
     A browser can't lie about its own Origin header on a cross-origin
-    fetch/XHR, which is what makes this check meaningful. A missing Origin
-    header means the caller isn't a browser (curl, server-side Python, etc.)
-    — those are allowed through here (the key + rate limiting + quota are
-    what bound a direct API caller, not the domain check; the key is already
-    visible in the widget's page source to begin with).
+    fetch/XHR, which is what makes this check meaningful. The widget always
+    calls the API cross-origin (iframe on the site's origin → API host), so a
+    real embed always carries an Origin.
+
+    A MISSING Origin therefore means a non-browser caller (curl / server-side
+    script). Previously those were allowed through, which let anyone who
+    scraped the public widget key from a page hammer the message endpoint from
+    a script and burn the tenant's monthly quota + LLM budget. When
+    WIDGET_REQUIRE_ORIGIN is set (the default) we now reject them; the flag
+    exists as an escape hatch if a legitimate non-browser integration needs
+    the old behaviour.
     """
     if not origin_header:
-        return True
+        return not settings.WIDGET_REQUIRE_ORIGIN
     host = _hostname(origin_header)
     if not host:
         return False

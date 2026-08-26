@@ -49,11 +49,42 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_ID: str = ""
 
     OTP_EXPIRE_MINUTES: int = 10
+    # Wrong OTP guesses allowed before the code is locked and a new one is
+    # required — caps brute-force at 5 tries per issued code.
+    OTP_MAX_ATTEMPTS: int = 5
+    # Reject widget API calls that carry no Origin header (non-browser callers).
+    # Real embeds always send one; this closes the scraped-key quota-burning
+    # bypass. Set false only for a trusted non-browser integration.
+    WIDGET_REQUIRE_ORIGIN: bool = True
 
     FRONTEND_URL: str = "http://localhost:5173"
+    # Extra browser origins allowed by CORS beyond FRONTEND_URL and the local
+    # dev ports — comma-separated (e.g. "https://app.example.com,https://example.com").
+    CORS_EXTRA_ORIGINS: str = ""
+
+    @property
+    def cors_allowed_origins(self) -> list[str]:
+        """The full allow-list: the configured frontend origin, the common
+        local dev ports, and any CORS_EXTRA_ORIGINS. Deduplicated, order
+        preserved. Driving this from config means production no longer silently
+        breaks on a hardcoded localhost-only list."""
+        origins = [
+            self.FRONTEND_URL,
+            "http://localhost:5173",
+            "http://localhost:5174",
+            "http://localhost:5175",
+            "http://localhost:3000",
+        ]
+        origins += [o.strip() for o in self.CORS_EXTRA_ORIGINS.split(",") if o.strip()]
+        seen: set[str] = set()
+        return [o for o in origins if o and not (o in seen or seen.add(o))]
 
     UPLOAD_DIR: str = "storage/uploads"
     MAX_UPLOAD_SIZE_MB: int = 50
+    # Hard ceiling on a whole upload request body (multipart), rejected from
+    # Content-Length before buffering. Must exceed the largest plan's per-file
+    # cap (100MB) plus room for small batches + overhead.
+    MAX_REQUEST_BODY_MB: int = 120
     ALLOWED_MIME_TYPES: str = (
         "application/pdf,"
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document,"
@@ -177,13 +208,21 @@ class Settings(BaseSettings):
     RAG_CHUNK_SIZE: int = 500
     RAG_CHUNK_OVERLAP: int = 50
     RAG_SEARCH_TOP_K: int = 5
-    # Below this cosine similarity, the top retrieved chunk is treated as "not
-    # actually relevant" — same fallback path as zero chunks (see
-    # _prepare_generation) instead of handing the LLM a best-effort context it
-    # has to independently judge as off-topic. multilingual-e5-large's cosine
-    # scores for a genuinely on-topic match on this project's documents run
-    # noticeably higher than for an unrelated query; tune against real query
-    # logs if false negatives/positives show up.
+    # A widget conversation that has been idle longer than this auto-splits: the
+    # next message starts a fresh conversation instead of appending to the old
+    # one. Prevents unrelated chats (and, on a shared device, different people)
+    # from being merged into a single conversation thread.
+    WIDGET_CONVERSATION_IDLE_MINUTES: int = 30
+    # Minimum cosine score a dense match must clear inside hybrid retrieval's
+    # vector branch before it's fused with keyword results (see hybrid_search).
+    RAG_MIN_VECTOR_SCORE: float = 0.30
+    # Toggle hybrid (vector + keyword) retrieval. When off, retrieval is the
+    # original pure-vector path, which uses RAG_MIN_RELEVANCE_SCORE below.
+    RAG_HYBRID_SEARCH: bool = True
+    # Below this cosine similarity, the top retrieved chunk (pure-vector path) is
+    # treated as "not actually relevant" — same fallback path as zero chunks
+    # (see _prepare_generation) instead of handing the LLM a best-effort context
+    # it has to independently judge as off-topic.
     RAG_MIN_RELEVANCE_SCORE: float = 0.75
 
     # Background-job recovery: how long a document may sit in "processing"
