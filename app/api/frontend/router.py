@@ -15,6 +15,7 @@ from app.api.frontend import (
     conversations,
     dashboard,
     knowledge,
+    model_options,
     notifications,
     onboarding,
     presence,
@@ -38,3 +39,4 @@ router.include_router(notifications.router)
 router.include_router(presence.router)
 router.include_router(public_bot.router)
 router.include_router(team.router)
+router.include_router(model_options.router)

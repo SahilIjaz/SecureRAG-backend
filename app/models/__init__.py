@@ -15,6 +15,8 @@ from app.models.document_chunk import DocumentChunk
 from app.models.tenant_user import TenantUser, TenantRole
 from app.models.invite import Invite
 from app.models.notification import Notification
+from app.models.wallet_transaction import WalletTransaction
+from app.models.llm_usage_log import LLMUsageLog
 
 __all__ = [
     "Tenant",
@@ -38,4 +40,6 @@ __all__ = [
     "TenantRole",
     "Invite",
     "Notification",
+    "WalletTransaction",
+    "LLMUsageLog",
 ]

@@ -17,15 +17,15 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
-from app.config import settings
 from app.core.rate_limit import limiter
 from app.core.rbac import require_owner
-from sqlalchemy import select, update as _sa_update
+from sqlalchemy import func, select, update as _sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.frontend import helpers
+from app.config import settings
 from app.core.security import hash_password
 from app.database import get_db
 from app.models.subscription import SubscriptionStatus
@@ -56,6 +56,10 @@ from app.schemas.frontend import (
     FESaveWorkspaceSettingsResponse,
     FESetupIntentResponse,
     FESuccessResponse,
+    FEWalletTopupRequest,
+    FEWalletTopupResponse,
+    FEWalletTransaction,
+    FEWalletTransactionsResponse,
     FEWorkspaceSettings,
 )
 from app.services import stripe_service
@@ -206,6 +210,16 @@ async def _billing_info(user: User, db: AsyncSession) -> FEBillingInfo:
     if subscription is not None and subscription.status == SubscriptionStatus.trial and subscription.expires_at:
         trial_ends_on = helpers.format_date(subscription.expires_at)
 
+    # Prepaid wallet + signup trial — separate concept from the plan
+    # subscription above. See app/services/wallet_service.py.
+    tenant = await helpers.get_tenant(user, db)
+    trial_messages_remaining = None
+    trial_days_remaining = None
+    if tenant.trial_ended_at is None:
+        trial_messages_remaining = max(0, settings.TRIAL_MESSAGE_LIMIT - (tenant.trial_messages_used or 0))
+        days_elapsed = (helpers._utcnow() - helpers._as_aware(tenant.created_at)).days
+        trial_days_remaining = max(0, settings.TRIAL_DURATION_DAYS - days_elapsed)
+
     return FEBillingInfo(
         planId=fe_plan,
         status=fe_status,
@@ -213,6 +227,9 @@ async def _billing_info(user: User, db: AsyncSession) -> FEBillingInfo:
         renewsOn=helpers.format_date(renews_on),
         paymentMethod=FEPaymentMethod(brand=payment.brand, last4=payment.last4, expiry=payment.expiry),
         trialEndsOn=trial_ends_on,
+        walletBalanceUsd=float(tenant.balance_usd or 0),
+        trialMessagesRemaining=trial_messages_remaining,
+        trialDaysRemaining=trial_days_remaining,
     )
 
 @router.get("/billing", response_model=FEBillingInfo)
@@ -292,6 +309,68 @@ async def create_payment_method_setup_intent(
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
     return FESetupIntentResponse(clientSecret=client_secret)
+
+@router.post("/billing/wallet/topup", response_model=FEWalletTopupResponse)
+async def start_wallet_topup(
+    body: FEWalletTopupRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> FEWalletTopupResponse:
+    """Creates a one-time Stripe Checkout Session that credits
+    Tenant.balance_usd on completion — separate from the subscription
+    checkout above. See stripe_service.create_wallet_topup_checkout_session
+    and billing_webhook.py's checkout.session.completed handler."""
+    tenant = await helpers.get_tenant(current_user, db)
+    frontend_url = settings.FRONTEND_URL.rstrip("/")
+    try:
+        checkout_url = await stripe_service.create_wallet_topup_checkout_session(
+            tenant, current_user, body.amountUsd,
+            success_url=f"{frontend_url}/dashboard/settings?tab=billing&topup=success",
+            cancel_url=f"{frontend_url}/dashboard/settings?tab=billing&topup=cancelled",
+            db=db,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    return FEWalletTopupResponse(checkoutUrl=checkout_url)
+
+_WALLET_TRANSACTIONS_PAGE_SIZE = 10
+
+@router.get("/billing/wallet/transactions", response_model=FEWalletTransactionsResponse)
+async def get_wallet_transactions(
+    page: int = Query(1, ge=1),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> FEWalletTransactionsResponse:
+    """Paginated wallet ledger entries — top-ups and deductions — for the
+    Billing tab's transaction history list, 10 per page (1-indexed)."""
+    from app.models.wallet_transaction import WalletTransaction
+
+    total = await db.scalar(
+        select(func.count()).select_from(WalletTransaction)
+        .where(WalletTransaction.tenant_id == current_user.tenant_id)
+    ) or 0
+
+    result = await db.execute(
+        select(WalletTransaction)
+        .where(WalletTransaction.tenant_id == current_user.tenant_id)
+        .order_by(WalletTransaction.created_at.desc())
+        .offset((page - 1) * _WALLET_TRANSACTIONS_PAGE_SIZE)
+        .limit(_WALLET_TRANSACTIONS_PAGE_SIZE)
+    )
+    rows = result.scalars().all()
+    return FEWalletTransactionsResponse(
+        transactions=[
+            FEWalletTransaction(
+                id=str(t.id), type=t.type, amountUsd=float(t.amount_usd),
+                balanceAfterUsd=float(t.balance_after) if t.balance_after is not None else None,
+                createdAt=helpers._as_aware(t.created_at).isoformat(),
+            )
+            for t in rows
+        ],
+        total=total,
+        page=page,
+        pageSize=_WALLET_TRANSACTIONS_PAGE_SIZE,
+    )
 
 # ── API keys ──────────────────────────────────────────────────────────────────
 

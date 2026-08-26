@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import stripe
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -308,6 +308,95 @@ async def set_default_payment_method(customer_id: str, payment_method_id: str) -
         customer_id,
         invoice_settings={"default_payment_method": payment_method_id},
     )
+
+# ── Wallet top-up (one-time payment, separate from the subscription flow above) ──
+
+WALLET_TOPUP_MIN_USD = 0.50  # Stripe's own real minimum charge amount
+
+async def create_wallet_topup_checkout_session(
+    tenant, user: User, amount_usd: float, success_url: str, cancel_url: str, db: AsyncSession
+) -> str:
+    """
+    One-time Stripe Checkout Session (payment mode, not subscription mode)
+    that credits Tenant.balance_usd on completion — see
+    billing_webhook.py's checkout.session.completed handler and
+    app/services/wallet_service.py. Returns the Checkout Session URL to
+    redirect the browser to.
+    """
+    if amount_usd < WALLET_TOPUP_MIN_USD:
+        raise ValueError(f"Minimum top-up is ${WALLET_TOPUP_MIN_USD:.2f}.")
+
+    from app.models.subscription import Subscription
+
+    result = await db.execute(select(Subscription).where(Subscription.tenant_id == tenant.id))
+    subscription = result.scalar_one_or_none()
+    customer_id = None
+    if subscription is not None:
+        customer_id = await get_or_create_customer(tenant, user, subscription, db)
+
+    session = await _run(
+        stripe.checkout.Session.create,
+        mode="payment",
+        customer=customer_id,
+        customer_email=user.email if customer_id is None else None,
+        line_items=[{
+            "price_data": {
+                "currency": "usd",
+                "product_data": {"name": "Nexus wallet top-up"},
+                "unit_amount": round(amount_usd * 100),
+            },
+            "quantity": 1,
+        }],
+        metadata={"tenant_id": str(tenant.id), "kind": "wallet_topup"},
+        success_url=success_url,
+        cancel_url=cancel_url,
+    )
+    return session.url
+
+async def credit_wallet_from_checkout_session(session_data: dict, db: AsyncSession) -> None:
+    """
+    checkout.session.completed handler for a wallet top-up (mode="payment",
+    metadata.kind="wallet_topup" — see create_wallet_topup_checkout_session).
+    Must be idempotent: Stripe redelivers webhook events on any non-2xx
+    response or plain network flakiness, and a naive handler would
+    double-credit a tenant's balance on a retry. Guarded by
+    stripe_payment_intent_id — if a WalletTransaction already exists for
+    this payment intent, this is a no-op.
+    """
+    from decimal import Decimal
+
+    from app.models.tenant import Tenant
+    from app.models.wallet_transaction import WalletTransaction
+
+    metadata = session_data.get("metadata") or {}
+    if metadata.get("kind") != "wallet_topup":
+        return  # a subscription checkout session, not ours to handle
+
+    tenant_id = metadata.get("tenant_id")
+    payment_intent_id = session_data.get("payment_intent")
+    amount_total = session_data.get("amount_total")  # cents
+    if not tenant_id or not payment_intent_id or amount_total is None:
+        logger.warning("Wallet top-up checkout session missing required fields: %s", session_data.get("id"))
+        return
+
+    existing = await db.execute(
+        select(WalletTransaction).where(WalletTransaction.stripe_payment_intent_id == payment_intent_id)
+    )
+    if existing.scalar_one_or_none() is not None:
+        logger.info("Wallet top-up for payment_intent %s already recorded — skipping (webhook redelivery).", payment_intent_id)
+        return
+
+    amount_usd = Decimal(amount_total) / Decimal(100)
+    result = await db.execute(
+        update(Tenant).where(Tenant.id == tenant_id)
+        .values(balance_usd=Tenant.balance_usd + amount_usd, wallet_low_balance_warned=False)
+        .returning(Tenant.balance_usd)
+    )
+    new_balance = result.scalar_one_or_none()
+    db.add(WalletTransaction(
+        tenant_id=tenant_id, type="topup", amount_usd=amount_usd,
+        balance_after=new_balance, stripe_payment_intent_id=payment_intent_id,
+    ))
 
 async def notify_payment_failed(customer_id: str, db: AsyncSession) -> None:
     from app.services.notification_service import notify_tenant

@@ -9,9 +9,10 @@ with no conversations gets zeros/empty lists — the frontend renders empty
 states for those.
 """
 
+import time
 from collections import Counter
 from datetime import datetime, timedelta, timezone
-from typing import List
+from typing import Awaitable, Callable, List, TypeVar
 
 from fastapi import APIRouter, Depends
 
@@ -23,6 +24,7 @@ from sqlalchemy.orm import selectinload
 from app.api.frontend import helpers
 from app.database import get_db
 from app.models.conversation import Conversation
+from app.models.document import DocumentSource
 from app.models.user import User
 from app.schemas.frontend import (
     FEConversationTopic,
@@ -47,6 +49,26 @@ router = APIRouter(
 
 WINDOW_DAYS = 30
 
+# Every widget here recomputes its aggregate from scratch on every request —
+# there's no external cache (Redis) in this app, and each of these round
+# trips a remote Neon Postgres instance. A short in-process TTL cache (same
+# pattern as helpers._widget_tenant_cache) cuts repeat DB load for a page
+# that fires 8 of these on every mount, without the data going staler than
+# the frontend's own React Query staleTime (60s — see dashboard.api.ts)
+# already tolerates.
+DASHBOARD_CACHE_TTL_SECONDS = 20
+_T = TypeVar("_T")
+_dashboard_cache: dict[tuple, tuple[float, object]] = {}
+
+async def _cached(key: tuple, loader: Callable[[], Awaitable[_T]]) -> _T:
+    now = time.monotonic()
+    cached = _dashboard_cache.get(key)
+    if cached is not None and cached[0] > now:
+        return cached[1]  # type: ignore[return-value]
+    value = await loader()
+    _dashboard_cache[key] = (now + DASHBOARD_CACHE_TTL_SECONDS, value)
+    return value
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -55,6 +77,7 @@ async def _conversations_since(
 ) -> List[Conversation]:
     query = select(Conversation).where(
         Conversation.tenant_id == tenant_id,
+        Conversation.deleted_at.is_(None),
         Conversation.created_at >= since,
     )
     if with_messages:
@@ -95,77 +118,86 @@ async def get_stats(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> FEOverviewStats:
-    now = _now()
-    # A single query over the wider (2x) window already contains every conversation the
-    # narrower "current" window would return, since WINDOW_DAYS*2 > WINDOW_DAYS — so split
-    # it in Python instead of paying a second round trip for a strict subset of this data.
-    cutoff = now - timedelta(days=WINDOW_DAYS)
-    both_windows = await _conversations_since(
-        current_user.tenant_id, now - timedelta(days=WINDOW_DAYS * 2), db, with_messages=True
-    )
-    current = [c for c in both_windows if c.created_at >= cutoff]
-    previous = [c for c in both_windows if c.created_at < cutoff]
+    async def _load() -> FEOverviewStats:
+        now = _now()
+        # A single query over the wider (2x) window already contains every conversation the
+        # narrower "current" window would return, since WINDOW_DAYS*2 > WINDOW_DAYS — so split
+        # it in Python instead of paying a second round trip for a strict subset of this data.
+        cutoff = now - timedelta(days=WINDOW_DAYS)
+        both_windows = await _conversations_since(
+            current_user.tenant_id, now - timedelta(days=WINDOW_DAYS * 2), db, with_messages=True
+        )
+        current = [c for c in both_windows if c.created_at >= cutoff]
+        previous = [c for c in both_windows if c.created_at < cutoff]
 
-    def resolution_rate(convos: List[Conversation]) -> float:
-        if not convos:
-            return 0.0
-        resolved = sum(1 for c in convos if c.status == "Resolved")
-        return round(resolved / len(convos) * 100, 1)
+        def resolution_rate(convos: List[Conversation]) -> float:
+            if not convos:
+                return 0.0
+            resolved = sum(1 for c in convos if c.status == "Resolved")
+            return round(resolved / len(convos) * 100, 1)
 
-    cur_unresolved = sum(1 for c in current if _is_unresolved(c))
-    prev_unresolved = sum(1 for c in previous if _is_unresolved(c))
-    cur_avg = _avg_response_seconds(current)
-    prev_avg = _avg_response_seconds(previous)
+        cur_unresolved = sum(1 for c in current if _is_unresolved(c))
+        prev_unresolved = sum(1 for c in previous if _is_unresolved(c))
+        cur_avg = _avg_response_seconds(current)
+        prev_avg = _avg_response_seconds(previous)
 
-    return FEOverviewStats(
-        totalConversations=len(current),
-        totalConversationsDelta=_pct_change(len(current), len(previous)),
-        resolutionRate=resolution_rate(current),
-        resolutionRateDelta=round(resolution_rate(current) - resolution_rate(previous), 1),
-        unresolved=cur_unresolved,
-        unresolvedDelta=cur_unresolved - prev_unresolved,
-        avgResponseSeconds=cur_avg,
-        avgResponseDelta=round(cur_avg - prev_avg, 1),
-    )
+        return FEOverviewStats(
+            totalConversations=len(current),
+            totalConversationsDelta=_pct_change(len(current), len(previous)),
+            resolutionRate=resolution_rate(current),
+            resolutionRateDelta=round(resolution_rate(current) - resolution_rate(previous), 1),
+            unresolved=cur_unresolved,
+            unresolvedDelta=cur_unresolved - prev_unresolved,
+            avgResponseSeconds=cur_avg,
+            avgResponseDelta=round(cur_avg - prev_avg, 1),
+        )
+
+    return await _cached(("stats", current_user.tenant_id), _load)
 
 @router.get("/volume", response_model=List[FEVolumePoint])
 async def get_volume(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> List[FEVolumePoint]:
-    now = _now()
-    days = 14
-    conversations = await _conversations_since(
-        current_user.tenant_id, now - timedelta(days=days), db
-    )
-    counts = Counter(helpers._as_aware(c.created_at).date() for c in conversations)
-    points: List[FEVolumePoint] = []
-    for i in range(days - 1, -1, -1):
-        day = (now - timedelta(days=i)).date()
-        label = f"{day.strftime('%b')} {day.day}"
-        points.append(FEVolumePoint(date=label, count=counts.get(day, 0)))
-    return points
+    async def _load() -> List[FEVolumePoint]:
+        now = _now()
+        days = 14
+        conversations = await _conversations_since(
+            current_user.tenant_id, now - timedelta(days=days), db
+        )
+        counts = Counter(helpers._as_aware(c.created_at).date() for c in conversations)
+        points: List[FEVolumePoint] = []
+        for i in range(days - 1, -1, -1):
+            day = (now - timedelta(days=i)).date()
+            label = f"{day.strftime('%b')} {day.day}"
+            points.append(FEVolumePoint(date=label, count=counts.get(day, 0)))
+        return points
+
+    return await _cached(("volume", current_user.tenant_id), _load)
 
 @router.get("/sentiment", response_model=FESentimentData)
 async def get_sentiment(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> FESentimentData:
-    conversations = await _conversations_since(
-        current_user.tenant_id, _now() - timedelta(days=WINDOW_DAYS), db
-    )
-    total = len(conversations)
-    if total == 0:
-        return FESentimentData(positive=0, neutral=0, negative=0, csatScore=0.0)
+    async def _load() -> FESentimentData:
+        conversations = await _conversations_since(
+            current_user.tenant_id, _now() - timedelta(days=WINDOW_DAYS), db
+        )
+        total = len(conversations)
+        if total == 0:
+            return FESentimentData(positive=0, neutral=0, negative=0, csatScore=0.0)
 
-    pos = sum(1 for c in conversations if c.sentiment == "Positive")
-    neg = sum(1 for c in conversations if c.sentiment == "Negative")
-    positive = round(pos / total * 100)
-    negative = round(neg / total * 100)
-    neutral = 100 - positive - negative
-    # CSAT proxy on a 1–5 scale: 3 is neutral, shifted by the positive/negative balance.
-    csat = round(min(5.0, max(1.0, 3 + 2 * (pos - neg) / total)), 1)
-    return FESentimentData(positive=positive, neutral=neutral, negative=negative, csatScore=csat)
+        pos = sum(1 for c in conversations if c.sentiment == "Positive")
+        neg = sum(1 for c in conversations if c.sentiment == "Negative")
+        positive = round(pos / total * 100)
+        negative = round(neg / total * 100)
+        neutral = 100 - positive - negative
+        # CSAT proxy on a 1–5 scale: 3 is neutral, shifted by the positive/negative balance.
+        csat = round(min(5.0, max(1.0, 3 + 2 * (pos - neg) / total)), 1)
+        return FESentimentData(positive=positive, neutral=neutral, negative=negative, csatScore=csat)
+
+    return await _cached(("sentiment", current_user.tenant_id), _load)
 
 def _question_tokens(text: str) -> set:
     """Content words of a question, for similarity comparison."""
@@ -196,61 +228,41 @@ async def get_unresolved(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> List[FEUnresolvedQuestion]:
-    """
-    Unresolved questions, grouped so repeats are counted rather than listed
-    separately — ten visitors asking the same thing is one row with
-    askedCount 10, which is what makes the card actionable.
-    """
-    conversations = await _conversations_since(
-        current_user.tenant_id, _now() - timedelta(days=WINDOW_DAYS * 3), db, with_messages=True
-    )
-    open_convos = [c for c in conversations if _is_unresolved(c)]
-
-    # Cluster by topic + token similarity, so the same question asked by five
-    # visitors is one row with askedCount 5 rather than five rows of 1.
-    groups: list = []
-    for convo in open_convos:
-        first_user_msg = next((m.text for m in convo.messages if m.role == "user"), "")
-        if not first_user_msg:
-            continue
-        tokens = _question_tokens(first_user_msg)
-        created = helpers._as_aware(convo.created_at)
-        topic = convo.topic or ""
-
-        match = next(
-            (g for g in groups if g["topic"] == topic and _similar(g["tokens"], tokens)),
-            None,
+    async def _load() -> List[FEUnresolvedQuestion]:
+        # Only the 5 most recent open conversations are ever shown, so filter
+        # status and cap the row count in SQL instead of pulling every open-or-
+        # not conversation from a 90-day window (with all of its messages
+        # eagerly loaded) and slicing to 5 in Python.
+        result = await db.execute(
+            select(Conversation)
+            .where(
+                Conversation.tenant_id == current_user.tenant_id,
+                Conversation.deleted_at.is_(None),
+                Conversation.status == "Open",
+                Conversation.created_at >= _now() - timedelta(days=WINDOW_DAYS * 3),
+            )
+            .options(selectinload(Conversation.messages))
+            .order_by(Conversation.created_at.desc())
+            .limit(5)
         )
-        if match is None:
-            groups.append({
-                "id": str(convo.id),
-                "topic": topic,
-                "tokens": tokens,
-                "question": first_user_msg,
-                "count": 1,
-                "reason": convo.unresolved_reason or "No matching doc",
-                "last_at": created,
-            })
-        else:
-            match["count"] += 1
-            match["tokens"] |= tokens
-            if created > match["last_at"]:
-                match["last_at"] = created
-                match["question"] = first_user_msg
-                match["id"] = str(convo.id)
-                match["reason"] = convo.unresolved_reason or match["reason"]
+        open_convos = list(result.scalars().all())
 
-    ranked = sorted(groups, key=lambda g: (-g["count"], -g["last_at"].timestamp()))
-    return [
-        FEUnresolvedQuestion(
-            id=g["id"],
-            question=g["question"] if len(g["question"]) <= 60 else g["question"][:57] + "...",
-            askedCount=g["count"],
-            reason=g["reason"],
-            lastAsked=helpers.time_ago(g["last_at"]),
-        )
-        for g in ranked[:5]
-    ]
+        items: List[FEUnresolvedQuestion] = []
+        for convo in open_convos:
+            first_user_msg = next((m.text for m in convo.messages if m.role == "user"), "")
+            question = first_user_msg if len(first_user_msg) <= 60 else first_user_msg[:57] + "..."
+            items.append(
+                FEUnresolvedQuestion(
+                    id=str(convo.id),
+                    question=question or "(no message)",
+                    askedCount=1,
+                    reason=convo.unresolved_reason or "No matching doc",
+                    lastAsked=helpers.time_ago(convo.created_at),
+                )
+            )
+        return items
+
+    return await _cached(("unresolved", current_user.tenant_id), _load)
 
 def _priority_for(count: int) -> str:
     if count >= 10:
@@ -264,34 +276,48 @@ async def get_gaps(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> List[FEKnowledgeGap]:
-    conversations = await _conversations_since(
-        current_user.tenant_id, _now() - timedelta(days=WINDOW_DAYS * 3), db
-    )
-    open_topics = Counter(
-        (c.topic or UNCLASSIFIED_TOPIC) for c in conversations if _is_unresolved(c)
-    )
-    gaps = [
-        FEKnowledgeGap(id=str(i + 1), topic=topic, queryCount=count, priority=_priority_for(count))
-        for i, (topic, count) in enumerate(open_topics.most_common(5))
-    ]
-    return gaps
+    async def _load() -> List[FEKnowledgeGap]:
+        # The topic tally needs every open conversation in the window (it's a
+        # genuine full-window aggregate, not a top-N list), but "open" and
+        # "not deleted" can still be pushed into the WHERE clause instead of
+        # fetching every status over 90 days and filtering in Python — and a
+        # bare topic column is enough here, so skip hydrating full
+        # Conversation entities (visitor info, sentiment, etc.) entirely.
+        result = await db.execute(
+            select(Conversation.topic).where(
+                Conversation.tenant_id == current_user.tenant_id,
+                Conversation.deleted_at.is_(None),
+                Conversation.status == "Open",
+                Conversation.created_at >= _now() - timedelta(days=WINDOW_DAYS * 3),
+            )
+        )
+        open_topics = Counter((topic or "General") for topic in result.scalars().all())
+        return [
+            FEKnowledgeGap(id=str(i + 1), topic=topic, queryCount=count, priority=_priority_for(count))
+            for i, (topic, count) in enumerate(open_topics.most_common(5))
+        ]
+
+    return await _cached(("gaps", current_user.tenant_id), _load)
 
 @router.get("/topics", response_model=List[FEConversationTopic])
 async def get_topics(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> List[FEConversationTopic]:
-    conversations = await _conversations_since(
-        current_user.tenant_id, _now() - timedelta(days=WINDOW_DAYS), db
-    )
-    total = len(conversations)
-    if total == 0:
-        return []
-    topic_counts = Counter((c.topic or UNCLASSIFIED_TOPIC) for c in conversations)
-    return [
-        FEConversationTopic(label=topic, percentage=round(count / total * 100))
-        for topic, count in topic_counts.most_common(5)
-    ]
+    async def _load() -> List[FEConversationTopic]:
+        conversations = await _conversations_since(
+            current_user.tenant_id, _now() - timedelta(days=WINDOW_DAYS), db
+        )
+        total = len(conversations)
+        if total == 0:
+            return []
+        topic_counts = Counter((c.topic or "Other") for c in conversations)
+        return [
+            FEConversationTopic(label=topic, percentage=round(count / total * 100))
+            for topic, count in topic_counts.most_common(5)
+        ]
+
+    return await _cached(("topics", current_user.tenant_id), _load)
 
 @router.get("/recent", response_model=List[FERecentConversation])
 async def get_recent(
@@ -300,7 +326,10 @@ async def get_recent(
 ) -> List[FERecentConversation]:
     result = await db.execute(
         select(Conversation)
-        .where(Conversation.tenant_id == current_user.tenant_id)
+        .where(
+            Conversation.tenant_id == current_user.tenant_id,
+            Conversation.deleted_at.is_(None),
+        )
         .options(selectinload(Conversation.messages))
         .order_by(Conversation.created_at.desc())
         .limit(5)
@@ -331,8 +360,15 @@ async def get_usage(
 ) -> FEPlanUsage:
     _tenant, subscription = await helpers.get_tenant_and_subscription(current_user, db)
     quota, usage = await helpers.get_quota_and_usage(current_user.tenant_id, db)
-    docs = await helpers.get_active_documents(current_user.tenant_id, db)
-    file_docs, url_docs, faq_docs = helpers.split_docs_and_urls(docs)
+    # Aggregate counts by source instead of get_active_documents()'s full-row
+    # fetch — the usage bars only need len() per source, not the documents.
+    doc_counts = await helpers.get_active_document_counts(current_user.tenant_id, db)
+    url_count = doc_counts.get(DocumentSource.scraped, 0)
+    faq_count = doc_counts.get(DocumentSource.faq, 0)
+    file_count = sum(
+        count for source, count in doc_counts.items()
+        if source not in (DocumentSource.scraped, DocumentSource.faq)
+    )
 
     fe_plan = helpers.fe_plan_for_subscription(subscription)
     display = helpers.PLAN_DISPLAY_LIMITS[fe_plan]
@@ -350,9 +386,9 @@ async def get_usage(
         messagesTotal=messages_total,
         # FAQ entries share the same document quota as files/URLs, so they
         # count toward the displayed usage too.
-        docsUsed=len(file_docs) + len(faq_docs),
+        docsUsed=file_count + faq_count,
         docsTotal=docs_total,
-        urlsUsed=len(url_docs),
+        urlsUsed=url_count,
         urlsTotal=display["urls"],
         storageUsedMb=round((usage.storage_used_mb if usage else 0.0) or 0.0, 2),
         storageTotalMb=float(quota.max_storage_mb) if quota else 0.0,

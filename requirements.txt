@@ -22,7 +22,7 @@ python-docx==1.1.2
 reportlab==5.0.0
 slowapi==0.1.9
 pinecone-client==5.0.1
-anthropic==0.113.0
+anthropic>=1.0.0
 google-genai==1.5.0
 tiktoken>=0.8.0
 stripe==11.4.1

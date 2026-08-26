@@ -1,9 +1,11 @@
 import logging
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from slowapi.errors import RateLimitExceeded
 
@@ -126,11 +128,40 @@ async def ensure_frontend_schema() -> None:
         "SELECT gen_random_uuid(), u.tenant_id, u.id, 'owner' FROM users u "
         "WHERE NOT EXISTS (SELECT 1 FROM tenant_users tu WHERE tu.user_id = u.id) "
         "ON CONFLICT DO NOTHING",
+        # Prepaid wallet + one-time signup trial — see
+        # app/services/wallet_service.py and NexusContext plan doc
+        # i-want-to-implement-floofy-hickey.md section C.
+        "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS balance_usd NUMERIC(10,4) NOT NULL DEFAULT 0",
+        "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS trial_messages_used INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS trial_ended_at TIMESTAMPTZ",
+        "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS wallet_low_balance_warned BOOLEAN NOT NULL DEFAULT FALSE",
+        "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS preferred_llm_provider VARCHAR(30)",
+        "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS preferred_llm_model VARCHAR(100)",
     ]
     async with async_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         for stmt in alter_statements:
             await conn.execute(text(stmt))
+
+        # One-time rollout migration credit — see EXISTING_TENANT_MIGRATION_CREDIT_USD's
+        # docstring in config.py for why this is guarded by a fixed cutoff
+        # date (never "now()", which would keep moving forward and wrongly
+        # credit real new signups on every future restart) AND
+        # balance_usd = 0 (so this is a no-op once a tenant is migrated or
+        # has topped up for real — safe to run on every startup).
+        migration_cutoff = datetime.strptime(settings.LLM_BILLING_MIGRATION_CUTOFF, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        await conn.execute(
+            text(
+                "INSERT INTO wallet_transactions (id, tenant_id, type, amount_usd, balance_after, created_at) "
+                "SELECT gen_random_uuid(), id, 'topup', :credit, :credit, now() FROM tenants "
+                "WHERE balance_usd = 0 AND created_at < :cutoff"
+            ),
+            {"credit": settings.EXISTING_TENANT_MIGRATION_CREDIT_USD, "cutoff": migration_cutoff},
+        )
+        await conn.execute(
+            text("UPDATE tenants SET balance_usd = :credit WHERE balance_usd = 0 AND created_at < :cutoff"),
+            {"credit": settings.EXISTING_TENANT_MIGRATION_CREDIT_USD, "cutoff": migration_cutoff},
+        )
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -141,10 +172,10 @@ async def lifespan(app: FastAPI):
         logger.error("Failed to apply frontend-compat schema: %s", e)
 
     try:
-        from app.services.rag_service import verify_gemini_models
-        await verify_gemini_models()
+        from app.services.rag_service import verify_llm_providers
+        await verify_llm_providers()
     except Exception as e:
-        logger.error("Gemini model reachability check crashed unexpectedly: %s", e)
+        logger.error("LLM provider reachability check crashed unexpectedly: %s", e)
 
     import asyncio
 
@@ -153,6 +184,7 @@ async def lifespan(app: FastAPI):
 
     from app.services.notification_service import weekly_summary_loop
     from app.services.conversation_service import (
+        live_flag_sweep_loop,
         stale_conversation_sweep_loop,
         trash_purge_loop,
         release_orphaned_live_chats_loop,
@@ -163,6 +195,7 @@ async def lifespan(app: FastAPI):
     app.state.conversation_sweep_task = asyncio.create_task(stale_conversation_sweep_loop())
     app.state.trash_purge_task = asyncio.create_task(trash_purge_loop())
     app.state.release_orphaned_task = asyncio.create_task(release_orphaned_live_chats_loop())
+    app.state.live_flag_sweep_task = asyncio.create_task(live_flag_sweep_loop())
 
     logger.info(
         "%s API is running (debug=%s)",
@@ -246,6 +279,11 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
     allow_headers=["Authorization", "Content-Type", "X-Widget-Key"],
     max_age=3600, )
+
+# Compresses JSON responses over ~1KB (dashboard widget payloads, wallet
+# transaction lists, etc.) — previously every response went over the wire
+# uncompressed regardless of size.
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # Frontend-compat API — paths/shapes match Nexus-frontend/src/api/*.api.ts.
 app.include_router(frontend_router, prefix="/api")

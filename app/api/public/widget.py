@@ -51,6 +51,7 @@ from app.models.tenant import Tenant
 from app.schemas.frontend import FEChatbotAppearance, FEChatbotIdentity
 from app.services.notification_service import notify_tenant, conversation_alert_copy
 from app.services.rag_service import store_conversation_classification
+from app.services import wallet_service
 
 logger = logging.getLogger(__name__)
 
@@ -119,11 +120,9 @@ def _should_start_fresh(conversation: Conversation) -> bool:
     idle = datetime.now(timezone.utc) - last_activity
     return idle > timedelta(minutes=settings.WIDGET_CONVERSATION_IDLE_MINUTES)
 
-LiveState = Literal["not_escalated", "connecting", "live", "unavailable"]
+LiveState = Literal["not_escalated", "connecting", "live", "unavailable", "owner_busy"]
 
-def _compute_live_state(
-    conversation: Conversation, tenant: Tenant, anyone_online: bool
-) -> LiveState:
+async def _compute_live_state(conversation: Conversation, tenant: Tenant, db: AsyncSession) -> LiveState:
     """
     Single source of truth for what the widget's connect/wait UI should show
     — see NexusContext/LIVE_AGENT_HANDOFF_PLAN.md §3. Deliberately stateless:
@@ -131,21 +130,37 @@ def _compute_live_state(
     late owner join is always picked up on the next poll no matter how long
     "unavailable" was already showing (edge case #5 in that doc).
 
-    `anyone_online` is whether any team member (owner or agent) is currently
-    around — computed by the caller via helpers.is_any_member_online.
+    Availability is multi-agent: any team member (owner or agent) being online
+    counts, via helpers.is_any_member_online.
     """
     if conversation.is_live:
         return "live"
     if conversation.status != "Handed off":
         return "not_escalated"
-    if not anyone_online:
+    if not await helpers.is_any_member_online(tenant.id, db):
         return "unavailable"
     if conversation.live_wait_started_at is None:
         return "unavailable"
     waited = datetime.now(timezone.utc) - conversation.live_wait_started_at
-    if waited < timedelta(seconds=settings.LIVE_JOIN_TIMEOUT_SECONDS):
-        return "connecting"
-    return "unavailable"
+    if waited >= timedelta(seconds=settings.LIVE_JOIN_TIMEOUT_SECONDS):
+        return "unavailable"
+    # The owner is online and this conversation is still within the join
+    # window, but "connecting" would be misleading if they're already
+    # actively live with a *different* visitor — being online isn't the
+    # same as being free (see LIVE_AGENT_HANDOFF_PLAN.md §7). Surface that
+    # honestly instead of implying a connection that isn't coming anytime
+    # soon.
+    busy_result = await db.execute(
+        select(func.count()).select_from(Conversation).where(
+            Conversation.tenant_id == tenant.id,
+            Conversation.id != conversation.id,
+            Conversation.is_live == True,
+            Conversation.deleted_at.is_(None),
+        )
+    )
+    if busy_result.scalar_one() > 0:
+        return "owner_busy"
+    return "connecting"
 
 # ── GET /config ──────────────────────────────────────────────────────────────
 
@@ -277,12 +292,15 @@ async def post_widget_message(
 
     quota, usage = await helpers.get_quota_and_usage(tenant.id, db)
     t_quota = time.monotonic()
-    quota_exceeded = (
-        quota is not None
-        and usage is not None
-        and quota.max_questions_per_month != -1
-        and usage.questions_used >= quota.max_questions_per_month
-    )
+    tenant_provider = tenant.preferred_llm_provider or wallet_service.DEFAULT_PROVIDER
+    # Trial-or-wallet gate — replaces the old plan-quota block. See
+    # app/services/wallet_service.py: allowed while still within the
+    # one-time signup trial (default provider only), or once the wallet has
+    # a real balance. May flip tenant.trial_ended_at in place; that's
+    # persisted by this request's own flush below, same as every other
+    # mutation on `conversation`/`tenant` in this handler.
+    gate = await wallet_service.check_can_generate(tenant, tenant_provider, db)
+    generation_blocked = not gate.allowed  # trial exhausted and/or wallet empty — see wallet_service
 
     # Owner's subscription lapsed → degrade to the fallback message (same soft
     # path as quota exhaustion) rather than answering and burning LLM cost.
@@ -295,12 +313,12 @@ async def post_widget_message(
     should_classify = False
     # Already escalated (auto low-confidence handoff, or a future manual
     # "talk to a human" trigger) — a human is expected to answer this, so
-    # the bot must not generate — or get billed quota for — a reply to it.
+    # the bot must not generate — or get billed for — a reply to it.
     # Deliberately keyed off `status`, not `is_live`: status flips to
     # "Handed off" the moment escalation starts, well before an owner may
     # have actively joined, so gating on is_live alone would let the bot
     # keep answering during that gap. Not persisted as a ConversationMessage
-    # (unlike the quota_exceeded reply below) — it's a transient UI
+    # (unlike the generation_blocked reply below) — it's a transient UI
     # acknowledgement, not a real reply, and persisting it on every message
     # sent while waiting would spam the transcript.
     already_handed_off = conversation.status == "Handed off"
@@ -309,25 +327,27 @@ async def post_widget_message(
         reply = "Thanks for the extra detail — a teammate will pick this up and reply here shortly."
         sources, handoff = [], True
         t_docs = t_gen_start = t_gen_done = time.monotonic()
-    elif quota_exceeded:
+    elif generation_blocked:
+        # Same visitor-facing fallback regardless of *why* generation was
+        # blocked (trial ended vs. empty wallet) — never leak billing
+        # internals to a random website visitor. gate.block_reason exists
+        # for logging/ops, not for display.
         reply, sources, handoff = fallback, [], False
         t_docs = t_gen_start = t_gen_done = time.monotonic()
     else:
-        doc_names: dict = {}
-        if behavior.get("showSources", True):
-            docs_result = await db.execute(
-                select(Document.id, Document.original_filename).where(
-                    Document.tenant_id == tenant.id, Document.is_active == True
-                )
+        docs_result = await db.execute(
+            select(Document.id, Document.original_filename).where(
+                Document.tenant_id == tenant.id, Document.is_active == True
             )
-            doc_names = {str(doc_id): name for doc_id, name in docs_result.all()}
+        )
+        doc_names = {str(doc_id): name for doc_id, name in docs_result.all()}
         t_docs = time.monotonic()
 
         try:
             t_gen_start = time.monotonic()
             result = await answer_question(
                 tenant_id=str(tenant.id), query=body.message, config=config, doc_names=doc_names,
-                history=history,
+                history=history, tenant_provider=tenant_provider,
             )
             t_gen_done = time.monotonic()
         except Exception:
@@ -337,6 +357,18 @@ async def post_widget_message(
         else:
             if usage is not None:
                 await helpers.increment_questions_used(tenant.id, db)
+
+            # Wallet/trial bookkeeping — must never be allowed to break the
+            # real chat reply already generated above. See
+            # wallet_service.record_usage: increments the trial counter or
+            # deducts real $, never both, never conditional on balance.
+            try:
+                await wallet_service.record_usage(
+                    tenant_id=tenant.id, conversation_id=conversation.id, call_type="answer",
+                    usage=result.get("usage"), db=db,
+                )
+            except Exception:
+                logger.exception("Failed to record LLM usage for tenant %s", tenant.id)
 
             should_classify = True
             confidence = result.get("confidence")
@@ -476,12 +508,12 @@ async def post_widget_message_stream(
 
     quota, usage = await helpers.get_quota_and_usage(tenant.id, db)
     t_quota = time.monotonic()
-    quota_exceeded = (
-        quota is not None
-        and usage is not None
-        and quota.max_questions_per_month != -1
-        and usage.questions_used >= quota.max_questions_per_month
-    )
+    tenant_provider = tenant.preferred_llm_provider or wallet_service.DEFAULT_PROVIDER
+    # Trial-or-wallet gate — see post_widget_message()'s identical comment
+    # and app/services/wallet_service.py. May flip tenant.trial_ended_at in
+    # place; persisted by this request's own flush below.
+    gate = await wallet_service.check_can_generate(tenant, tenant_provider, db)
+    generation_blocked = not gate.allowed
 
     # Owner's subscription lapsed → degrade to the fallback message (same soft
     # path as quota exhaustion) rather than answering and burning LLM cost.
@@ -492,12 +524,12 @@ async def post_widget_message_stream(
     # See post_widget_message()'s identical comment: already escalated (auto
     # low-confidence handoff, or a future manual "talk to a human" trigger)
     # means a human is expected to answer, so the bot must not generate — or
-    # get billed quota for — a reply. Keyed off `status`, not `is_live`, for
-    # the same reason given there.
+    # get billed for — a reply. Keyed off `status`, not `is_live`, for the
+    # same reason given there.
     already_handed_off = conversation.status == "Handed off"
 
     doc_names: dict = {}
-    if not quota_exceeded and not already_handed_off and behavior.get("showSources", True):
+    if not generation_blocked and not already_handed_off:
         docs_result = await db.execute(
             select(Document.id, Document.original_filename).where(
                 Document.tenant_id == tenant.id, Document.is_active == True
@@ -535,6 +567,7 @@ async def post_widget_message_stream(
         final_text = fallback
         handoff = False
         count_usage = False
+        llm_usage = None
         unresolved_reason = None
         notif_type = None
 
@@ -545,7 +578,9 @@ async def post_widget_message_stream(
                 yield _sse("done", {"reply": ack, "sources": [], "handoff": True, "sessionToken": session_token})
                 final_text = ack
                 handoff = True
-            elif quota_exceeded:
+            elif generation_blocked:
+                # Same visitor-facing fallback regardless of *why* — never
+                # leak billing internals to a random visitor.
                 yield _sse("token", {"text": fallback})
                 yield _sse("done", {"reply": fallback, "sources": [], "handoff": False, "sessionToken": session_token})
             else:
@@ -553,7 +588,7 @@ async def post_widget_message_stream(
                 try:
                     async for ev in answer_question_stream(
                         tenant_id=str(tenant_id), query=message, config=config,
-                        doc_names=doc_names, history=history,
+                        doc_names=doc_names, history=history, tenant_provider=tenant_provider,
                     ):
                         if ev["type"] == "token":
                             streamed_any = True
@@ -562,6 +597,7 @@ async def post_widget_message_stream(
                             final_text = ev["answer"]
                             handoff = ev["handoff"]
                             count_usage = True
+                            llm_usage = ev.get("usage")
                             # Check handoff *before* sources: answer_question_stream()
                             # deliberately blanks sources to [] for a suppressed
                             # low-confidence answer too, not just a genuine "nothing
@@ -622,6 +658,17 @@ async def post_widget_message_stream(
                     )
                 if count_usage:
                     await helpers.increment_questions_used(tenant_id, session)
+                    # Wallet/trial bookkeeping — see post_widget_message()'s
+                    # identical comment. Own try/except so a bug here can
+                    # never take down the real message/notification writes
+                    # it's bundled with in this same session.
+                    try:
+                        await wallet_service.record_usage(
+                            tenant_id=tenant_id, conversation_id=conversation_id, call_type="answer",
+                            usage=llm_usage, db=session,
+                        )
+                    except Exception:
+                        logger.exception("Failed to record LLM usage for tenant %s", tenant_id)
                 if notif_type:
                     await notify_tenant(
                         tenant_id, notif_type,
@@ -721,9 +768,7 @@ async def post_widget_escalate(
     )
 
     return WidgetEscalateResponse(
-        state=_compute_live_state(
-            conversation, tenant, await helpers.is_any_member_online(tenant.id, db)
-        ),
+        state=await _compute_live_state(conversation, tenant, db),
         message=ack_message,
         hasContactInfo=bool(conversation.visitor_email or conversation.visitor_phone),
     )
@@ -758,9 +803,7 @@ async def get_widget_live_status(
     await db.flush()
 
     return WidgetLiveStatusResponse(
-        state=_compute_live_state(
-            conversation, tenant, await helpers.is_any_member_online(tenant.id, db)
-        ),
+        state=await _compute_live_state(conversation, tenant, db),
         hasContactInfo=bool(conversation.visitor_email or conversation.visitor_phone),
     )
 

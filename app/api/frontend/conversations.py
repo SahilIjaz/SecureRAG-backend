@@ -2,6 +2,8 @@
 Frontend-compat conversations endpoints (/api/conversations/...).
 
   - GET    /api/conversations              -> ConversationListItem[]
+  - GET    /api/conversations/live-summary -> {liveCount, waitingCount}  (dashboard
+                                               sidebar badge + list summary strip)
   - GET    /api/conversations/{id}         -> ConversationDetail (with messages)
   - POST   /api/conversations/{id}/reply   -> {message}  (human agent reply; marks it Handed off)
   - POST   /api/conversations/{id}/join    -> ConversationDetail  (owner joins live chat; sets is_live)
@@ -19,7 +21,7 @@ from typing import List, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy import select, update as sa_update
+from sqlalchemy import func, select, update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -32,6 +34,7 @@ from app.models.user import User
 from app.core.rbac import require_owner
 from app.schemas.frontend import (
     FEConversationDetail,
+    FEConversationLiveSummary,
     FEConversationListItem,
     FEConversationMessage,
     FEPurgeMessagesResponse,
@@ -141,6 +144,30 @@ async def list_conversations(
     convos = result.scalars().all()
     name_map = await _member_name_map(current_user.tenant_id, db)
     return [_list_item(c, name_map) for c in convos]
+
+@router.get("/live-summary", response_model=FEConversationLiveSummary)
+async def get_live_summary(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> FEConversationLiveSummary:
+    """One aggregate query so the dashboard (sidebar badge, Conversations list
+    summary strip) can tell how many conversations are simultaneously live
+    (owner actively joined) or waiting (handed off, nobody's joined yet)
+    without opening every conversation to find out — see
+    NexusContext/LIVE_AGENT_HANDOFF_PLAN.md §7. Registered ahead of
+    GET /{conversation_id} below so "live-summary" isn't swallowed by that
+    route's uuid parsing."""
+    result = await db.execute(
+        select(
+            func.count().filter(Conversation.is_live == True),
+            func.count().filter(Conversation.status == "Handed off", Conversation.is_live == False),
+        ).where(
+            Conversation.tenant_id == current_user.tenant_id,
+            Conversation.deleted_at.is_(None),
+        )
+    )
+    live_count, waiting_count = result.one()
+    return FEConversationLiveSummary(liveCount=live_count, waitingCount=waiting_count)
 
 @router.get("/{conversation_id}", response_model=FEConversationDetail)
 async def get_conversation(
