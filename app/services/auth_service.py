@@ -176,6 +176,10 @@ async def register_user(
         is_email_verified=False,
     )
     db.add(user)
+    # Flush so the users row exists before anything references it by FK
+    # (the tenant_users membership below and the OTP row inside
+    # _create_and_send_otp both point at user.id).
+    await db.flush()
     # RBAC: the account creator owns the workspace.
     from app.models.tenant_user import TenantUser, TenantRole
     db.add(TenantUser(tenant_id=tenant_id, user_id=user.id, role=TenantRole.owner))
