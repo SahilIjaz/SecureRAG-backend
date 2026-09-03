@@ -294,13 +294,12 @@ async def _prepare_generation(
         if chunks and top_score < settings.RAG_MIN_RELEVANCE_SCORE:
             chunks = []
 
-    # A low top score means nothing retrieved is actually relevant — Pinecone
-    # always returns its closest top_k matches regardless of how weak they
-    # are, so without this floor an off-topic question still gets 5 chunks
-    # stuffed into the prompt and has to be caught by the LLM's own judgment
-    # (behavior.stayOnTopic) instead of being rejected here, before any LLM
-    # call is made.
-    if not chunks or top_score < settings.RAG_MIN_RELEVANCE_SCORE:
+    # Nothing relevant retrieved → fall back before any LLM call. Both paths
+    # have already applied their own relevance floor above (the hybrid path
+    # inside hybrid_search via RAG_MIN_VECTOR_SCORE + fusion; the pure-vector
+    # path emptied `chunks` when the top cosine score was below
+    # RAG_MIN_RELEVANCE_SCORE), so an empty list here means "no context".
+    if not chunks:
         return [], "", max_tokens, False
 
     # Drop chunks whose document is no longer active — Pinecone deletes can
