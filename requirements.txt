@@ -26,3 +26,4 @@ anthropic>=1.0.0
 google-genai==1.5.0
 tiktoken>=0.8.0
 stripe==11.4.1
+redis>=5.0.0

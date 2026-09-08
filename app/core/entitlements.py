@@ -40,6 +40,9 @@ class Entitlements:
     remove_branding: bool
     lead_capture: bool
     menu: bool
+    # Push-to-talk voice between an agent and a visitor on a live conversation.
+    # Gated with (and above) live_handoff — no point without a live channel.
+    push_to_talk: bool
 
     def quota_dict(self) -> dict:
         """The fields TenantQuota persists, for writing a quota row."""
@@ -66,6 +69,7 @@ PLAN_ENTITLEMENTS: dict[PlanName, Entitlements] = {
         remove_branding=False,
         lead_capture=False,
         menu=False,
+        push_to_talk=False,
     ),
     PlanName.pro: Entitlements(  # "Growth"
         max_documents=150,
@@ -80,6 +84,7 @@ PLAN_ENTITLEMENTS: dict[PlanName, Entitlements] = {
         remove_branding=False,
         lead_capture=True,
         menu=True,
+        push_to_talk=True,
     ),
     PlanName.pro_plus: Entitlements(  # "Business"
         max_documents=1000,
@@ -94,6 +99,7 @@ PLAN_ENTITLEMENTS: dict[PlanName, Entitlements] = {
         remove_branding=True,
         lead_capture=True,
         menu=True,
+        push_to_talk=True,
     ),
 }
 

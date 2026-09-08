@@ -13,6 +13,7 @@ from app.models.revoked_token import RevokedToken
 from app.models.processed_stripe_event import ProcessedStripeEvent
 from app.models.document_chunk import DocumentChunk
 from app.models.tenant_user import TenantUser, TenantRole
+from app.models.ptt_session import PTTSession, PTTStatus
 from app.models.invite import Invite
 from app.models.notification import Notification
 from app.models.wallet_transaction import WalletTransaction
@@ -38,6 +39,8 @@ __all__ = [
     "DocumentChunk",
     "TenantUser",
     "TenantRole",
+    "PTTSession",
+    "PTTStatus",
     "Invite",
     "Notification",
     "WalletTransaction",

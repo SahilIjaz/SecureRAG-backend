@@ -73,7 +73,7 @@ _LENGTH_RULES = {
 # user/bot exchanges — enough for "did we already greet?" and a pronoun
 # follow-up, while adding only a few hundred tokens next to the RAG context
 # chunks already in the prompt.
-_HISTORY_MESSAGE_LIMIT = 8
+_HISTORY_MESSAGE_LIMIT = 4  # last 4 turns is enough context; fewer tokens = faster reply
 _HISTORY_TEXT_CAP = 500  # guard against one huge pasted message
 
 def _format_menu(config: dict | None) -> str:

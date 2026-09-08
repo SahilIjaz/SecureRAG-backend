@@ -6,11 +6,20 @@ is needed — the PINECONE_API_KEY covers both embedding and vector storage.
 
 import asyncio
 import logging
+from collections import OrderedDict
 from typing import List
 
 from app.core.retry import retry_async
 
 logger = logging.getLogger(__name__)
+
+# Small in-process LRU cache for QUERY embeddings. The same or repeated
+# questions (common in a support chatbot) then skip the Pinecone inference
+# round trip entirely, shaving fixed latency off the front of every repeat
+# reply. Bounded so memory stays flat; not shared across workers, which is
+# fine — it's a best-effort speedup, not a correctness requirement.
+_QUERY_EMBED_CACHE_MAX = 512
+_query_embed_cache: "OrderedDict[str, List[float]]" = OrderedDict()
 
 # multilingual-e5-large produces 1024-dim vectors; the Pinecone index must match.
 EMBEDDING_MODEL = "multilingual-e5-large"
@@ -36,10 +45,58 @@ def _embed_batch_blocking(texts: List[str], input_type: str) -> List[List[float]
 async def _embed_batch(texts: List[str], input_type: str) -> List[List[float]]:
     return await retry_async(asyncio.to_thread, _embed_batch_blocking, texts, input_type)
 
+def _redis_key(text: str) -> str:
+    import hashlib
+
+    return "emb:q:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+
 async def embed_text(text: str) -> List[float]:
-    """Embed a search query (input_type='query' — e5 models are asymmetric)."""
+    """Embed a search query (input_type='query' — e5 models are asymmetric).
+
+    Two cache layers, both best-effort: a shared Redis cache (when REDIS_URL is
+    configured — survives restarts, shared across workers) checked first, then
+    an in-process LRU. On a miss both are populated. Any Redis error falls
+    straight through to the LRU / Pinecone path, so caching never breaks a
+    request."""
+    import json
+
+    from app.core.redis_client import get_redis
+    from app.config import settings
+
+    key = text.strip()
+    redis = get_redis()
+
+    # 1) Shared Redis cache.
+    if redis is not None:
+        try:
+            hit = await redis.get(_redis_key(key))
+            if hit:
+                return json.loads(hit)
+        except Exception:
+            pass  # Redis blip → fall through to LRU / Pinecone
+
+    # 2) In-process LRU.
+    cached = _query_embed_cache.get(key)
+    if cached is not None:
+        _query_embed_cache.move_to_end(key)
+        return cached
+
+    # 3) Miss — embed via Pinecone and populate both caches.
     embeddings = await _embed_batch([text], "query")
-    return embeddings[0]
+    vector = embeddings[0]
+
+    _query_embed_cache[key] = vector
+    _query_embed_cache.move_to_end(key)
+    if len(_query_embed_cache) > _QUERY_EMBED_CACHE_MAX:
+        _query_embed_cache.popitem(last=False)
+
+    if redis is not None:
+        try:
+            await redis.set(_redis_key(key), json.dumps(vector), ex=settings.EMBED_CACHE_TTL_SECONDS)
+        except Exception:
+            pass
+
+    return vector
 
 async def embed_chunks(texts: List[str]) -> List[List[float]]:
     """Embed document chunks for indexing (input_type='passage'), batched and

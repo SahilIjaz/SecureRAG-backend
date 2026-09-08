@@ -14,6 +14,7 @@ from sqlalchemy import text
 from app.api.billing_webhook import router as billing_webhook_router
 from app.api.frontend.router import router as frontend_router
 from app.api.public.widget import widget_app
+from app.api.ptt_ws import router as ptt_ws_router
 from app.config import settings
 from app.core import perf_timing
 from app.core.rate_limit import limiter
@@ -197,12 +198,18 @@ async def lifespan(app: FastAPI):
     app.state.release_orphaned_task = asyncio.create_task(release_orphaned_live_chats_loop())
     app.state.live_flag_sweep_task = asyncio.create_task(live_flag_sweep_loop())
 
+    # Optional Redis (shared rate-limit + embedding cache). No-op if unset.
+    from app.core.redis_client import init_redis, close_redis
+    await init_redis()
+
     logger.info(
         "%s API is running (debug=%s)",
         settings.APP_NAME,
         settings.DEBUG,
     )
     yield
+
+    await close_redis()
 
 app = FastAPI(
     title="SecureRAG++ API",
@@ -296,6 +303,10 @@ app.include_router(billing_webhook_router, prefix="/api")
 # since it's embedded on arbitrary customer domains not known ahead of time).
 # The real per-tenant domain allowlist is enforced inside app/api/public/widget.py.
 app.mount("/api/public/widget", widget_app)
+
+# Push-to-talk WebSocket signaling (agent <-> visitor live voice). Native
+# FastAPI WebSocket at /ws/ptt — see app/api/ptt_ws.py.
+app.include_router(ptt_ws_router)
 
 @app.get("/health", tags=["health"], summary="Health check")
 async def health_check() -> dict:

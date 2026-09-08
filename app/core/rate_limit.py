@@ -36,4 +36,10 @@ def _tenant_or_ip_key(request: Request) -> str:
             return f"tenant:{tenant_id}"
     return get_remote_address(request)
 
-limiter = Limiter(key_func=_tenant_or_ip_key)
+# Storage backend: Redis when REDIS_URL is set (so limits are shared across
+# workers and survive restarts), else slowapi's in-memory store (per-process).
+# slowapi/limits reads this URL synchronously at first use — a valid REDIS_URL
+# is all that's needed; no async client required here.
+_STORAGE_URI = settings.REDIS_URL or "memory://"
+
+limiter = Limiter(key_func=_tenant_or_ip_key, storage_uri=_STORAGE_URI)
