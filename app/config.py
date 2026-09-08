@@ -205,9 +205,22 @@ class Settings(BaseSettings):
     # genuine stall, not normal variance.
     GEMINI_REQUEST_TIMEOUT_SECONDS: float = 20.0
 
+    # Redis — optional. When set (e.g. redis://localhost:6379/0), it backs the
+    # rate limiter and the query-embedding cache with shared, restart-surviving
+    # state across workers. When empty, both fall back to per-process in-memory
+    # behaviour, so local dev needs no Redis running.
+    REDIS_URL: str = ""
+    # TTL for a cached query embedding (seconds). 24h by default — the embedding
+    # of a given query never changes, so this only bounds memory growth.
+    EMBED_CACHE_TTL_SECONDS: int = 86400
+
     RAG_CHUNK_SIZE: int = 500
     RAG_CHUNK_OVERLAP: int = 50
-    RAG_SEARCH_TOP_K: int = 5
+    # Chunks fed into the answer prompt. Lowered from 5 to 3: fewer input
+    # tokens means a faster first token and a shorter generation, with little
+    # answer-quality loss for typical questions (the top 3 chunks carry most
+    # of the signal). Raise it back if answers start missing context.
+    RAG_SEARCH_TOP_K: int = 3
     # A widget conversation that has been idle longer than this auto-splits: the
     # next message starts a fresh conversation instead of appending to the old
     # one. Prevents unrelated chats (and, on a shared device, different people)
