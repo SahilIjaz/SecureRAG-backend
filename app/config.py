@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     WIDGET_TENANT_CACHE_TTL_SECONDS: float = 10.0
     APP_NAME: str = "SecureRAG++"
     DEBUG: bool = False
+    # Log every SQL statement SQLAlchemy runs. Off by default — very noisy on startup
+    # (the schema-ensure step alone emits hundreds of lines). Independent of DEBUG.
+    SQL_ECHO: bool = False
 
     SMTP_HOST: str = "smtp.gmail.com"
     SMTP_PORT: int = 587

@@ -17,7 +17,7 @@ _db_url = _build_database_url(settings.DATABASE_URL)
 
 async_engine = create_async_engine(
     _db_url,
-    echo=settings.DEBUG,
+    echo=settings.SQL_ECHO,
     pool_pre_ping=settings.DB_POOL_PRE_PING,
     pool_size=5,
     max_overflow=10,

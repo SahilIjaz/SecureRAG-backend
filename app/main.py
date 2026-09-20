@@ -138,6 +138,9 @@ async def ensure_frontend_schema() -> None:
         "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS wallet_low_balance_warned BOOLEAN NOT NULL DEFAULT FALSE",
         "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS preferred_llm_provider VARCHAR(30)",
         "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS preferred_llm_model VARCHAR(100)",
+        # Voice-call transcripts — see app/services/call_transcript_service.py.
+        "ALTER TABLE ptt_sessions ADD COLUMN IF NOT EXISTS transcript TEXT",
+        "ALTER TABLE ptt_sessions ADD COLUMN IF NOT EXISTS transcript_status VARCHAR(16)",
     ]
     async with async_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
