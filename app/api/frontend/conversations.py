@@ -19,7 +19,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import List, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from pydantic import BaseModel
 from sqlalchemy import func, select, update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,6 +29,7 @@ from app.api.frontend import helpers
 from app.core.background import fire_and_forget
 from app.database import get_db
 from app.models.conversation import Conversation, ConversationMessage
+from app.models.ptt_session import PTTSession
 from app.models.tenant_user import TenantUser
 from app.models.user import User
 from app.core.rbac import require_owner
@@ -44,6 +45,7 @@ from app.schemas.frontend import (
 from app.services.auth_service import get_current_user
 from app.services.conversation_service import purge_old_message_text
 from app.services.notification_service import notify_visitor_of_reply
+from app.services.call_transcript_service import process_call_recording
 
 router = APIRouter(prefix="/conversations", tags=["Frontend — Conversations"])
 
@@ -406,3 +408,81 @@ async def purge_old_messages(
     conversation_service.purge_old_message_text for exactly what qualifies."""
     purged = await purge_old_message_text(current_user.tenant_id, db)
     return FEPurgeMessagesResponse(purged=purged)
+
+
+# ── Voice-call recordings → transcript ───────────────────────────────────────
+
+_MAX_TRACK_BYTES = 60 * 1024 * 1024  # 16 kHz mono WAV ≈ 1.9 MB/min → ~30 min
+
+
+class FECallRecordingAccepted(BaseModel):
+    sessionId: str
+    status: Literal["processing", "skipped"]
+
+
+@router.post(
+    "/{conversation_id}/voice-calls/{session_id}/recording",
+    response_model=FECallRecordingAccepted,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def upload_call_recording(
+    conversation_id: str,
+    session_id: str,
+    agent_audio: UploadFile | None = File(None),
+    visitor_audio: UploadFile | None = File(None),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> FECallRecordingAccepted:
+    """
+    The agent's browser uploads the two recorded tracks of a finished voice
+    call (its own mic + the visitor's audio, same clock). Transcription,
+    posting into the conversation and emailing run in the background — see
+    app/services/call_transcript_service.py. Responds 202 immediately.
+    """
+    convo = await _get_conversation_or_404(conversation_id, current_user, db)
+
+    session = (await db.execute(
+        select(PTTSession).where(
+            PTTSession.session_id == session_id,
+            PTTSession.conversation_id == convo.id,
+        )
+    )).scalar_one_or_none()
+    if session is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Voice call not found.")
+
+    # Only someone who was actually on the call (or an owner/admin) may attach a recording.
+    role = await helpers.role_for(current_user, db)
+    agent_ident = session.initiator_id if session.initiator_kind == "agent" else session.target_id
+    if agent_ident != str(current_user.id) and role not in ("owner", "admin"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You weren't on this call.")
+
+    if session.transcript_status in ("processing", "done"):
+        # Idempotent: a retry of an upload we already have.
+        return FECallRecordingAccepted(sessionId=session_id, status="processing")
+
+    async def _read(upload: UploadFile | None) -> tuple[bytes | None, str]:
+        if upload is None:
+            return None, "audio/wav"
+        data = await upload.read()
+        if len(data) > _MAX_TRACK_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail="Recording is too large.",
+            )
+        return (data or None), (upload.content_type or "audio/wav")
+
+    agent_bytes, agent_mime = await _read(agent_audio)
+    visitor_bytes, visitor_mime = await _read(visitor_audio)
+
+    if not agent_bytes and not visitor_bytes:
+        session.transcript_status = "skipped"
+        await db.flush()
+        return FECallRecordingAccepted(sessionId=session_id, status="skipped")
+
+    session.transcript_status = "pending"
+    await db.flush()
+
+    fire_and_forget(process_call_recording(
+        session_id, agent_bytes, agent_mime, visitor_bytes, visitor_mime,
+    ))
+    return FECallRecordingAccepted(sessionId=session_id, status="processing")

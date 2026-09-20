@@ -71,13 +71,19 @@ class PTTConnectionManager:
     def add(self, conversation_id: str, p: _Participant) -> None:
         self._rooms.setdefault(conversation_id, {})[p.key] = p
 
-    def remove(self, conversation_id: str, key: str) -> None:
+    def remove(self, conversation_id: str, participant: _Participant) -> bool:
+        """Remove *this* participant. Returns False (and does nothing) if the
+        slot is now held by a newer socket of the same kind — e.g. the
+        dashboard reconnected and the old socket's cleanup ran late. Removing
+        by key alone used to evict the new socket, leaving the room agent-less
+        and the visitor wrongly told the agent had left."""
         room = self._rooms.get(conversation_id)
-        if not room:
-            return
-        room.pop(key, None)
+        if not room or room.get(participant.key) is not participant:
+            return False
+        room.pop(participant.key, None)
         if not room:
             self._rooms.pop(conversation_id, None)
+        return True
 
     def other(self, conversation_id: str, me_key: str) -> Optional[_Participant]:
         room = self._rooms.get(conversation_id, {})
@@ -211,13 +217,24 @@ async def ptt_websocket(
             await _handle(conv_id, identity["tenant_id"], participant, msg)
     except WebSocketDisconnect:
         pass
+    except RuntimeError as e:
+        # Starlette raises RuntimeError('WebSocket is not connected…') when a
+        # send to a client that already vanished flipped the socket to
+        # DISCONNECTED before our next receive. It's an ordinary hang-up,
+        # not a bug — don't spam the log with a traceback for it.
+        if "not connected" in str(e):
+            logger.debug("PTT socket closed by peer (conv=%s kind=%s)", conv_id, participant.kind)
+        else:
+            logger.exception("PTT websocket error (conv=%s kind=%s)", conv_id, participant.kind)
     except Exception:
         logger.exception("PTT websocket error (conv=%s kind=%s)", conv_id, participant.kind)
     finally:
-        manager.remove(conv_id, participant.key)
-        peer = manager.other(conv_id, participant.key)
-        if peer is not None:
-            await _send(peer.ws, {"type": "ptt_peer_left"})
+        # Only announce "peer left" if we really vacated the slot — if a newer
+        # socket of ours already took it over, the peer never lost us.
+        if manager.remove(conv_id, participant):
+            peer = manager.other(conv_id, participant.key)
+            if peer is not None:
+                await _send(peer.ws, {"type": "ptt_peer_left"})
 
 
 async def _handle(conv_id: str, tenant_id: str, me: _Participant, msg: dict) -> None:
@@ -226,7 +243,14 @@ async def _handle(conv_id: str, tenant_id: str, me: _Participant, msg: dict) -> 
 
     if mtype == "ptt_request":
         if peer is None:
-            await _send(me.ws, {"type": "ptt_error", "message": "The other person isn't connected."})
+            # Soft failure — the client drops back to "waiting" rather than
+            # treating this as fatal (code is what the client keys on).
+            who = "agent" if me.kind == VISITOR else "visitor"
+            await _send(me.ws, {
+                "type": "ptt_error",
+                "code": "peer_absent",
+                "message": f"The {who} isn't on the chat right now.",
+            })
             return
         session_id = uuid.uuid4().hex
         async with AsyncSessionLocal() as db:
@@ -244,9 +268,18 @@ async def _handle(conv_id: str, tenant_id: str, me: _Participant, msg: dict) -> 
 
     elif mtype == "ptt_accept":
         session_id = msg.get("sessionId")
+        if peer is None:
+            # Caller vanished between ringing and answering — don't leave the
+            # answering side stuck in "connecting".
+            await _set_status(session_id, PTTStatus.failed)
+            who = "agent" if me.kind == VISITOR else "visitor"
+            await _send(me.ws, {
+                "type": "ptt_error", "code": "peer_absent",
+                "message": f"The {who} left before the call connected.",
+            })
+            return
         await _set_status(session_id, PTTStatus.active, started=True)
-        if peer is not None:
-            await _send(peer.ws, {"type": "ptt_accepted", "sessionId": session_id})
+        await _send(peer.ws, {"type": "ptt_accepted", "sessionId": session_id})
         await _send(me.ws, {"type": "ptt_session_started", "sessionId": session_id})
 
     elif mtype == "ptt_reject":

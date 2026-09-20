@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, func
+from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -70,6 +70,13 @@ class PTTSession(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
     )
+
+    # Call transcript — produced after the call from the agent-side recording
+    # (see app/services/call_transcript_service.py). Plain text, one line per
+    # utterance: "<Speaker name>: <what they said>". transcript_status tracks
+    # the async pipeline: pending → processing → done | failed | skipped.
+    transcript: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    transcript_status: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
 
     def __repr__(self) -> str:
         return f"<PTTSession {self.session_id} conv={self.conversation_id} status={self.status}>"
