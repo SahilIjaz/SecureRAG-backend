@@ -29,7 +29,7 @@ from typing import List, Literal, Optional
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, ValidationError
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from sqlalchemy import func, select, update
@@ -857,7 +857,6 @@ class WidgetLeaveRequest(BaseModel):
 @limiter.limit("30/minute", key_func=_widget_key_or_ip)
 async def post_widget_leave(
     request: Request,
-    body: WidgetLeaveRequest,
     db: AsyncSession = Depends(get_db),
 ) -> None:
     """
@@ -871,6 +870,13 @@ async def post_widget_leave(
     besides swallow it — worst case, presence just falls back to the normal
     staleness timeout.
     """
+    # The widget sends this beacon as text/plain (a CORS-simple request, so
+    # no preflight during unload). FastAPI only auto-parses JSON bodies when
+    # Content-Type is application/json, so parse the raw bytes ourselves.
+    try:
+        body = WidgetLeaveRequest.model_validate_json(await request.body())
+    except (ValidationError, ValueError):
+        return
     try:
         tenant, _ = await _resolve_tenant_by_key(body.apiKey, request, db)
     except HTTPException:

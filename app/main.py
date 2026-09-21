@@ -119,6 +119,9 @@ async def ensure_frontend_schema() -> None:
         # so the one-user-per-tenant unique constraint must go. Postgres names a
         # column UNIQUE constraint <table>_<col>_key by default.
         "ALTER TABLE users DROP CONSTRAINT IF EXISTS users_tenant_id_key",
+        # migrations/init.sql names it explicitly, so drop that spelling too —
+        # without this, invited agents fail with a UniqueViolation on insert.
+        "ALTER TABLE users DROP CONSTRAINT IF EXISTS uq_users_tenant_id",
         # Per-user presence (multi-agent): last_seen_at on the membership row.
         "ALTER TABLE tenant_users ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ",
         # Per-user notifications: NULL user_id = whole-tenant (preserves old rows).
