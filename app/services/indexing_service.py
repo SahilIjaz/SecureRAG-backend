@@ -92,7 +92,14 @@ async def _scrape_url_into_document(document_id: uuid.UUID) -> bool:
         quota = quota_result.scalar_one_or_none()
         max_mb = quota.max_file_size_mb if quota else settings.MAX_UPLOAD_SIZE_MB
 
-    pdf_content, page_title = await scrape_website_to_pdf(url, timeout=settings.CRAWL4AI_TIMEOUT)
+    # OCR of on-page images costs a Gemini call per image — only when the
+    # feature is on and the tenant's trial/wallet would allow an LLM call.
+    ocr_allowed = await _ocr_allowed(tenant_id)
+    ocr_usages: list = []
+    pdf_content, page_title = await scrape_website_to_pdf(
+        url, timeout=settings.CRAWL4AI_TIMEOUT, ocr=ocr_allowed, ocr_usages=ocr_usages,
+    )
+    await _record_ocr_usages(tenant_id, ocr_usages)
     file_size_mb = len(pdf_content) / (1024 * 1024)
     # -1 means unlimited (see TenantQuota docstring)
     if max_mb != -1 and file_size_mb > max_mb:
@@ -119,6 +126,52 @@ async def _scrape_url_into_document(document_id: uuid.UUID) -> bool:
         await db.commit()
 
     return True
+
+async def _ocr_allowed(tenant_id) -> bool:
+    """OCR is a paid Gemini call per image/PDF: allowed only when the feature
+    flag is on AND the tenant could make an LLM call right now (inside the
+    signup trial, or with wallet balance) — the same gate as a chat answer,
+    so an empty wallet can't go negative on a page full of pictures."""
+    if not settings.SCRAPE_OCR_ENABLED or not settings.GEMINI_API_KEY:
+        return False
+    from app.models.tenant import Tenant
+    from app.services import wallet_service
+
+    tid = uuid.UUID(str(tenant_id))
+    try:
+        async with AsyncSessionLocal() as db:
+            tenant = await db.get(Tenant, tid)
+            if tenant is None:
+                return False
+            gate = await wallet_service.check_can_generate(tenant, wallet_service.DEFAULT_PROVIDER, db)
+            await db.commit()  # persists a trial_ended_at flip, if any
+            if not gate.allowed:
+                logger.info("OCR skipped for tenant %s: %s", tenant_id, gate.block_reason)
+            return gate.allowed
+    except Exception:
+        logger.exception("Could not evaluate OCR gate for tenant %s; skipping OCR", tenant_id)
+        return False
+
+
+async def _record_ocr_usages(tenant_id, usages: list) -> None:
+    """Bill every OCR call through the wallet (free while the tenant is in
+    trial, otherwise real cost × markup). Own session + own try/except so a
+    billing hiccup never fails the document being indexed."""
+    if not usages:
+        return
+    from app.services import wallet_service
+
+    tid = uuid.UUID(str(tenant_id))
+    try:
+        async with AsyncSessionLocal() as db:
+            for usage in usages:
+                await wallet_service.record_usage(
+                    tenant_id=tid, conversation_id=None, call_type="ocr", usage=usage, db=db,
+                )
+            await db.commit()
+    except Exception:
+        logger.exception("Failed to record %d OCR usage row(s) for tenant %s", len(usages), tenant_id)
+
 
 async def stale_document_sweep_loop() -> None:
     """
@@ -244,6 +297,21 @@ async def _process_document(document_id: uuid.UUID) -> None:
             logger.info("Document %s is not encrypted — using raw bytes", document_id)
 
         text, page_map = await asyncio.to_thread(_extract_text, content, mime_type)
+
+        # A PDF with no text layer (a scan, a photographed brochure) yields
+        # nothing above. Read it with Gemini vision instead — same gate and
+        # billing as image OCR on scraped pages.
+        is_pdf = mime_type == "application/pdf" or content[:5] == b"%PDF-"
+        if not text.strip() and is_pdf and await _ocr_allowed(tenant_id):
+            from app.core.ocr import extract_text_from_pdf
+
+            try:
+                text, usage = await extract_text_from_pdf(content)
+                await _record_ocr_usages(tenant_id, [usage] if usage else [])
+                page_map = []
+                logger.info("OCR transcribed scanned PDF %s: %d chars", document_id, len(text))
+            except Exception as e:
+                logger.warning("Scanned-PDF OCR failed for %s: %s", document_id, e)
 
     if not text.strip():
         raise ValueError("No text could be extracted from the document")

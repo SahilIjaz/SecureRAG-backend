@@ -99,6 +99,23 @@ class Settings(BaseSettings):
     CRAWL4AI_TIMEOUT: int = 30
     CRAWL4AI_MAX_CONTENT_SIZE_MB: int = 50
 
+    # ── OCR for scraped images and scanned PDFs (app/core/ocr.py) ─────────
+    # Text that only exists as pixels (a menu photo, a flyer, a scanned
+    # brochure) is invisible to retrieval without this. Each image/PDF is one
+    # Gemini vision call, billed through the tenant's wallet like any other
+    # LLM usage (free while their signup trial lasts), so the per-page image
+    # cap below is also a cost cap.
+    SCRAPE_OCR_ENABLED: bool = True
+    # Any Gemini model that accepts image + PDF input; the lite model reads
+    # printed text well and is the cheapest option.
+    GEMINI_OCR_MODEL: str = "gemini-flash-lite-latest"
+    SCRAPE_OCR_MAX_IMAGES: int = 12          # per scraped page, highest-relevance first
+    SCRAPE_OCR_MAX_IMAGE_MB: float = 8.0     # skip larger downloads
+    SCRAPE_OCR_MIN_IMAGE_PX: int = 120       # skip icons/tracking pixels (either side smaller)
+    SCRAPE_OCR_TIMEOUT_SECONDS: float = 30.0
+    SCRAPE_OCR_MAX_OUTPUT_TOKENS: int = 2048
+    SCRAPE_OCR_CONCURRENCY: int = 3
+
     CLOUDINARY_CLOUD_NAME: str = ""
     CLOUDINARY_API_KEY: str = ""
     CLOUDINARY_API_SECRET: str = ""
