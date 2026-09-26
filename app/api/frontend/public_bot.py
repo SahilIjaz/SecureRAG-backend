@@ -31,11 +31,24 @@ from app.models.conversation import Conversation, ConversationMessage
 from app.models.document import Document
 from app.models.tenant import Tenant
 from app.schemas.frontend import FEChatbotAppearance, FEChatbotIdentity
+from app.services.classification_service import schedule_classification
+from app.core.widget_auth import (
+    create_widget_session_token,
+    decode_widget_session_token,
+)
+from app.core.subscription_guard import ensure_subscription_active
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/public/bot", tags=["Public — Chatbot"])
 limiter = Limiter(key_func=get_remote_address)
+
+
+def _ip_and_slug(request: Request) -> str:
+    """Rate-limit key combining caller IP and target bot slug, so one IP's
+    budget is per-bot (can't spread abuse across many bots) and one bot can't
+    have its budget exhausted by a single IP for every other visitor."""
+    return f"{get_remote_address(request)}:{request.path_params.get('slug', '')}"
 
 class FEPublicBotResponse(BaseModel):
     identity: FEChatbotIdentity
@@ -44,13 +57,19 @@ class FEPublicBotResponse(BaseModel):
 
 class FEPublicChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=4000)
-    conversationId: Optional[str] = None
+    # Signed session token from a previous reply — NOT a raw conversation id.
+    # A raw client-supplied id would let anyone read/append to another visitor's
+    # conversation by guessing UUIDs; the token binds the caller to exactly one
+    # (tenant, conversation) pair and is tamper-proof.
+    sessionToken: Optional[str] = None
     visitorName: Optional[str] = Field(None, max_length=255)
     visitorEmail: Optional[EmailStr] = None
 
 class FEPublicChatResponse(BaseModel):
     reply: str
-    conversationId: str
+    # Opaque signed token the client must echo back on the next turn to stay in
+    # the same conversation. Replaces the old plaintext conversationId.
+    sessionToken: str
     handoff: bool = False
 
 async def _get_live_bot(slug: str, db: AsyncSession) -> tuple:
@@ -111,7 +130,7 @@ async def get_public_bot(
     )
 
 @router.post("/{slug}/chat", response_model=FEPublicChatResponse)
-@limiter.limit("15/minute")
+@limiter.limit("15/minute", key_func=_ip_and_slug)
 async def public_chat(
     request: Request,
     slug: str,
@@ -124,6 +143,10 @@ async def public_chat(
     behavior = config.get("behavior", {})
     identity = config.get("identity", {})
     fallback = identity.get("fallbackMessage", "I'm not sure about that yet.")
+
+    # Block chat when the owner's subscription has lapsed (flips expired lazily).
+    subscription = await helpers.get_subscription(tenant.id, db)
+    await ensure_subscription_active(subscription, db)
 
     # Monthly quota — visitor messages consume it like any other question.
     quota = await helpers.get_quota(tenant.id, db)
@@ -139,18 +162,27 @@ async def public_chat(
             detail="This chatbot has reached its monthly message limit.",
         )
 
-    # Find or create the visitor's conversation.
+    # Find or create the visitor's conversation. The conversation is resolved
+    # ONLY from a valid signed session token whose tenant matches this bot —
+    # never from a raw client-supplied id. An invalid/expired/foreign token is
+    # treated as "no session" and a fresh conversation is started.
     conversation = None
-    if body.conversationId:
+    payload = decode_widget_session_token(body.sessionToken)
+    if payload and payload.get("tenant_id") == str(tenant.id):
         try:
-            cid = uuid.UUID(body.conversationId)
+            cid = uuid.UUID(payload["conversation_id"])
             result = await db.execute(
                 select(Conversation).where(
                     Conversation.id == cid, Conversation.tenant_id == tenant.id
                 )
             )
             conversation = result.scalar_one_or_none()
-        except ValueError:
+        except (ValueError, KeyError):
+            conversation = None
+        # Auto-split: a resolved conversation starts a fresh one (same rule as
+        # the widget). Idle-based splitting isn't applied here because this
+        # endpoint doesn't eager-load messages; resolution is the common case.
+        if conversation is not None and conversation.status == "Resolved":
             conversation = None
     if conversation is None:
         conversation = Conversation(
@@ -187,7 +219,9 @@ async def public_chat(
         # Still record the failure gracefully for the visitor.
         db.add(ConversationMessage(conversation_id=conversation.id, role="bot", text=fallback))
         await db.flush()
-        return FEPublicChatResponse(reply=fallback, conversationId=str(conversation.id))
+        await db.commit()
+        session_token = create_widget_session_token(str(tenant.id), str(conversation.id))
+        return FEPublicChatResponse(reply=fallback, sessionToken=session_token)
 
     if usage is not None:
         usage.questions_used = (usage.questions_used or 0) + 1
@@ -208,7 +242,13 @@ async def public_chat(
 
     db.add(ConversationMessage(conversation_id=conversation.id, role="bot", text=reply))
     await db.flush()
+    await db.commit()
 
+    # Classify in the background so the dashboard's topic/sentiment/resolution
+    # cards get real data without delaying the visitor's reply.
+    schedule_classification(conversation.id)
+
+    session_token = create_widget_session_token(str(tenant.id), str(conversation.id))
     return FEPublicChatResponse(
-        reply=reply, conversationId=str(conversation.id), handoff=handoff
+        reply=reply, sessionToken=session_token, handoff=handoff
     )

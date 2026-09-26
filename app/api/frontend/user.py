@@ -14,13 +14,13 @@ from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from slowapi import Limiter
-from slowapi.util import get_remote_address
 
 from app.api.frontend import helpers
+from app.core.rate_limit import limiter
 from app.core.security import hash_password, verify_password
 from app.database import get_db
 from app.models.user import User
+from app.services.auth_service import invalidate_user_cache
 from app.schemas.frontend import (
     FEChangePasswordRequest,
     FESaveProfileRequest,
@@ -34,7 +34,6 @@ from app.services.auth_service import get_current_user
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/user", tags=["Frontend — User"])
-limiter = Limiter(key_func=get_remote_address)
 
 MAX_AVATAR_MB = 2
 ALLOWED_AVATAR_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif"}
@@ -77,6 +76,7 @@ async def upload_profile_photo(
 
     current_user.avatar_url = avatar_url
     await db.flush()
+    invalidate_user_cache(current_user.id)
     return FEAvatarUploadResponse(avatarUrl=avatar_url)
 
 async def _profile(user: User, db: AsyncSession) -> FEUserProfile:
@@ -87,7 +87,7 @@ async def _profile(user: User, db: AsyncSession) -> FEUserProfile:
         email=user.email,
         companyName=company,
         avatarUrl=user.avatar_url,
-        role="Owner",
+        role=(await helpers.role_for(user, db)).capitalize(),
     )
 
 @router.get("/me", response_model=FEUser)
@@ -95,18 +95,20 @@ async def get_me(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> FEUser:
-    tenant = await helpers.get_tenant(current_user, db)
-    subscription = await helpers.get_subscription(current_user.tenant_id, db)
+    tenant, subscription = await helpers.get_tenant_and_subscription(current_user, db)
     company = tenant.workspace_name if tenant.workspace_name != "__pending__" else current_user.full_name
     return FEUser(
         id=str(current_user.id),
         email=current_user.email,
         companyName=company,
         onboardingCompleted=helpers.onboarding_completed(subscription),
+        role=await helpers.role_for(current_user, db),
     )
 
 @router.put("/password", response_model=FESuccessResponse)
+@limiter.limit("5/minute")
 async def change_password(
+    request: Request,
     body: FEChangePasswordRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -116,15 +118,24 @@ async def change_password(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="This account uses Google sign-in and has no password.",
         )
-    if not verify_password(body.currentPassword, current_user.password_hash):
+    loop = asyncio.get_event_loop()
+    # Offload bcrypt verify to a thread — it blocks the event loop otherwise
+    # (this endpoint previously verified synchronously).
+    valid = await loop.run_in_executor(
+        None, verify_password, body.currentPassword, current_user.password_hash
+    )
+    if not valid:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Current password is incorrect.",
         )
 
-    loop = asyncio.get_event_loop()
     current_user.password_hash = await loop.run_in_executor(None, hash_password, body.newPassword)
+    # Invalidate every existing session for this user — a password change must
+    # log out other devices.
+    current_user.token_version = (current_user.token_version or 0) + 1
     await db.flush()
+    invalidate_user_cache(current_user.id)
     return FESuccessResponse()
 
 @router.get("/profile", response_model=FEUserProfile)
@@ -161,4 +172,5 @@ async def save_profile(
         tenant.workspace_name = body.companyName.strip()
 
     await db.flush()
+    invalidate_user_cache(current_user.id)
     return FESaveProfileResponse(success=True, profile=await _profile(current_user, db))

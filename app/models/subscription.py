@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import DateTime, Enum, ForeignKey, func
+from sqlalchemy import DateTime, Enum, ForeignKey, String, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -69,11 +69,26 @@ class Subscription(Base):
         DateTime(timezone=True),
         nullable=True,
     )
+    # Set the first time this tenant starts a 3-day trial; once set, they never
+    # get another free trial — a re-checkout charges the card immediately
+    # (see stripe_service.start_trial_subscription).
+    trial_used_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
         nullable=False,
     )
+
+    # Stripe linkage — populated once a real subscription exists (see
+    # app/services/stripe_service.py). stripe_price_id tracks exactly which
+    # Price the subscription is on, independent of plan_name's coarser
+    # free/pro/pro_plus grouping.
+    stripe_customer_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
+    stripe_subscription_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, unique=True, index=True)
+    stripe_price_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
     tenant: Mapped["Tenant"] = relationship(
         "Tenant",

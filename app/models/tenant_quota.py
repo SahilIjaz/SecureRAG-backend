@@ -44,6 +44,9 @@ class TenantQuota(Base):
     max_documents: Mapped[int] = mapped_column(Integer, default=10, nullable=False)
     max_file_size_mb: Mapped[int] = mapped_column(Integer, default=15, nullable=False)
     max_questions_per_month: Mapped[int] = mapped_column(Integer, default=50, nullable=False)
+    # Aggregate storage ceiling in MB across all of a tenant's documents
+    # (-1 = unlimited). Enforced against UsageCount.storage_used_mb on upload.
+    max_storage_mb: Mapped[int] = mapped_column(Integer, default=200, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

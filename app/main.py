@@ -1,24 +1,30 @@
 import logging
+import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
-from slowapi import Limiter
-from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
 from sqlalchemy import text
 
+from app.api.billing_webhook import router as billing_webhook_router
 from app.api.frontend.router import router as frontend_router
-from app.api.v1.router import router as v1_router
+from app.api.public.widget import widget_app
+from app.api.ptt_ws import router as ptt_ws_router
 from app.config import settings
+from app.core import perf_timing
+from app.core.rate_limit import limiter
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s — %(message)s",
 )
 logger = logging.getLogger(__name__)
+perf_logger = logging.getLogger("perf")
 
 async def ensure_frontend_schema() -> None:
     """
@@ -29,8 +35,38 @@ async def ensure_frontend_schema() -> None:
     import app.models  # noqa: F401 — register all models on Base.metadata
     from app.database import Base, async_engine
 
+    # Must run in its own transaction, committed before anything else below
+    # (including create_all) touches the `documentsource` enum — Postgres
+    # will not let a newly-added enum value be read or written until the
+    # ALTER TYPE that added it has actually committed. Keep this separate
+    # from `alter_statements`, which all run inside one shared transaction;
+    # bundling this in there too would make the enum value's availability
+    # depend on that whole batch committing first, which is exactly the
+    # fragile-by-accident ordering this split avoids.
+    #
+    # Only applies to an *existing* database being upgraded — `ALTER TYPE`
+    # requires the type to already exist. On a genuinely fresh database
+    # (nothing created yet), skip it entirely: create_all() below creates
+    # `documentsource` from the Python enum, which already includes 'faq'
+    # as a member, so there's nothing to alter.
+    async with async_engine.begin() as conn:
+        type_exists = await conn.scalar(
+            text("SELECT 1 FROM pg_type WHERE typname = 'documentsource'")
+        )
+        if type_exists:
+            await conn.execute(text("ALTER TYPE documentsource ADD VALUE IF NOT EXISTS 'faq'"))
+
     alter_statements = [
         "ALTER TABLE documents ADD COLUMN IF NOT EXISTS chunk_count INTEGER",
+        "ALTER TABLE documents ADD COLUMN IF NOT EXISTS question TEXT",
+        "ALTER TABLE documents ADD COLUMN IF NOT EXISTS answer TEXT",
+        "ALTER TABLE documents ADD COLUMN IF NOT EXISTS content_hash VARCHAR(64)",
+        "CREATE INDEX IF NOT EXISTS ix_documents_content_hash ON documents (content_hash)",
+        # The Knowledge page's stats/documents/urls/faqs endpoints all filter
+        # on exactly this pair (tenant_id, is_active) — covers the hottest
+        # query on the table instead of scanning the tenant_id index and
+        # filtering is_active row-by-row.
+        "CREATE INDEX IF NOT EXISTS ix_documents_tenant_active ON documents (tenant_id, is_active)",
         "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS has_documents BOOLEAN",
         "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS onboarding_completed_at TIMESTAMPTZ",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT",
@@ -38,11 +74,101 @@ async def ensure_frontend_schema() -> None:
         # business categories ("SaaS", ...) that predate-constraint sets reject.
         "ALTER TABLE tenants DROP CONSTRAINT IF EXISTS tenants_employee_count_range_check",
         "ALTER TABLE tenants DROP CONSTRAINT IF EXISTS tenants_business_category_check",
+        # Public widget lead capture (Behavior tab "collect phone before chat").
+        "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS visitor_phone VARCHAR(32)",
+        # Soft delete — see migrations/add_conversation_soft_delete.sql.
+        "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ",
+        "CREATE INDEX IF NOT EXISTS ix_conversations_deleted_at ON conversations (deleted_at)",
+        # Live-agent-handoff UI flag — see migrations/add_conversation_is_live.sql.
+        "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS is_live BOOLEAN NOT NULL DEFAULT FALSE",
+        # Presence tracking — see migrations/add_tenant_presence.sql.
+        "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS is_owner_online BOOLEAN NOT NULL DEFAULT FALSE",
+        "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ",
+        # Escalation wait timer — see migrations/add_conversation_live_wait.sql.
+        "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS live_wait_started_at TIMESTAMPTZ",
+        # Visitor presence — see migrations/add_conversation_visitor_presence.sql.
+        "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS visitor_last_seen_at TIMESTAMPTZ",
+        # Plan-usage notification dedup — fire the 80%/100% warning once per
+        # billing period_month, not on every message past the threshold.
+        "ALTER TABLE usage_counts ADD COLUMN IF NOT EXISTS warned_80_percent BOOLEAN NOT NULL DEFAULT FALSE",
+        "ALTER TABLE usage_counts ADD COLUMN IF NOT EXISTS warned_100_percent BOOLEAN NOT NULL DEFAULT FALSE",
+        # Citation sources for a bot reply — see app/models/conversation.py.
+        "ALTER TABLE conversation_messages ADD COLUMN IF NOT EXISTS sources JSONB",
+        # Stripe linkage — see app/models/subscription.py.
+        "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS stripe_customer_id VARCHAR(255)",
+        "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS stripe_subscription_id VARCHAR(255)",
+        "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS stripe_price_id VARCHAR(255)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS ix_subscriptions_stripe_subscription_id "
+        "ON subscriptions (stripe_subscription_id)",
+        # One-time trial guard — see app/models/subscription.py.
+        "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS trial_used_at TIMESTAMPTZ",
+        # Per-plan storage ceiling (Phase 3) and hybrid-search chunk store are
+        # created by Base.metadata.create_all; this only patches columns onto
+        # pre-existing tables.
+        "ALTER TABLE tenant_quotas ADD COLUMN IF NOT EXISTS max_storage_mb INTEGER NOT NULL DEFAULT 200",
+        # Session revocation on password change (Phase 2).
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 0",
+        # OTP brute-force lockout (Phase 2).
+        "ALTER TABLE email_verifications ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0",
+        # RBAC: conversation assignee + resolver (Phases 6 / multi-agent). The
+        # tenant_users and invites tables and the tenantrole enum are created by
+        # Base.metadata.create_all above.
+        "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS assigned_user_id UUID REFERENCES users(id) ON DELETE SET NULL",
+        "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS resolved_by_user_id UUID REFERENCES users(id) ON DELETE SET NULL",
+        # Multi-user tenancy: a tenant may now have an owner plus invited agents,
+        # so the one-user-per-tenant unique constraint must go. Postgres names a
+        # column UNIQUE constraint <table>_<col>_key by default.
+        "ALTER TABLE users DROP CONSTRAINT IF EXISTS users_tenant_id_key",
+        # migrations/init.sql names it explicitly, so drop that spelling too —
+        # without this, invited agents fail with a UniqueViolation on insert.
+        "ALTER TABLE users DROP CONSTRAINT IF EXISTS uq_users_tenant_id",
+        # Per-user presence (multi-agent): last_seen_at on the membership row.
+        "ALTER TABLE tenant_users ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ",
+        # Per-user notifications: NULL user_id = whole-tenant (preserves old rows).
+        "ALTER TABLE notifications ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users(id) ON DELETE CASCADE",
+        # Backfill: every existing user is the owner of their tenant, so seed an
+        # owner membership row for any user that doesn't have one yet.
+        "INSERT INTO tenant_users (id, tenant_id, user_id, role) "
+        "SELECT gen_random_uuid(), u.tenant_id, u.id, 'owner' FROM users u "
+        "WHERE NOT EXISTS (SELECT 1 FROM tenant_users tu WHERE tu.user_id = u.id) "
+        "ON CONFLICT DO NOTHING",
+        # Prepaid wallet + one-time signup trial — see
+        # app/services/wallet_service.py and NexusContext plan doc
+        # i-want-to-implement-floofy-hickey.md section C.
+        "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS balance_usd NUMERIC(10,4) NOT NULL DEFAULT 0",
+        "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS trial_messages_used INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS trial_ended_at TIMESTAMPTZ",
+        "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS wallet_low_balance_warned BOOLEAN NOT NULL DEFAULT FALSE",
+        "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS preferred_llm_provider VARCHAR(30)",
+        "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS preferred_llm_model VARCHAR(100)",
+        # Voice-call transcripts — see app/services/call_transcript_service.py.
+        "ALTER TABLE ptt_sessions ADD COLUMN IF NOT EXISTS transcript TEXT",
+        "ALTER TABLE ptt_sessions ADD COLUMN IF NOT EXISTS transcript_status VARCHAR(16)",
     ]
     async with async_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         for stmt in alter_statements:
             await conn.execute(text(stmt))
+
+        # One-time rollout migration credit — see EXISTING_TENANT_MIGRATION_CREDIT_USD's
+        # docstring in config.py for why this is guarded by a fixed cutoff
+        # date (never "now()", which would keep moving forward and wrongly
+        # credit real new signups on every future restart) AND
+        # balance_usd = 0 (so this is a no-op once a tenant is migrated or
+        # has topped up for real — safe to run on every startup).
+        migration_cutoff = datetime.strptime(settings.LLM_BILLING_MIGRATION_CUTOFF, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        await conn.execute(
+            text(
+                "INSERT INTO wallet_transactions (id, tenant_id, type, amount_usd, balance_after, created_at) "
+                "SELECT gen_random_uuid(), id, 'topup', :credit, :credit, now() FROM tenants "
+                "WHERE balance_usd = 0 AND created_at < :cutoff"
+            ),
+            {"credit": settings.EXISTING_TENANT_MIGRATION_CREDIT_USD, "cutoff": migration_cutoff},
+        )
+        await conn.execute(
+            text("UPDATE tenants SET balance_usd = :credit WHERE balance_usd = 0 AND created_at < :cutoff"),
+            {"credit": settings.EXISTING_TENANT_MIGRATION_CREDIT_USD, "cutoff": migration_cutoff},
+        )
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -51,12 +177,45 @@ async def lifespan(app: FastAPI):
         logger.info("Frontend-compat schema is up to date")
     except Exception as e:
         logger.error("Failed to apply frontend-compat schema: %s", e)
+
+    try:
+        from app.services.rag_service import verify_llm_providers
+        await verify_llm_providers()
+    except Exception as e:
+        logger.error("LLM provider reachability check crashed unexpectedly: %s", e)
+
+    import asyncio
+
+    from app.services.indexing_service import stale_document_sweep_loop
+    asyncio.create_task(stale_document_sweep_loop())
+
+    from app.services.notification_service import weekly_summary_loop
+    from app.services.conversation_service import (
+        live_flag_sweep_loop,
+        stale_conversation_sweep_loop,
+        trash_purge_loop,
+        release_orphaned_live_chats_loop,
+    )
+    # Held on app.state so these can't be garbage-collected mid-sleep —
+    # asyncio.create_task() only keeps a weak reference to its result.
+    app.state.weekly_summary_task = asyncio.create_task(weekly_summary_loop())
+    app.state.conversation_sweep_task = asyncio.create_task(stale_conversation_sweep_loop())
+    app.state.trash_purge_task = asyncio.create_task(trash_purge_loop())
+    app.state.release_orphaned_task = asyncio.create_task(release_orphaned_live_chats_loop())
+    app.state.live_flag_sweep_task = asyncio.create_task(live_flag_sweep_loop())
+
+    # Optional Redis (shared rate-limit + embedding cache). No-op if unset.
+    from app.core.redis_client import init_redis, close_redis
+    await init_redis()
+
     logger.info(
         "%s API is running (debug=%s)",
         settings.APP_NAME,
         settings.DEBUG,
     )
     yield
+
+    await close_redis()
 
 app = FastAPI(
     title="SecureRAG++ API",
@@ -67,12 +226,13 @@ app = FastAPI(
         "with per-tenant isolation, quota enforcement, and subscription management."
     ),
     lifespan=lifespan,
-    docs_url="/docs",
-    redoc_url="/redoc",
-    openapi_url="/openapi.json",
+    # Interactive API docs expose the entire schema; only serve them in DEBUG
+    # so they aren't a free recon surface in production.
+    docs_url="/docs" if settings.DEBUG else None,
+    redoc_url="/redoc" if settings.DEBUG else None,
+    openapi_url="/openapi.json" if settings.DEBUG else None,
 )
 
-limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 
 @app.exception_handler(RateLimitExceeded)
@@ -82,19 +242,77 @@ async def rate_limit_handler(request, exc):
         content={"detail": "Rate limit exceeded. Please try again later."}
     )
 
+@app.middleware("http")
+async def perf_timing_middleware(request: Request, call_next):
+    """
+    Temporary latency-audit middleware — logs total wall time per request
+    plus a phase-by-phase breakdown for any endpoint using perf_timing.timed().
+    See app/core/perf_timing.py.
+    """
+    token = perf_timing.start()
+    t0 = time.perf_counter()
+    response = await call_next(request)
+    total_ms = (time.perf_counter() - t0) * 1000
+    segments = perf_timing.finish(token)
+    if segments:
+        accounted_ms = sum(ms for _, ms in segments)
+        breakdown = " | ".join(f"{label}={ms}ms" for label, ms in segments)
+        perf_logger.info(
+            "%s %s -> %s total=%.2fms accounted=%.2fms unaccounted=%.2fms | %s",
+            request.method, request.url.path, response.status_code,
+            total_ms, accounted_ms, total_ms - accounted_ms, breakdown,
+        )
+    else:
+        perf_logger.info(
+            "%s %s -> %s total=%.2fms",
+            request.method, request.url.path, response.status_code, total_ms,
+        )
+    response.headers["X-Process-Time-Ms"] = f"{total_ms:.2f}"
+    return response
+
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    """Baseline security response headers. Conservative set that's safe for a
+    JSON API (no CSP, which is the frontend's concern) — prevents MIME sniffing,
+    clickjacking, and referrer leakage, and asks browsers to stick to HTTPS."""
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    if not settings.DEBUG:
+        response.headers.setdefault(
+            "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+        )
+    return response
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173", "http://localhost:5174", "http://localhost:5175", "http://localhost:3000", ],
+    allow_origins=settings.cors_allowed_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_headers=["Authorization", "Content-Type", "X-Widget-Key"],
     max_age=3600, )
 
-app.include_router(v1_router, prefix="/api/v1")
+# Compresses JSON responses over ~1KB (dashboard widget payloads, wallet
+# transaction lists, etc.) — previously every response went over the wire
+# uncompressed regardless of size.
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # Frontend-compat API — paths/shapes match Nexus-frontend/src/api/*.api.ts.
 app.include_router(frontend_router, prefix="/api")
+
+# Stripe webhook — unauthenticated (verified via signature, not a JWT), so it
+# is mounted directly rather than going through frontend_router's Depends.
+app.include_router(billing_webhook_router, prefix="/api")
+
+# Public widget API — mounted as its own sub-app (own CORS: allow_origins=["*"],
+# since it's embedded on arbitrary customer domains not known ahead of time).
+# The real per-tenant domain allowlist is enforced inside app/api/public/widget.py.
+app.mount("/api/public/widget", widget_app)
+
+# Push-to-talk WebSocket signaling (agent <-> visitor live voice). Native
+# FastAPI WebSocket at /ws/ptt — see app/api/ptt_ws.py.
+app.include_router(ptt_ws_router)
 
 @app.get("/health", tags=["health"], summary="Health check")
 async def health_check() -> dict:

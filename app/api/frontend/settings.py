@@ -4,43 +4,66 @@ Frontend-compat settings endpoints (/api/settings/...).
   Workspace:      GET/PUT/DELETE /api/settings/workspace
   Notifications:  GET/PUT        /api/settings/notifications   (PUT takes a partial patch)
   Billing:        GET            /api/settings/billing
+                  POST           /api/settings/billing/checkout        (returns Stripe SetupIntent clientSecret)
                   POST           /api/settings/billing/cancel
-                  PUT            /api/settings/billing/plan
-                  PUT            /api/settings/billing/payment-method
+                  PUT            /api/settings/billing/plan             (existing subscription only — no card)
+                  POST           /api/settings/billing/payment-method/setup-intent
   API keys:       GET/POST       /api/settings/api-keys
                   DELETE         /api/settings/api-keys/{id}
 """
 
 import asyncio
 import uuid
+from datetime import datetime, timedelta, timezone
 from typing import List
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+
+from app.core.rate_limit import limiter
+from app.core.rbac import require_owner
+from sqlalchemy import func, select, update as _sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.frontend import helpers
+from app.config import settings
 from app.core.security import hash_password
 from app.database import get_db
-from app.models.subscription import BillingCycle, PlanName, SubscriptionStatus
+from app.models.subscription import SubscriptionStatus
 from app.models.tenant import Tenant
+from app.models.conversation import Conversation
+from app.models.invite import Invite
 from app.models.tenant_settings import ApiKey, NotificationSetting, PaymentMethod
+from app.models.tenant_user import TenantRole, TenantUser
 from app.models.user import User
+from app.services import team_service
+from app.services.auth_service import invalidate_user_cache
 from app.schemas.frontend import (
     FEApiKey,
     FEBillingInfo,
+    FECheckoutRequest,
+    FECheckoutResponse,
     FEChangePlanRequest,
+    FEAcceptInviteRequest,
     FECreateApiKeyRequest,
     FECreateApiKeyResponse,
+    FEInviteRequest,
+    FEMember,
+    FEPendingInvite,
+    FETeamRoster,
     FENotificationSettings,
     FENotificationSettingsPatch,
     FEPaymentMethod,
     FESaveWorkspaceSettingsResponse,
+    FESetupIntentResponse,
     FESuccessResponse,
-    FEUpdatePaymentMethodRequest,
+    FEWalletTopupRequest,
+    FEWalletTopupResponse,
+    FEWalletTransaction,
+    FEWalletTransactionsResponse,
     FEWorkspaceSettings,
 )
-from app.services.auth_service import PLAN_QUOTAS, _slugify, get_current_user
+from app.services import stripe_service
+from app.services.auth_service import _slugify, get_current_user
 
 router = APIRouter(prefix="/settings", tags=["Frontend — Settings"])
 
@@ -91,7 +114,7 @@ async def save_workspace(
 
 @router.delete("/workspace", response_model=FESuccessResponse)
 async def delete_workspace(
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_owner),
     db: AsyncSession = Depends(get_db),
 ) -> FESuccessResponse:
     """Soft-delete: deactivates the tenant and the user so every later request is rejected."""
@@ -99,6 +122,7 @@ async def delete_workspace(
     tenant.is_active = False
     current_user.is_active = False
     await db.flush()
+    invalidate_user_cache(current_user.id)
     return FESuccessResponse()
 
 # ── Notifications ─────────────────────────────────────────────────────────────
@@ -153,6 +177,13 @@ async def update_notifications(
 
 # ── Billing ───────────────────────────────────────────────────────────────────
 
+_FE_STATUS: dict[SubscriptionStatus, str] = {
+    SubscriptionStatus.active: "Active",
+    SubscriptionStatus.trial: "Trialing",
+    SubscriptionStatus.cancelled: "Canceled",
+    SubscriptionStatus.expired: "Canceled",
+}
+
 async def _get_or_create_payment_method(user: User, db: AsyncSession) -> PaymentMethod:
     result = await db.execute(
         select(PaymentMethod).where(PaymentMethod.tenant_id == user.tenant_id)
@@ -169,13 +200,25 @@ async def _billing_info(user: User, db: AsyncSession) -> FEBillingInfo:
     payment = await _get_or_create_payment_method(user, db)
     fe_plan = helpers.fe_plan_for_subscription(subscription)
 
-    fe_status = "Active"
-    if subscription is not None and subscription.status == SubscriptionStatus.cancelled:
-        fe_status = "Canceled"
+    fe_status = _FE_STATUS.get(subscription.status, "Active") if subscription else "Active"
 
     renews_on = helpers.first_of_next_month()
     if subscription is not None and subscription.expires_at is not None:
         renews_on = subscription.expires_at
+
+    trial_ends_on = None
+    if subscription is not None and subscription.status == SubscriptionStatus.trial and subscription.expires_at:
+        trial_ends_on = helpers.format_date(subscription.expires_at)
+
+    # Prepaid wallet + signup trial — separate concept from the plan
+    # subscription above. See app/services/wallet_service.py.
+    tenant = await helpers.get_tenant(user, db)
+    trial_messages_remaining = None
+    trial_days_remaining = None
+    if tenant.trial_ended_at is None:
+        trial_messages_remaining = max(0, settings.TRIAL_MESSAGE_LIMIT - (tenant.trial_messages_used or 0))
+        days_elapsed = (helpers._utcnow() - helpers._as_aware(tenant.created_at)).days
+        trial_days_remaining = max(0, settings.TRIAL_DURATION_DAYS - days_elapsed)
 
     return FEBillingInfo(
         planId=fe_plan,
@@ -183,6 +226,10 @@ async def _billing_info(user: User, db: AsyncSession) -> FEBillingInfo:
         priceLabel=helpers.PLAN_PRICE_LABELS[fe_plan],
         renewsOn=helpers.format_date(renews_on),
         paymentMethod=FEPaymentMethod(brand=payment.brand, last4=payment.last4, expiry=payment.expiry),
+        trialEndsOn=trial_ends_on,
+        walletBalanceUsd=float(tenant.balance_usd or 0),
+        trialMessagesRemaining=trial_messages_remaining,
+        trialDaysRemaining=trial_days_remaining,
     )
 
 @router.get("/billing", response_model=FEBillingInfo)
@@ -192,54 +239,138 @@ async def get_billing(
 ) -> FEBillingInfo:
     return await _billing_info(current_user, db)
 
-@router.post("/billing/cancel", response_model=FEBillingInfo)
-async def cancel_plan(
-    current_user: User = Depends(get_current_user),
+@router.post("/billing/checkout", response_model=FECheckoutResponse)
+@limiter.limit("10/minute")
+async def start_checkout(
+    request: Request,
+    body: FECheckoutRequest,
+    current_user: User = Depends(require_owner),
     db: AsyncSession = Depends(get_db),
-) -> FEBillingInfo:
-    subscription = await helpers.get_subscription(current_user.tenant_id, db)
-    if subscription is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No subscription found.")
-    subscription.status = SubscriptionStatus.cancelled
-    await db.flush()
-    return await _billing_info(current_user, db)
-
-@router.put("/billing/plan", response_model=FEBillingInfo)
-async def change_plan(
-    body: FEChangePlanRequest,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-) -> FEBillingInfo:
+) -> FECheckoutResponse:
+    """Starts (or restarts) a 3-day trial on the chosen plan and returns a
+    SetupIntent client secret for the frontend to collect the card via
+    Stripe Elements. The local Subscription row is only updated with the
+    Stripe IDs here — plan/status/quota land once the webhook confirms the
+    trial actually started."""
+    tenant = await helpers.get_tenant(current_user, db)
     subscription = await helpers.get_subscription(current_user.tenant_id, db)
     if subscription is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No subscription found.")
 
     plan_name = helpers.FE_TO_BE_PLAN[body.planId]
-    subscription.plan_name = plan_name
-    subscription.billing_cycle = None if plan_name == PlanName.free else BillingCycle.monthly
-    subscription.status = SubscriptionStatus.active
+    client_secret = await stripe_service.start_trial_subscription(
+        tenant, current_user, subscription, plan_name, db
+    )
+    return FECheckoutResponse(clientSecret=client_secret)
 
-    quota = await helpers.get_quota(current_user.tenant_id, db)
-    quotas = PLAN_QUOTAS[plan_name]
-    if quota is not None:
-        quota.max_documents = quotas["max_documents"]
-        quota.max_file_size_mb = quotas["max_file_size_mb"]
-        quota.max_questions_per_month = quotas["max_questions_per_month"]
-
-    await db.flush()
-    return await _billing_info(current_user, db)
-
-@router.put("/billing/payment-method", response_model=FEBillingInfo)
-async def update_payment_method(
-    body: FEUpdatePaymentMethodRequest,
-    current_user: User = Depends(get_current_user),
+@router.post("/billing/cancel", response_model=FEBillingInfo)
+async def cancel_plan(
+    current_user: User = Depends(require_owner),
     db: AsyncSession = Depends(get_db),
 ) -> FEBillingInfo:
-    payment = await _get_or_create_payment_method(current_user, db)
-    payment.last4 = body.last4
-    payment.expiry = body.expiry
-    await db.flush()
+    subscription = await helpers.get_subscription(current_user.tenant_id, db)
+    if subscription is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No subscription found.")
+    await stripe_service.cancel_subscription(subscription, db)
     return await _billing_info(current_user, db)
+
+@router.put("/billing/plan", response_model=FEBillingInfo)
+async def change_plan(
+    body: FEChangePlanRequest,
+    current_user: User = Depends(require_owner),
+    db: AsyncSession = Depends(get_db),
+) -> FEBillingInfo:
+    subscription = await helpers.get_subscription(current_user.tenant_id, db)
+    if subscription is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No subscription found.")
+    if not subscription.stripe_subscription_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="No active subscription to change — start checkout first.",
+        )
+
+    plan_name = helpers.FE_TO_BE_PLAN[body.planId]
+    await stripe_service.change_subscription_plan(subscription, plan_name, db)
+    return await _billing_info(current_user, db)
+
+@router.post("/billing/payment-method/setup-intent", response_model=FESetupIntentResponse)
+async def create_payment_method_setup_intent(
+    current_user: User = Depends(require_owner),
+    db: AsyncSession = Depends(get_db),
+) -> FESetupIntentResponse:
+    """Returns a SetupIntent client secret for updating the card on file.
+    The actual brand/last4/expiry update happens via the
+    setup_intent.succeeded webhook once Stripe confirms the new card."""
+    subscription = await helpers.get_subscription(current_user.tenant_id, db)
+    if subscription is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No subscription found.")
+    try:
+        client_secret = await stripe_service.create_card_update_setup_intent(subscription)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+    return FESetupIntentResponse(clientSecret=client_secret)
+
+@router.post("/billing/wallet/topup", response_model=FEWalletTopupResponse)
+async def start_wallet_topup(
+    body: FEWalletTopupRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> FEWalletTopupResponse:
+    """Creates a one-time Stripe Checkout Session that credits
+    Tenant.balance_usd on completion — separate from the subscription
+    checkout above. See stripe_service.create_wallet_topup_checkout_session
+    and billing_webhook.py's checkout.session.completed handler."""
+    tenant = await helpers.get_tenant(current_user, db)
+    frontend_url = settings.FRONTEND_URL.rstrip("/")
+    try:
+        checkout_url = await stripe_service.create_wallet_topup_checkout_session(
+            tenant, current_user, body.amountUsd,
+            success_url=f"{frontend_url}/dashboard/settings?tab=billing&topup=success",
+            cancel_url=f"{frontend_url}/dashboard/settings?tab=billing&topup=cancelled",
+            db=db,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    return FEWalletTopupResponse(checkoutUrl=checkout_url)
+
+_WALLET_TRANSACTIONS_PAGE_SIZE = 10
+
+@router.get("/billing/wallet/transactions", response_model=FEWalletTransactionsResponse)
+async def get_wallet_transactions(
+    page: int = Query(1, ge=1),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> FEWalletTransactionsResponse:
+    """Paginated wallet ledger entries — top-ups and deductions — for the
+    Billing tab's transaction history list, 10 per page (1-indexed)."""
+    from app.models.wallet_transaction import WalletTransaction
+
+    total = await db.scalar(
+        select(func.count()).select_from(WalletTransaction)
+        .where(WalletTransaction.tenant_id == current_user.tenant_id)
+    ) or 0
+
+    result = await db.execute(
+        select(WalletTransaction)
+        .where(WalletTransaction.tenant_id == current_user.tenant_id)
+        .order_by(WalletTransaction.created_at.desc())
+        .offset((page - 1) * _WALLET_TRANSACTIONS_PAGE_SIZE)
+        .limit(_WALLET_TRANSACTIONS_PAGE_SIZE)
+    )
+    rows = result.scalars().all()
+    return FEWalletTransactionsResponse(
+        transactions=[
+            FEWalletTransaction(
+                id=str(t.id), type=t.type, amountUsd=float(t.amount_usd),
+                balanceAfterUsd=float(t.balance_after) if t.balance_after is not None else None,
+                createdAt=helpers._as_aware(t.created_at).isoformat(),
+            )
+            for t in rows
+        ],
+        total=total,
+        page=page,
+        pageSize=_WALLET_TRANSACTIONS_PAGE_SIZE,
+    )
 
 # ── API keys ──────────────────────────────────────────────────────────────────
 
@@ -264,9 +395,11 @@ async def list_api_keys(
     ]
 
 @router.post("/api-keys", response_model=FECreateApiKeyResponse, status_code=status.HTTP_201_CREATED)
+@limiter.limit("10/minute")
 async def create_api_key(
+    request: Request,
     body: FECreateApiKeyRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_owner),
     db: AsyncSession = Depends(get_db),
 ) -> FECreateApiKeyResponse:
     raw_key = helpers.generate_workspace_api_key()
@@ -296,7 +429,7 @@ async def create_api_key(
 @router.delete("/api-keys/{key_id}", response_model=FESuccessResponse)
 async def revoke_api_key(
     key_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_owner),
     db: AsyncSession = Depends(get_db),
 ) -> FESuccessResponse:
     try:
@@ -312,5 +445,143 @@ async def revoke_api_key(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="API key not found.")
 
     record.is_revoked = True
+    await db.flush()
+    return FESuccessResponse()
+
+# ── Team / RBAC ───────────────────────────────────────────────────────────────
+
+def _member_is_online(last_seen_at) -> bool:
+    if last_seen_at is None:
+        return False
+    seen = last_seen_at if last_seen_at.tzinfo else last_seen_at.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - seen) < timedelta(
+        seconds=settings.PRESENCE_ONLINE_WINDOW_SECONDS
+    )
+
+@router.get("/members", response_model=FETeamRoster)
+async def list_members(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> FETeamRoster:
+    """The workspace's team: members (with role + online state) and pending
+    invites, plus the plan's agent quota. Readable by any member."""
+    rows = await db.execute(
+        select(TenantUser.role, TenantUser.last_seen_at, User.id, User.full_name, User.email)
+        .join(User, User.id == TenantUser.user_id)
+        .where(TenantUser.tenant_id == current_user.tenant_id)
+    )
+    members = [
+        FEMember(
+            id=str(uid), name=name or "", email=email, role=role.value,
+            online=_member_is_online(last_seen),
+        )
+        for role, last_seen, uid, name, email in rows.all()
+    ]
+    if not members:
+        # Pre-backfill fallback: treat the caller as owner.
+        members = [FEMember(
+            id=str(current_user.id), name=current_user.full_name or "",
+            email=current_user.email, role="owner", online=True,
+        )]
+
+    invite_rows = await db.execute(
+        select(Invite).where(
+            Invite.tenant_id == current_user.tenant_id,
+            Invite.accepted_at.is_(None),
+            Invite.revoked_at.is_(None),
+        ).order_by(Invite.created_at.desc())
+    )
+    pending = [
+        FEPendingInvite(
+            id=str(inv.id), email=inv.email, role=inv.role.value,
+            invitedLabel=helpers.time_ago(inv.created_at),
+        )
+        for inv in invite_rows.scalars().all()
+    ]
+
+    ent = await team_service._entitlements_for_tenant(current_user.tenant_id, db)
+    agents_used = await team_service.count_active_agents(current_user.tenant_id, db)
+    return FETeamRoster(
+        members=members, pendingInvites=pending,
+        agentsUsed=agents_used, agentsLimit=ent.max_agents,
+    )
+
+@router.post("/members/invite", response_model=FEPendingInvite, status_code=status.HTTP_201_CREATED)
+@limiter.limit("3/minute")
+async def invite_member(
+    request: Request,
+    body: FEInviteRequest,
+    current_user: User = Depends(require_owner),
+    db: AsyncSession = Depends(get_db),
+) -> FEPendingInvite:
+    await team_service.create_invite(
+        current_user.tenant_id, str(body.email), current_user.id, db
+    )
+    # Return the freshly-created pending invite for the UI.
+    result = await db.execute(
+        select(Invite).where(
+            Invite.tenant_id == current_user.tenant_id,
+            Invite.email == str(body.email).lower().strip(),
+            Invite.accepted_at.is_(None),
+            Invite.revoked_at.is_(None),
+        ).order_by(Invite.created_at.desc())
+    )
+    inv = result.scalars().first()
+    return FEPendingInvite(
+        id=str(inv.id), email=inv.email, role=inv.role.value,
+        invitedLabel=helpers.time_ago(inv.created_at),
+    )
+
+@router.delete("/members/invites/{invite_id}", response_model=FESuccessResponse)
+async def revoke_member_invite(
+    invite_id: str,
+    current_user: User = Depends(require_owner),
+    db: AsyncSession = Depends(get_db),
+) -> FESuccessResponse:
+    try:
+        iid = uuid.UUID(invite_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invite not found.")
+    await team_service.revoke_invite(iid, current_user.tenant_id, db)
+    return FESuccessResponse()
+
+@router.delete("/members/{user_id}", response_model=FESuccessResponse)
+async def remove_member(
+    user_id: str,
+    current_user: User = Depends(require_owner),
+    db: AsyncSession = Depends(get_db),
+) -> FESuccessResponse:
+    """Remove an agent from the workspace. Owners can't remove themselves here."""
+    try:
+        uid = uuid.UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Member not found.")
+    if uid == current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You can't remove yourself.",
+        )
+    membership = await db.execute(
+        select(TenantUser).where(
+            TenantUser.tenant_id == current_user.tenant_id, TenantUser.user_id == uid
+        )
+    )
+    tu = membership.scalar_one_or_none()
+    if tu is None or tu.role == TenantRole.owner:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Member not found.")
+
+    member = await db.execute(select(User).where(User.id == uid))
+    member_user = member.scalar_one_or_none()
+    if member_user is not None:
+        # Kill their sessions immediately and free any chats they were handling.
+        member_user.token_version = (member_user.token_version or 0) + 1
+        member_user.is_active = False
+        invalidate_user_cache(member_user.id)
+    await db.execute(
+        _sa_update(Conversation)
+        .where(Conversation.assigned_user_id == uid)
+        .values(assigned_user_id=None, is_live=False)
+    )
+    await db.delete(tu)
     await db.flush()
     return FESuccessResponse()

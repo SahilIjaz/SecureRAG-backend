@@ -9,6 +9,8 @@ than the original /api/v1/auth routes:
       (used by BOTH the signup flow and the forgot-password flow)
   - POST /api/auth/forgot-password {email} -> {success}
   - POST /api/auth/reset-password {email, otp, newPassword} -> {success}
+  - POST /api/auth/google {idToken} -> {success, token, user}
+  - POST /api/auth/logout {} -> {success}  (Bearer token required)
 
 The frontend stores exactly ONE token (`res.token`) and sends it as the
 Bearer token for every later call — so these routes always issue a real
@@ -16,26 +18,35 @@ ACCESS token, never the short-lived onboarding token from the v1 flow.
 """
 
 import asyncio
+import secrets
+import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from google.auth.transport import requests as google_requests
+from google.oauth2 import id_token as google_id_token
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from slowapi import Limiter
-from slowapi.util import get_remote_address
 
 from app.api.frontend import helpers
+from app.config import settings
+from app.core import perf_timing
+from app.core.rate_limit import limiter
 from app.core.security import create_access_token, hash_password, verify_otp, verify_password
 from app.database import get_db
 from app.models.email_verification import EmailVerification, OTPPurpose
-from app.models.user import User
+from app.models.tenant import Tenant
+from app.models.user import AuthProvider, User
 from app.schemas.frontend import (
     FEForgotPasswordRequest,
+    FEGoogleLoginRequest,
     FELoginRequest,
+    FEAcceptInviteRequest,
     FELoginResponse,
     FEOtpVerifyRequest,
     FEOtpVerifyResponse,
+    FEResendOtpRequest,
     FEResetPasswordRequest,
     FESignupRequest,
     FESignupResponse,
@@ -45,17 +56,21 @@ from app.schemas.frontend import (
 from app.services import auth_service
 
 router = APIRouter(prefix="/auth", tags=["Frontend — Auth"])
-limiter = Limiter(key_func=get_remote_address)
+
+# A fixed bcrypt hash (of a random unknowable string) used to spend the same
+# CPU verifying a password when the email doesn't exist, so login timing can't
+# be used to enumerate registered emails. Never matches any real password.
+_DUMMY_PASSWORD_HASH = hash_password(secrets.token_urlsafe(32))
 
 async def _fe_user(user: User, db: AsyncSession) -> FEUser:
-    tenant = await helpers.get_tenant(user, db)
-    subscription = await helpers.get_subscription(user.tenant_id, db)
+    tenant, subscription = await helpers.get_tenant_and_subscription(user, db)
     company = tenant.workspace_name if tenant.workspace_name != "__pending__" else user.full_name
     return FEUser(
         id=str(user.id),
         email=user.email,
         companyName=company,
         onboardingCompleted=helpers.onboarding_completed(subscription),
+        role=await helpers.role_for(user, db),
     )
 
 @router.post("/signup", response_model=FESignupResponse, status_code=status.HTTP_201_CREATED)
@@ -80,20 +95,136 @@ async def login(
     body: FELoginRequest,
     db: AsyncSession = Depends(get_db),
 ) -> FELoginResponse:
-    result = await db.execute(select(User).where(User.email == body.email.lower().strip()))
-    user = result.scalar_one_or_none()
+    with perf_timing.timed("db_lookup_user"):
+        result = await db.execute(select(User).where(User.email == body.email.lower().strip()))
+        user = result.scalar_one_or_none()
 
-    if user is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No account found with this email address.")
+    # Anti-enumeration: an unknown email and a wrong password must be
+    # indistinguishable — same status, same message, and the same ~100ms bcrypt
+    # cost (verify against a dummy hash when the user doesn't exist) so timing
+    # can't reveal which emails are registered.
+    invalid_credentials = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid email or password.",
+    )
+    password_hash = user.password_hash if user is not None else _DUMMY_PASSWORD_HASH
+    with perf_timing.timed("bcrypt_verify_password"):
+        password_ok = bool(password_hash) and await asyncio.get_event_loop().run_in_executor(
+            None, verify_password, body.password, password_hash
+        )
+    if user is None or not password_ok:
+        raise invalid_credentials
+
+    # Beyond this point the credentials are valid, so surfacing account state
+    # no longer leaks whether the email exists.
     if not user.is_email_verified:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Email not verified. Please verify your email first.")
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is deactivated.")
-    if not user.password_hash or not verify_password(body.password, user.password_hash):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password.")
 
-    token = create_access_token({"sub": str(user.id)})
+    with perf_timing.timed("create_access_token"):
+        token = create_access_token({"sub": str(user.id), "tenant_id": str(user.tenant_id), "tv": user.token_version})
+    with perf_timing.timed("build_fe_user"):
+        fe_user = await _fe_user(user, db)
+    return FELoginResponse(success=True, token=token, user=fe_user)
+
+@router.post("/google", response_model=FELoginResponse)
+@limiter.limit("10/minute")
+async def google_login(
+    request: Request,
+    body: FEGoogleLoginRequest,
+    db: AsyncSession = Depends(get_db),
+) -> FELoginResponse:
+    """
+    Verify a Google ID token (from Google Identity Services on the frontend)
+    and sign the user in, linking or creating an account as needed. Unlike
+    the v1 /auth/social/google route, this always returns a real access
+    token — new users land in /onboarding with a working session, same as
+    the email/OTP signup path (see FEOtpVerifyResponse).
+    """
+    try:
+        idinfo = google_id_token.verify_oauth2_token(
+            body.idToken, google_requests.Request(), settings.GOOGLE_CLIENT_ID
+        )
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid Google sign-in token.")
+
+    google_uid: str = idinfo["sub"]
+    email: str = idinfo.get("email", "").lower().strip()
+    full_name: str = idinfo.get("name") or (email.split("@")[0] if email else "")
+
+    if not email:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Google account has no email address.")
+    if not idinfo.get("email_verified"):
+        # Google itself is telling us it can't vouch that this token's holder
+        # actually owns `email` (e.g. an unverified address on the Google
+        # account). Trusting it anyway would let someone sign in as, and
+        # auto-link/take over, an existing password account for an email
+        # they don't control — reject before any account lookup happens.
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Google has not verified this email address yet. Please verify it with Google, or sign in with your password instead.",
+        )
+
+    result = await db.execute(select(User).where(User.email == email))
+    user = result.scalar_one_or_none()
+
+    if user is not None:
+        if not user.is_active:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is deactivated.")
+        if user.auth_provider == AuthProvider.email:
+            # Same email already has a password account — link it to Google
+            # rather than erroring, so "already exists" never blocks sign-in.
+            user.auth_provider = AuthProvider.google
+            user.provider_uid = google_uid
+            user.is_email_verified = True
+            await db.flush()
+    else:
+        placeholder_tenant = Tenant(workspace_name="__pending__", slug=f"pending-{uuid.uuid4().hex[:8]}")
+        db.add(placeholder_tenant)
+        await db.flush()
+
+        user = User(
+            tenant_id=placeholder_tenant.id,
+            full_name=full_name,
+            email=email,
+            password_hash=None,
+            auth_provider=AuthProvider.google,
+            provider_uid=google_uid,
+            is_email_verified=True,
+        )
+        db.add(user)
+        await db.flush()
+        # RBAC: the account creator owns the workspace.
+        from app.models.tenant_user import TenantUser, TenantRole
+        db.add(TenantUser(tenant_id=placeholder_tenant.id, user_id=user.id, role=TenantRole.owner))
+        await db.flush()
+
+    token = create_access_token({"sub": str(user.id), "tenant_id": str(user.tenant_id), "tv": user.token_version})
     return FELoginResponse(success=True, token=token, user=await _fe_user(user, db))
+
+async def _verify_otp_async(plain_otp: str, hashed_otp: str) -> bool:
+    """bcrypt verify off the event loop — see login()'s password check for why."""
+    return await asyncio.get_event_loop().run_in_executor(None, verify_otp, plain_otp, hashed_otp)
+
+async def _fail_otp_attempt(otp_record, db: AsyncSession, kind: str = "code") -> None:
+    """Record one wrong guess against an OTP and lock the code once the attempt
+    ceiling is hit (marking it used so _latest_valid_otp stops returning it and
+    the caller must request a fresh code). Always raises — never returns."""
+    otp_record.attempts = (otp_record.attempts or 0) + 1
+    locked = otp_record.attempts >= settings.OTP_MAX_ATTEMPTS
+    if locked:
+        otp_record.is_used = True
+    await db.flush()
+    if locked:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Too many incorrect attempts. Please request a new {kind}.",
+        )
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail=f"Invalid {kind}. Please try again.",
+    )
 
 async def _latest_valid_otp(
     user_id, purpose: OTPPurpose, db: AsyncSession
@@ -126,34 +257,58 @@ async def verify_otp_endpoint(
         does NOT consume it (POST /reset-password re-validates the same code),
         and returns no token.
     """
-    result = await db.execute(select(User).where(User.email == body.email.lower().strip()))
-    user = result.scalar_one_or_none()
+    with perf_timing.timed("db_lookup_user"):
+        result = await db.execute(select(User).where(User.email == body.email.lower().strip()))
+        user = result.scalar_one_or_none()
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No account found with this email address.")
 
     if not user.is_email_verified:
-        otp_record = await _latest_valid_otp(user.id, OTPPurpose.email_verification, db)
+        with perf_timing.timed("db_lookup_otp_record"):
+            otp_record = await _latest_valid_otp(user.id, OTPPurpose.email_verification, db)
         if otp_record is None:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="OTP has expired or does not exist. Please request a new one.")
-        if not verify_otp(body.otp, otp_record.otp_code):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid OTP code.")
+        with perf_timing.timed("bcrypt_verify_otp"):
+            otp_ok = await _verify_otp_async(body.otp, otp_record.otp_code)
+        if not otp_ok:
+            await _fail_otp_attempt(otp_record, db, kind="OTP code")
 
         otp_record.is_used = True
         user.is_email_verified = True
-        await db.flush()
+        with perf_timing.timed("db_flush"):
+            await db.flush()
 
-        token = create_access_token({"sub": str(user.id)})
-        return FEOtpVerifyResponse(success=True, token=token, user=await _fe_user(user, db))
+        token = create_access_token({"sub": str(user.id), "tenant_id": str(user.tenant_id), "tv": user.token_version})
+        with perf_timing.timed("build_fe_user"):
+            fe_user = await _fe_user(user, db)
+        return FEOtpVerifyResponse(success=True, token=token, user=fe_user)
 
     # Verified account — this is the forgot-password flow.
     otp_record = await _latest_valid_otp(user.id, OTPPurpose.password_reset, db)
     if otp_record is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Reset code has expired or does not exist. Please request a new one.")
-    if not verify_otp(body.otp, otp_record.otp_code):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid reset code.")
+    if not await _verify_otp_async(body.otp, otp_record.otp_code):
+        await _fail_otp_attempt(otp_record, db, kind="reset code")
 
     # Deliberately NOT marked used — /reset-password consumes it.
     return FEOtpVerifyResponse(success=True)
+
+@router.post("/resend-otp", response_model=FESuccessResponse)
+@limiter.limit("3/minute")
+async def resend_otp_endpoint(
+    request: Request,
+    body: FEResendOtpRequest,
+    db: AsyncSession = Depends(get_db),
+) -> FESuccessResponse:
+    """
+    Resends the signup email-verification OTP for an unverified account —
+    the "Resend code" button in OtpForm.tsx during the signup flow. Not for
+    the forgot-password flow's resend (that reuses POST /forgot-password,
+    since the account there is already verified and resend_otp() 400s on a
+    verified account by design).
+    """
+    await auth_service.resend_otp(email=body.email, db=db)
+    return FESuccessResponse()
 
 @router.post("/forgot-password", response_model=FESuccessResponse)
 @limiter.limit("3/minute")
@@ -163,6 +318,19 @@ async def forgot_password(
     db: AsyncSession = Depends(get_db),
 ) -> FESuccessResponse:
     await auth_service.forgot_password(email=body.email, db=db)
+    return FESuccessResponse()
+
+@router.post("/logout", response_model=FESuccessResponse)
+async def logout(
+    request: Request,
+    _revoked: None = Depends(auth_service.revoke_current_token),
+) -> FESuccessResponse:
+    """
+    Revokes the caller's current access token (see revoke_current_token) so it
+    stops working immediately instead of remaining valid until it naturally
+    expires. Always returns success — see revoke_current_token's docstring
+    for why an already-invalid token isn't an error here.
+    """
     return FESuccessResponse()
 
 @router.post("/reset-password", response_model=FESuccessResponse)
@@ -180,11 +348,32 @@ async def reset_password(
     otp_record = await _latest_valid_otp(user.id, OTPPurpose.password_reset, db)
     if otp_record is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Reset code has expired or does not exist. Please request a new one.")
-    if not verify_otp(body.otp, otp_record.otp_code):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid reset code.")
+    if not await _verify_otp_async(body.otp, otp_record.otp_code):
+        await _fail_otp_attempt(otp_record, db, kind="reset code")
 
     otp_record.is_used = True
     loop = asyncio.get_event_loop()
     user.password_hash = await loop.run_in_executor(None, hash_password, body.newPassword)
+    # Password reset must also invalidate existing sessions.
+    user.token_version = (user.token_version or 0) + 1
     await db.flush()
+    auth_service.invalidate_user_cache(user.id)
     return FESuccessResponse()
+
+@router.post("/accept-invite", response_model=FELoginResponse)
+@limiter.limit("5/minute")
+async def accept_invite(
+    request: Request,
+    body: FEAcceptInviteRequest,
+    db: AsyncSession = Depends(get_db),
+) -> FELoginResponse:
+    """Public endpoint for an invited agent to create their account from the
+    emailed one-time link. On success they're logged straight in (an agent
+    joins an already-onboarded tenant, so they skip onboarding entirely)."""
+    from app.services import team_service
+
+    user = await team_service.accept_invite(body.token, body.name, body.password, db)
+    await db.commit()
+    token = create_access_token({"sub": str(user.id), "tenant_id": str(user.tenant_id), "tv": user.token_version})
+    fe_user = await _fe_user(user, db)
+    return FELoginResponse(success=True, token=token, user=fe_user)

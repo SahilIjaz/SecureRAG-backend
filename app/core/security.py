@@ -1,5 +1,6 @@
-import random
+import secrets
 import string
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
@@ -38,7 +39,7 @@ def create_access_token(
         if expires_delta is not None
         else timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     )
-    to_encode.update({"exp": expire, "type": "access"})
+    to_encode.update({"exp": expire, "type": "access", "jti": uuid.uuid4().hex})
     return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
 def create_refresh_token(data: Dict[str, Any]) -> str:
@@ -74,8 +75,12 @@ def decode_token(token: str) -> Dict[str, Any]:
 _otp_context = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=6)
 
 def generate_otp() -> str:
-    """Return a random 4-digit OTP string (zero-padded, e.g. '0391')."""
-    return "".join(random.choices(string.digits, k=4))
+    """Return a cryptographically-random 6-digit OTP string (zero-padded).
+
+    Uses `secrets`, not `random` — `random` is a deterministic Mersenne-Twister
+    PRNG whose output can be predicted from prior values, which is unacceptable
+    for a security token."""
+    return "".join(secrets.choice(string.digits) for _ in range(6))
 
 def hash_otp(otp: str) -> str:
     """Return a bcrypt hash of the plain OTP code for safe storage."""

@@ -1,24 +1,34 @@
 """IP validation to prevent SSRF (Server-Side Request Forgery) attacks."""
 
 import socket
-from ipaddress import ip_address, ip_network
+from ipaddress import ip_address
 from urllib.parse import urlparse
 
-BLOCKED_IP_RANGES = [
-    ip_network("127.0.0.0/8"),
-    ip_network("10.0.0.0/8"),
-    ip_network("172.16.0.0/12"),
-    ip_network("192.168.0.0/16"),
-    ip_network("169.254.0.0/16"),
-    ip_network("0.0.0.0/8"),
-    ip_network("224.0.0.0/4"),
-    ip_network("240.0.0.0/4"),
-    ip_network("255.255.255.255/32"),
-]
+def _is_unsafe_ip(ip) -> bool:
+    """
+    True if this address (IPv4 or IPv6) points somewhere internal/private/
+    reserved that shouldn't be reachable from a server-side fetch. Using the
+    stdlib ipaddress properties instead of a hand-rolled CIDR list means
+    IPv6 gets the same coverage as IPv4 for free — cloud metadata endpoints
+    (169.254.169.254, fd00:ec2::254) are already caught by is_link_local /
+    is_private respectively, verified empirically rather than assumed.
+    """
+    return (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_multicast
+        or ip.is_unspecified
+    )
 
 def is_ip_blocked(hostname: str) -> bool:
     """
-    Check if hostname resolves to a blocked IP address.
+    Check if hostname resolves to a blocked IP address — IPv4 or IPv6, and
+    every address it resolves to, not just the first one returned. A
+    hostname can have multiple A/AAAA records; an attacker only needs one
+    of them to point somewhere unsafe (the previous IPv4-only,
+    single-address check via socket.gethostbyname missed both cases).
 
     Args:
         hostname: Domain name or IP address
@@ -27,19 +37,24 @@ def is_ip_blocked(hostname: str) -> bool:
         True if IP is blocked, False if safe
     """
     try:
-        ip_str = socket.gethostbyname(hostname)
-        ip = ip_address(ip_str)
-
-        for blocked_range in BLOCKED_IP_RANGES:
-            if ip in blocked_range:
-                return True
-
-        return False
-
+        addrinfo = socket.getaddrinfo(
+            hostname, None, family=socket.AF_UNSPEC, type=socket.SOCK_STREAM
+        )
     except socket.gaierror:
         return True
-    except ValueError:
+
+    if not addrinfo:
         return True
+
+    for _family, _type, _proto, _canonname, sockaddr in addrinfo:
+        try:
+            ip = ip_address(sockaddr[0])
+        except ValueError:
+            return True
+        if _is_unsafe_ip(ip):
+            return True
+
+    return False
 
 def validate_url_safe(url: str) -> None:
     """

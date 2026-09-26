@@ -18,15 +18,18 @@ statuses still update so the dashboard works end-to-end.
 import asyncio
 import logging
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import delete, select
+from sqlalchemy import update as sa_update
 
 from app.config import settings
 from app.core.chunking import chunk_pdf_text
 from app.core.storage import decrypt_file
 from app.database import AsyncSessionLocal
-from app.models.document import Document, DocumentStatus
+from app.models.document import Document, DocumentSource, DocumentStatus
+from app.models.tenant_quota import TenantQuota
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +37,140 @@ def schedule_document_processing(document_ids: list[uuid.UUID]) -> None:
     """Kick off background processing for the given documents (non-blocking)."""
     for doc_id in document_ids:
         asyncio.create_task(_process_document_safe(doc_id))
+
+def schedule_url_scrape(document_ids: list[uuid.UUID]) -> None:
+    """
+    Kick off background scrape + index for freshly-created URL documents
+    (non-blocking). Unlike schedule_document_processing, these documents
+    have no file_url yet — the scrape itself (headless browser, up to
+    CRAWL4AI_TIMEOUT seconds) used to run synchronously inside the HTTP
+    request that created them; it now runs here instead, off the request
+    path, same as the chunk/embed step already did.
+    """
+    for doc_id in document_ids:
+        asyncio.create_task(_scrape_and_process_url_safe(doc_id))
+
+async def _scrape_and_process_url_safe(document_id: uuid.UUID) -> None:
+    try:
+        scraped = await _scrape_url_into_document(document_id)
+    except Exception:
+        logger.exception("Scrape failed for document %s", document_id)
+        try:
+            async with AsyncSessionLocal() as db:
+                doc = (
+                    await db.execute(select(Document).where(Document.id == document_id))
+                ).scalar_one_or_none()
+                if doc is not None:
+                    doc.status = DocumentStatus.failed
+                    await db.commit()
+        except Exception:
+            logger.error("Could not mark document %s failed after scrape error", document_id)
+        return
+    if scraped:
+        await _process_document_safe(document_id)
+
+async def _scrape_url_into_document(document_id: uuid.UUID) -> bool:
+    """Scrapes doc.source_url to a PDF, uploads it to Cloudinary, and fills
+    in file_url/file_path/file_size_mb. Returns False (document left as-is)
+    if the document has vanished or has no source_url to scrape."""
+    from app.core.scraper import scrape_website_to_pdf
+    from app.core.storage import upload_file_to_cloudinary
+    from app.core.validation import safe_filename
+
+    async with AsyncSessionLocal() as db:
+        doc = (
+            await db.execute(select(Document).where(Document.id == document_id))
+        ).scalar_one_or_none()
+        if doc is None or not doc.source_url:
+            return False
+        url = doc.source_url
+        tenant_id = doc.tenant_id
+
+        quota_result = await db.execute(
+            select(TenantQuota).where(TenantQuota.tenant_id == tenant_id)
+        )
+        quota = quota_result.scalar_one_or_none()
+        max_mb = quota.max_file_size_mb if quota else settings.MAX_UPLOAD_SIZE_MB
+
+    pdf_content, page_title = await scrape_website_to_pdf(url, timeout=settings.CRAWL4AI_TIMEOUT)
+    file_size_mb = len(pdf_content) / (1024 * 1024)
+    # -1 means unlimited (see TenantQuota docstring)
+    if max_mb != -1 and file_size_mb > max_mb:
+        raise ValueError(f"content exceeds the {max_mb}MB per-file limit after scraping")
+
+    page_title = safe_filename(page_title)
+    public_id, secure_url = await upload_file_to_cloudinary(
+        file_content=pdf_content,
+        tenant_id=tenant_id,
+        original_filename=f"{page_title}.pdf",
+        content_type="application/pdf",
+    )
+
+    async with AsyncSessionLocal() as db:
+        doc = (
+            await db.execute(select(Document).where(Document.id == document_id))
+        ).scalar_one_or_none()
+        if doc is None:
+            return False
+        doc.original_filename = page_title
+        doc.file_path = public_id
+        doc.file_url = secure_url
+        doc.file_size_mb = round(file_size_mb, 4)
+        await db.commit()
+
+    return True
+
+async def stale_document_sweep_loop() -> None:
+    """
+    Recurring background sweep, started once from the app lifespan (as a
+    fire-and-forget task, not awaited inline). A single startup-only sweep
+    means a document stuck mid-index only recovers on the *next process
+    restart*, which could be arbitrarily far away — this loop instead
+    re-checks every INDEXING_STALE_MINUTES for the life of the process, so
+    recovery doesn't depend on a restart ever happening.
+    """
+    while True:
+        try:
+            await recover_stuck_documents()
+        except Exception:
+            logger.exception("Stale-document sweep iteration failed")
+        await asyncio.sleep(settings.INDEXING_STALE_MINUTES * 60)
+
+async def recover_stuck_documents() -> None:
+    """
+    Self-heal sweep (see stale_document_sweep_loop for the recurring
+    caller). Indexing runs as an in-process asyncio task with no durable
+    queue behind it, so a process restart/crash — or, absent this recurring
+    loop, simply time passing — while a document is mid-index leaves it
+    stuck in `processing` forever unless something resets it. Reset anything
+    stuck past INDEXING_STALE_MINUTES back to `pending` and reschedule it.
+
+    This is a lightweight, appropriately-scoped substitute for a durable job
+    queue (Celery/Redis, or a Postgres `SELECT ... FOR UPDATE SKIP LOCKED`
+    job table) — sufficient for this deployment's scale; a genuinely durable
+    queue would be the next step if that's ever needed, but isn't required
+    here.
+    """
+    threshold = datetime.now(timezone.utc) - timedelta(minutes=settings.INDEXING_STALE_MINUTES)
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(Document.id).where(
+                Document.status == DocumentStatus.processing,
+                Document.updated_at < threshold,
+            )
+        )
+        stuck_ids = [row[0] for row in result.all()]
+        if not stuck_ids:
+            return
+        await db.execute(
+            sa_update(Document)
+            .where(Document.id.in_(stuck_ids))
+            .values(status=DocumentStatus.pending)
+        )
+        await db.commit()
+
+    logger.warning("Recovered %d document(s) stuck in processing; rescheduling", len(stuck_ids))
+    schedule_document_processing(stuck_ids)
 
 async def _process_document_safe(document_id: uuid.UUID) -> None:
     try:
@@ -59,49 +196,93 @@ async def _process_document(document_id: uuid.UUID) -> None:
         if doc is None:
             logger.warning("Document %s vanished before indexing", document_id)
             return
-        if not doc.file_url:
+        if doc.source != DocumentSource.faq and not doc.file_url:
             raise ValueError("Document has no file_url to download")
+        if doc.status == DocumentStatus.processing:
+            logger.info("Document %s is already processing — skipping duplicate schedule", document_id)
+            return
 
-        doc.status = DocumentStatus.processing
+        # Atomic claim: only flip to `processing` if it isn't already, so two
+        # concurrent schedules for the same document (e.g. an upload landing
+        # at the same moment as "Re-index all") can't both start indexing it
+        # and race their status updates against each other.
+        claim = await db.execute(
+            sa_update(Document)
+            .where(Document.id == document_id, Document.status != DocumentStatus.processing)
+            .values(status=DocumentStatus.processing)
+        )
         await db.commit()
+        if claim.rowcount == 0:
+            logger.info("Document %s claimed by another run — skipping", document_id)
+            return
 
+        source = doc.source
         file_url = doc.file_url
         file_path = doc.file_path  # Cloudinary public_id
         mime_type = doc.mime_type
         tenant_id = str(doc.tenant_id)
+        question = doc.question
+        answer = doc.answer
+        # chunk_count is only ever set after a successful index, so None
+        # here means this document has never reached Pinecone before —
+        # skip the purge below rather than paying for a delete call with
+        # nothing to delete.
+        previously_indexed = doc.chunk_count is not None
 
-    content = await _download(file_url, file_path)
+    if source == DocumentSource.faq:
+        # No file to download/decrypt/extract — the Q&A text itself is
+        # already all there is; go straight to chunking.
+        text, page_map = f"Q: {question}\nA: {answer}", []
+    else:
+        content = await _download(file_url, file_path)
 
-    # Files uploaded through app.core.storage are Fernet-encrypted at rest;
-    # tolerate unencrypted content (e.g. seeded/sample files).
-    try:
-        content = await decrypt_file(content)
-    except Exception:
-        logger.info("Document %s is not encrypted — using raw bytes", document_id)
+        # Files uploaded through app.core.storage are Fernet-encrypted at rest;
+        # tolerate unencrypted content (e.g. seeded/sample files).
+        try:
+            content = await decrypt_file(content)
+        except Exception:
+            logger.info("Document %s is not encrypted — using raw bytes", document_id)
 
-    text = _extract_text(content, mime_type)
+        text, page_map = await asyncio.to_thread(_extract_text, content, mime_type)
+
     if not text.strip():
         raise ValueError("No text could be extracted from the document")
 
-    chunks = chunk_pdf_text(
+    chunks = await asyncio.to_thread(
+        chunk_pdf_text,
         text,
         chunk_size=settings.RAG_CHUNK_SIZE,
         overlap_size=settings.RAG_CHUNK_OVERLAP,
+        page_map=page_map,
     )
     if not chunks:
         raise ValueError("No chunks generated")
 
     if settings.PINECONE_API_KEY:
-        try:
-            from app.core.embeddings import embed_chunks
-            from app.core.vector_store import upsert_chunks
+        from app.core.embeddings import embed_chunks
+        from app.core.vector_store import delete_document_chunks, upsert_chunks
 
-            embeddings = await embed_chunks([c["text"] for c in chunks])
-            await upsert_chunks(tenant_id, str(document_id), chunks, embeddings)
-            logger.info("Upserted %d chunks to Pinecone for %s", len(chunks), document_id)
-        except Exception as e:
-            # Vector search is an enhancement — chunk counting still succeeds.
-            logger.warning("Pinecone upsert failed for %s: %s", document_id, e)
+        # Best-effort purge of any vectors from a previous index of this same
+        # document before writing the new set — otherwise a re-index that
+        # produces fewer chunks than last time leaves old higher-sequence
+        # vectors behind as permanently-orphaned stale search results.
+        # Skipped entirely for first-time indexing, where there's nothing to purge.
+        if previously_indexed:
+            try:
+                await delete_document_chunks(tenant_id, str(document_id))
+            except Exception as e:
+                logger.warning("Pre-reindex vector purge failed for %s: %s", document_id, e)
+
+        # Deliberately NOT caught here: a failed embed/upsert must fail the
+        # whole document (propagates to _process_document_safe's except
+        # block, which marks status=failed) rather than being downgraded to
+        # a warning — otherwise the document is marked "ready" with a
+        # chunk_count but zero vectors ever reached Pinecone, and the
+        # chatbot silently returns "no relevant documents" forever with no
+        # visible error anywhere.
+        embeddings = await embed_chunks([c["text"] for c in chunks])
+        await upsert_chunks(tenant_id, str(document_id), chunks, embeddings)
+        logger.info("Upserted %d chunks to Pinecone for %s", len(chunks), document_id)
     else:
         logger.info("PINECONE_API_KEY not set — skipping vector upsert for %s", document_id)
 
@@ -111,11 +292,34 @@ async def _process_document(document_id: uuid.UUID) -> None:
         ).scalar_one_or_none()
         if doc is None:
             return
+        # Mirror chunk text into Postgres for the keyword half of hybrid search.
+        # Runs regardless of whether Pinecone is configured, so lexical search
+        # works even without a vector store. Replace any prior rows first so a
+        # re-index doesn't leave stale chunks behind.
+        await _write_keyword_chunks(str(doc.tenant_id), document_id, chunks, db)
         doc.chunk_count = len(chunks)
         doc.status = DocumentStatus.ready
         await db.commit()
 
     logger.info("Indexed document %s: %d chunks", document_id, len(chunks))
+
+async def _write_keyword_chunks(tenant_id: str, document_id, chunks: list[dict], db) -> None:
+    """Replace the Postgres keyword-search rows for a document with the current
+    chunk set. Text is capped to keep a pathological chunk from bloating the row
+    (the same 8000-char cap the Pinecone metadata uses)."""
+    from app.models.document_chunk import DocumentChunk
+
+    await db.execute(
+        delete(DocumentChunk).where(DocumentChunk.document_id == document_id)
+    )
+    for c in chunks:
+        db.add(DocumentChunk(
+            tenant_id=uuid.UUID(tenant_id) if isinstance(tenant_id, str) else tenant_id,
+            document_id=document_id,
+            chunk_id=str(c.get("chunk_id", c.get("sequence", 0))),
+            sequence=int(c.get("sequence", 0)),
+            text=(c["text"] or "")[:8000],
+        ))
 
 async def _download(url: str, public_id: str = None) -> bytes:
     async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
@@ -142,7 +346,16 @@ def _signed_download_url(public_id: str) -> str:
         public_id, format=None, resource_type="raw", type="upload"
     )
 
-def _extract_text(content: bytes, mime_type: str) -> str:
+_DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+def _extract_text(content: bytes, mime_type: str) -> tuple[str, list[tuple[int, int]]]:
+    """
+    Returns (text, page_map). page_map is [(char_start, page_number), ...]
+    for PDFs (empty for everything else — DOCX/TXT/MD have no page concept
+    at this stage). Runs on a worker thread (see asyncio.to_thread call
+    site) since PyPDF2/python-docx parsing and tiktoken chunking are both
+    CPU-bound and would otherwise block the event loop.
+    """
     if mime_type == "application/pdf" or content[:5] == b"%PDF-":
         import io
 
@@ -150,11 +363,24 @@ def _extract_text(content: bytes, mime_type: str) -> str:
 
         reader = PdfReader(io.BytesIO(content))
         parts = []
-        for page in reader.pages:
+        page_map: list[tuple[int, int]] = []
+        offset = 0
+        for page_num, page in enumerate(reader.pages, start=1):
             page_text = page.extract_text() or ""
             if page_text.strip():
+                page_map.append((offset, page_num))
                 parts.append(page_text)
-        return "\n\n".join(parts)
+                offset += len(page_text) + 2  # +2 accounts for the "\n\n" joiner below
+        return "\n\n".join(parts), page_map
+
+    if mime_type == _DOCX_MIME or content[:4] == b"PK\x03\x04":
+        import io
+
+        from docx import Document as DocxDocument
+
+        docx_doc = DocxDocument(io.BytesIO(content))
+        parts = [p.text for p in docx_doc.paragraphs if p.text.strip()]
+        return "\n\n".join(parts), []
 
     # Fall back to treating the payload as UTF-8 text (TXT/MD uploads).
-    return content.decode("utf-8", errors="ignore")
+    return content.decode("utf-8", errors="ignore"), []

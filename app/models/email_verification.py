@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, String, func
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -49,6 +49,10 @@ class EmailVerification(Base):
         nullable=False,
     )
     is_used: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Wrong-guess counter — once it reaches OTP_MAX_ATTEMPTS the code is locked
+    # and a fresh one must be requested, so a stolen/guessed 6-digit code can't
+    # be brute-forced within its validity window.
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

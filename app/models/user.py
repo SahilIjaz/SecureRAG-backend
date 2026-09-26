@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, List, Optional
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, func, Enum as SAEnum
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func, Enum as SAEnum
 import enum
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -28,10 +28,12 @@ class User(Base):
         default=uuid.uuid4,
         index=True,
     )
+    # No longer unique: a tenant can now have multiple users (owner + invited
+    # agents). The one-user-per-tenant DB constraint is dropped at startup
+    # (see app/main.py). Membership + role live in tenant_users.
     tenant_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("tenants.id", ondelete="CASCADE"),
-        unique=True,
         nullable=False,
         index=True,
     )
@@ -48,6 +50,10 @@ class User(Base):
     avatar_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     is_email_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # Bumped on password change/reset to invalidate every previously-issued
+    # access token: the token carries the version it was minted under, and
+    # get_current_user rejects any token whose version is stale.
+    token_version: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -62,7 +68,7 @@ class User(Base):
 
     tenant: Mapped["Tenant"] = relationship(
         "Tenant",
-        back_populates="user",
+        back_populates="users",
     )
     email_verifications: Mapped[List["EmailVerification"]] = relationship(
         "EmailVerification",

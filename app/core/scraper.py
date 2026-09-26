@@ -45,6 +45,18 @@ async def scrape_website_to_pdf(url: str, timeout: int = 30) -> Tuple[bytes, str
             if not result.success:
                 raise ValueError(f"Failed to crawl {url}: {result.error_message}")
 
+            # Best-effort defense-in-depth against SSRF via DNS-rebinding:
+            # validate_url_safe() above ran before the crawl started, but
+            # Crawl4AI does its own independent DNS resolution and may have
+            # followed redirects — re-check whatever it actually landed on.
+            # This doesn't fully close the TOCTOU window (Crawl4AI's browser
+            # networking isn't interceptable for true IP-pinning without
+            # forking it), but it catches the common case where the final
+            # URL differs from the one we validated.
+            final_url = getattr(result, "url", None)
+            if final_url and final_url != url:
+                validate_url_safe(final_url)
+
             markdown_content = result.markdown or ""
             page_title = result.metadata.get("title", "Untitled") if result.metadata else "Untitled"
 
@@ -68,10 +80,10 @@ async def scrape_website_to_pdf(url: str, timeout: int = 30) -> Tuple[bytes, str
             logger.error(f"Scraping failed for {url}: {str(fallback_error)}")
             raise ValueError(f"Failed to scrape {url}: {str(fallback_error)}")
 
+_MAX_REDIRECT_HOPS = 5
+
 async def _scrape_fallback(url: str, timeout: int) -> Tuple[bytes, str]:
     """Plain httpx GET + BeautifulSoup text extraction, converted to PDF."""
-    import html as html_lib
-
     import httpx
     from bs4 import BeautifulSoup
 
@@ -83,11 +95,25 @@ async def _scrape_fallback(url: str, timeout: int) -> Tuple[bytes, str]:
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
     }
-    async with httpx.AsyncClient(follow_redirects=True, timeout=timeout, headers=headers) as client:
-        resp = await client.get(url)
+    # Redirects are followed manually (not via httpx's follow_redirects=True)
+    # so every hop gets SSRF-validated *before* the request fires — the
+    # original single post-fetch check only validated the final landing URL,
+    # after the request (including any redirect chain) had already gone out.
+    async with httpx.AsyncClient(follow_redirects=False, timeout=timeout, headers=headers) as client:
+        current_url = url
+        resp = None
+        for _ in range(_MAX_REDIRECT_HOPS + 1):
+            validate_url_safe(current_url)
+            resp = await client.get(current_url)
+            if not resp.is_redirect:
+                break
+            location = resp.headers.get("location")
+            if not location:
+                break
+            current_url = str(httpx.URL(current_url).join(location))
+        else:
+            raise ValueError(f"Too many redirects while fetching {url}")
         resp.raise_for_status()
-        # Redirects may land on a different host — re-run SSRF validation.
-        validate_url_safe(str(resp.url))
 
     soup = BeautifulSoup(resp.text, "html.parser")
     for tag in soup(["script", "style", "noscript", "iframe", "svg"]):
@@ -96,13 +122,16 @@ async def _scrape_fallback(url: str, timeout: int) -> Tuple[bytes, str]:
     page_title = (soup.title.string or "").strip() if soup.title and soup.title.string else url
     text = soup.get_text(separator="\n")
     paragraphs = [line.strip() for line in text.splitlines() if line.strip()]
-    content = "\n\n".join(html_lib.escape(p) for p in paragraphs)
+    # Escaping for PDF/ReportLab markup happens centrally in
+    # _markdown_to_pdf_blocking — don't pre-escape here too, or fallback
+    # content would get double-escaped ("&" -> "&amp;" -> "&amp;amp;").
+    content = "\n\n".join(paragraphs)
 
     if not content.strip():
         raise ValueError(f"No content extracted from {url}")
 
     logger.info(f"Scraped {url} via fallback - Title: {page_title}")
-    pdf_bytes = await _markdown_to_pdf(content, html_lib.escape(page_title), url)
+    pdf_bytes = await _markdown_to_pdf(content, page_title, url)
     return pdf_bytes, page_title
 
 async def _markdown_to_pdf(content: str, title: str, url: str) -> bytes:
@@ -116,7 +145,17 @@ async def _markdown_to_pdf(content: str, title: str, url: str) -> bytes:
 def _markdown_to_pdf_blocking(content: str, title: str, url: str) -> bytes:
     """
     Synchronous PDF generation.
+
+    ReportLab's Paragraph treats its input as a small XML/HTML markup
+    language, so any raw "&", "<", ">" in scraped content (a URL query
+    string is the most common real-world trigger) can break — or, if
+    unlucky, misrender as — markup rather than literal text. Every piece of
+    untrusted text handed to Paragraph() here is escaped, centrally, in
+    this one function — callers should NOT pre-escape (that would produce
+    double-escaped output for callers that do).
     """
+    import html as html_lib
+
     pdf_buffer = io.BytesIO()
 
     doc = SimpleDocTemplate(
@@ -131,19 +170,25 @@ def _markdown_to_pdf_blocking(content: str, title: str, url: str) -> bytes:
     styles = getSampleStyleSheet()
     story = []
 
-    title_para = Paragraph(f"<b>{title}</b>", styles["Heading1"])
-    story.append(title_para)
-    story.append(Spacer(1, 0.3 * inch))
+    try:
+        title_para = Paragraph(f"<b>{html_lib.escape(title)}</b>", styles["Heading1"])
+        story.append(title_para)
+        story.append(Spacer(1, 0.3 * inch))
+    except Exception as e:
+        logger.warning(f"Failed to add title paragraph: {e}")
 
-    url_para = Paragraph(f"<i>Source: {url}</i>", styles["Normal"])
-    story.append(url_para)
-    story.append(Spacer(1, 0.2 * inch))
+    try:
+        url_para = Paragraph(f"<i>Source: {html_lib.escape(url)}</i>", styles["Normal"])
+        story.append(url_para)
+        story.append(Spacer(1, 0.2 * inch))
+    except Exception as e:
+        logger.warning(f"Failed to add source-url paragraph: {e}")
 
     paragraphs = content.split("\n\n")
     for para in paragraphs:
         if para.strip():
             try:
-                p = Paragraph(para.strip(), styles["Normal"])
+                p = Paragraph(html_lib.escape(para.strip()), styles["Normal"])
                 story.append(p)
                 story.append(Spacer(1, 0.1 * inch))
             except Exception as e:
