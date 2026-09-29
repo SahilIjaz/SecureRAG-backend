@@ -13,6 +13,9 @@ conversations, billing) from a dashboard.
 - **Google Gemini** (`gemini-flash-latest`, with a fallback chain) for answer generation
 - **Stripe** for billing — trial subscriptions, plan changes, webhooks
 - **Cloudinary** for uploaded-file storage, **Crawl4AI** for URL scraping
+  (`app/core/scraper.py`: SSRF-checked redirects, direct PDF links, clean
+  text, and Gemini-vision OCR of page images and scanned PDFs via
+  `app/core/ocr.py`)
 - JWT auth (access tokens with revocation support), OTP email verification
 - No Alembic — schema changes ship as idempotent `ALTER TABLE ... IF NOT EXISTS`
   statements run at startup (see `app/main.py`)
@@ -68,6 +71,11 @@ Copy `.env.example` to `.env` and fill in real values. At minimum you need:
 | `SMTP_*` or `BREVO_API_KEY` | OTP / notification emails |
 
 Everything else has a sane default — see `app/config.py` for the full list.
+Scraping knobs worth knowing: `CRAWL4AI_TIMEOUT` (seconds per network step),
+`CRAWL4AI_MAX_CONTENT_SIZE_MB`, and the OCR group — `SCRAPE_OCR_ENABLED`
+(default on), `GEMINI_OCR_MODEL`, `SCRAPE_OCR_MAX_IMAGES` (per page, also the
+cost cap; each image is one Gemini call billed to the tenant's wallet, free
+during the signup trial).
 
 ### Stripe setup (one-time)
 

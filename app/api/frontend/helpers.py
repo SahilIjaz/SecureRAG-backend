@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import make_transient_to_detached
 
 from app.config import settings
+from app.core.entitlements import PLAN_ENTITLEMENTS
 from app.models.chatbot_config import ChatbotConfig
 from app.models.conversation import Conversation
 from app.models.document import Document, DocumentSource, DocumentStatus
@@ -49,13 +50,18 @@ PLAN_PRICE_LABELS: dict[str, str] = {
 
 PLAN_DISPLAY_NAMES: dict[str, str] = {"starter": "Starter", "growth": "Growth", "business": "Business"}
 
-# Mirrors PLAN_QUOTAS in auth_service.py (messages/docs) plus a chunks
-# ceiling the quota model doesn't track, so the frontend's "used / total"
-# progress bars always have a finite denominator.
+# Per-plan ceilings for the frontend's "used / total" progress bars. Derived
+# from the entitlements module rather than repeated here, so a plan change
+# lands in one place (app/core/entitlements.py) instead of drifting between
+# two hand-kept copies.
 PLAN_DISPLAY_LIMITS: dict[str, dict[str, int]] = {
-    "starter": {"messages": 500, "docs": 25, "urls": 25, "chunks": 2000},
-    "growth": {"messages": 5000, "docs": 150, "urls": 150, "chunks": 12000},
-    "business": {"messages": 12000, "docs": 1000, "urls": 1000, "chunks": 80000},
+    BE_TO_FE_PLAN[plan]: {
+        "messages": ent.max_questions_per_month,
+        "docs": ent.max_documents,
+        "urls": ent.max_urls,
+        "chunks": ent.max_chunks,
+    }
+    for plan, ent in PLAN_ENTITLEMENTS.items()
 }
 
 # ── Display formatting ────────────────────────────────────────────────────────

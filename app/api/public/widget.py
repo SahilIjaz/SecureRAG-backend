@@ -306,7 +306,9 @@ async def post_widget_message(
     # path as quota exhaustion) rather than answering and burning LLM cost.
     subscription = await helpers.get_subscription(tenant.id, db)
     if not await is_subscription_usable(subscription, db):
-        quota_exceeded = True
+        # Previously assigned to an unused `quota_exceeded` name, so a lapsed
+        # subscription never actually stopped the bot from answering.
+        generation_blocked = True
 
     unresolved_reason = None
     notif_type = None
@@ -519,7 +521,8 @@ async def post_widget_message_stream(
     # path as quota exhaustion) rather than answering and burning LLM cost.
     subscription = await helpers.get_subscription(tenant.id, db)
     if not await is_subscription_usable(subscription, db):
-        quota_exceeded = True
+        # See post_widget_message(): this used to set an unused name.
+        generation_blocked = True
 
     # See post_widget_message()'s identical comment: already escalated (auto
     # low-confidence handoff, or a future manual "talk to a human" trigger)
