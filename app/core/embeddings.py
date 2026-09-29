@@ -25,8 +25,12 @@ _query_embed_cache: "OrderedDict[str, List[float]]" = OrderedDict()
 EMBEDDING_MODEL = "multilingual-e5-large"
 EMBEDDING_DIMENSION = 1024
 
-# Pinecone inference accepts at most 96 inputs per request.
-_BATCH_SIZE = 96
+# Pinecone inference accepts at most 96 inputs per request, but a batch that
+# large defeats _MAX_CONCURRENT_BATCHES for typical documents: most docs chunk
+# to under 96 pieces, which used to mean exactly one batch and zero
+# parallelism (measured ~3.2s for a 53-chunk doc). 24 keeps requests
+# well-formed while letting a typical doc fan out across all four slots.
+_BATCH_SIZE = 24
 # Cap on concurrent in-flight embed batches — parallelizes large documents
 # without hammering Pinecone's rate limits.
 _MAX_CONCURRENT_BATCHES = 4

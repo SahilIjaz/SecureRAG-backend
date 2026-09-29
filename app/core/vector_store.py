@@ -144,6 +144,7 @@ async def search_chunks(
     query_embedding: List[float],
     tenant_id: str,
     top_k: int = 5,
+    document_ids: List[str] = None,
 ) -> List[Dict[str, Any]]:
     """
     Search for similar chunks using vector similarity, scoped to the
@@ -153,11 +154,21 @@ async def search_chunks(
         query_embedding: Embedding of the query
         tenant_id: Tenant ID for filtering
         top_k: Number of top results to return
+        document_ids: When given, restrict matches to these documents via a
+            metadata pre-filter. Callers pass the tenant's *active* document
+            ids so vectors from deactivated/stale documents never occupy
+            top_k slots in the first place — filtering them out after
+            retrieval (the old approach, still kept as a safety net in
+            rag_service) could leave zero usable chunks when top_k is small.
 
     Returns:
         List of similar chunks with metadata
     """
     index = get_index()
+
+    query_filter: Dict[str, Any] = {"tenant_id": {"$eq": tenant_id}}
+    if document_ids is not None:
+        query_filter["document_id"] = {"$in": [str(d) for d in document_ids]}
 
     results = await retry_async(
         asyncio.to_thread,
@@ -165,7 +176,7 @@ async def search_chunks(
         vector=query_embedding,
         top_k=top_k,
         namespace=tenant_id,
-        filter={"tenant_id": {"$eq": tenant_id}},
+        filter=query_filter,
         include_metadata=True,
     )
 

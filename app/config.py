@@ -257,6 +257,16 @@ class Settings(BaseSettings):
     # (see _prepare_generation) instead of handing the LLM a best-effort context
     # it has to independently judge as off-topic.
     RAG_MIN_RELEVANCE_SCORE: float = 0.75
+    # Two-stage retrieval: pull a wider candidate pool from hybrid search,
+    # then rerank it down to RAG_SEARCH_TOP_K with Pinecone's hosted reranker
+    # (same API key as embeddings — no extra credential). Costs one extra
+    # inference round trip (~200-400ms) per question but picks noticeably
+    # better chunks once a tenant's corpus outgrows a handful of documents.
+    # Only engages when the fused pool is bigger than top_k; any rerank
+    # failure falls back to the fused RRF order, never to an error.
+    RAG_RERANK_ENABLED: bool = True
+    RAG_RERANK_CANDIDATES: int = 20
+    RAG_RERANK_MODEL: str = "bge-reranker-v2-m3"
 
     # Background-job recovery: how long a document may sit in "processing"
     # before a startup sweep assumes the worker died and reschedules it.

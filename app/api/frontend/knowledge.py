@@ -289,6 +289,16 @@ async def add_url(
         status=DocumentStatus.pending,
     )
     db.add(doc)
+
+    # Book the document against usage now, like every other ingestion path
+    # (uploads/FAQs/samples increment at creation; DELETE decrements for all
+    # sources, so skipping this here left URL docs skewing the counters).
+    # Storage is booked later, in _scrape_url_into_document, once the
+    # scraped size is actually known.
+    usage = await helpers.get_current_usage(current_user.tenant_id, db)
+    if usage is not None:
+        usage.documents_count = (usage.documents_count or 0) + 1
+
     await db.commit()
     await db.refresh(doc)
 
