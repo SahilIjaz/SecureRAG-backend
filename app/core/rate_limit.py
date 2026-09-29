@@ -42,4 +42,14 @@ def _tenant_or_ip_key(request: Request) -> str:
 # is all that's needed; no async client required here.
 _STORAGE_URI = settings.REDIS_URL or "memory://"
 
-limiter = Limiter(key_func=_tenant_or_ip_key, storage_uri=_STORAGE_URI)
+# in_memory_fallback_enabled: if REDIS_URL is set but Redis is unreachable
+# (a dev machine with the URL copied from another .env and no server running),
+# fall back to the in-process store instead of raising on every rate-limited
+# endpoint — the same "Redis is best-effort" contract app/core/redis_client.py
+# already keeps for the embedding cache. Without this, a missing Redis turned
+# signup/login/every limited route into a 500.
+limiter = Limiter(
+    key_func=_tenant_or_ip_key,
+    storage_uri=_STORAGE_URI,
+    in_memory_fallback_enabled=True,
+)
