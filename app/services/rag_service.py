@@ -266,6 +266,18 @@ async def _prepare_generation(
     to the tenant's configured fallback message rather than calling Gemini
     with no context.
     """
+    # Active-document pre-filter: doc_names is the caller's {document_id: name}
+    # map of documents that are still active. Pass those ids into the search
+    # itself so stale vectors (deactivated/reindexed docs whose Pinecone
+    # deletes lagged or failed) can't occupy top_k slots — with a small top_k,
+    # post-hoc filtering could leave zero usable chunks for a question the
+    # knowledge base actually answers. None means the caller has no map, so
+    # don't filter; an empty map means no active documents at all — nothing
+    # can be retrieved, so skip the search round trips entirely.
+    document_ids = list(doc_names.keys()) if doc_names is not None else None
+    if document_ids is not None and not document_ids:
+        return [], "", max_tokens, False
+
     t0 = time.monotonic()
     if settings.RAG_HYBRID_SEARCH:
         # Hybrid: dense (Pinecone) + lexical (Postgres full-text) fused via RRF,
@@ -273,7 +285,9 @@ async def _prepare_generation(
         # done inside hybrid_search's vector branch.
         from app.services.hybrid_search import hybrid_search
 
-        chunks = await hybrid_search(query, tenant_id, top_k=settings.RAG_SEARCH_TOP_K)
+        chunks = await hybrid_search(
+            query, tenant_id, top_k=settings.RAG_SEARCH_TOP_K, document_ids=document_ids
+        )
         t_search = time.monotonic()
         logger.info(
             "rag hybrid tenant=%s search=%.0fms chunks=%d",
@@ -284,7 +298,9 @@ async def _prepare_generation(
         # question falls back instead of getting a best-effort context.
         query_embedding = await embed_text(query)
         t_embed = time.monotonic()
-        chunks = await search_chunks(query_embedding, tenant_id, top_k=settings.RAG_SEARCH_TOP_K)
+        chunks = await search_chunks(
+            query_embedding, tenant_id, top_k=settings.RAG_SEARCH_TOP_K, document_ids=document_ids
+        )
         t_search = time.monotonic()
         top_score = chunks[0]["score"] if chunks else 0.0
         logger.info(
@@ -302,11 +318,10 @@ async def _prepare_generation(
     if not chunks:
         return [], "", max_tokens, False
 
-    # Drop chunks whose document is no longer active — Pinecone deletes can
-    # lag a document being deactivated (or fail silently, see
-    # delete_document_chunks), so a stale chunk can still be retrieved here.
-    # `doc_names` is the caller's active-document map; only skip this filter
-    # when a caller genuinely didn't provide one (None, not just empty).
+    # Safety net behind the document_ids pre-filter above: the search already
+    # excluded inactive documents, so this only catches a mismatch between
+    # what the filter asked for and what came back (e.g. a caller-supplied
+    # map mutating mid-flight). Cheap, so kept as defense-in-depth.
     if doc_names is not None:
         chunks = [c for c in chunks if str(c.get("document_id")) in doc_names]
         if not chunks:
