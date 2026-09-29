@@ -77,6 +77,8 @@ async def _scrape_url_into_document(document_id: uuid.UUID) -> bool:
     from app.core.storage import upload_file_to_cloudinary
     from app.core.validation import safe_filename
 
+    from app.models.usage_count import UsageCount
+
     async with AsyncSessionLocal() as db:
         doc = (
             await db.execute(select(Document).where(Document.id == document_id))
@@ -91,6 +93,19 @@ async def _scrape_url_into_document(document_id: uuid.UUID) -> bool:
         )
         quota = quota_result.scalar_one_or_none()
         max_mb = quota.max_file_size_mb if quota else settings.MAX_UPLOAD_SIZE_MB
+        # Plan-wide storage cap, checked against current usage once the
+        # scraped size is known — mirrors the upload path, which already
+        # refuses files that would blow past max_storage_mb. Without this,
+        # URL scrapes were the one ingestion path that could grow storage
+        # unbounded.
+        max_storage = quota.max_storage_mb if quota else -1
+        usage_row = (
+            await db.execute(
+                select(UsageCount).where(UsageCount.tenant_id == tenant_id)
+                .order_by(UsageCount.period_month.desc())
+            )
+        ).scalars().first()
+        storage_used = (usage_row.storage_used_mb if usage_row else 0.0) or 0.0
 
     # OCR of on-page images costs a Gemini call per image — only when the
     # feature is on and the tenant's trial/wallet would allow an LLM call.
@@ -104,6 +119,11 @@ async def _scrape_url_into_document(document_id: uuid.UUID) -> bool:
     # -1 means unlimited (see TenantQuota docstring)
     if max_mb != -1 and file_size_mb > max_mb:
         raise ValueError(f"content exceeds the {max_mb}MB per-file limit after scraping")
+    if max_storage != -1 and storage_used + file_size_mb > max_storage:
+        raise ValueError(
+            f"scraped content ({file_size_mb:.1f}MB) would exceed the plan's "
+            f"{max_storage}MB storage limit ({storage_used:.1f}MB already used)"
+        )
 
     page_title = safe_filename(page_title)
     public_id, secure_url = await upload_file_to_cloudinary(
@@ -119,10 +139,26 @@ async def _scrape_url_into_document(document_id: uuid.UUID) -> bool:
         ).scalar_one_or_none()
         if doc is None:
             return False
+        old_size_mb = doc.file_size_mb or 0.0
         doc.original_filename = page_title
         doc.file_path = public_id
         doc.file_url = secure_url
         doc.file_size_mb = round(file_size_mb, 4)
+
+        # Book the scraped size against the tenant's storage usage (delta, so
+        # a re-scrape doesn't double-count). Uploads/FAQs/samples all update
+        # storage_used_mb at creation; URL documents are created at 0.0MB and
+        # only get a real size here, after the background scrape.
+        usage = (
+            await db.execute(
+                select(UsageCount).where(UsageCount.tenant_id == doc.tenant_id)
+                .order_by(UsageCount.period_month.desc())
+            )
+        ).scalars().first()
+        if usage is not None:
+            usage.storage_used_mb = round(
+                max(0.0, (usage.storage_used_mb or 0.0) - old_size_mb + file_size_mb), 4
+            )
         await db.commit()
 
     return True

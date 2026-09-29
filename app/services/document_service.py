@@ -21,7 +21,7 @@ from app.config import settings
 from app.core import perf_timing, vector_store
 from app.core.scraper import scrape_website_to_pdf
 from app.core.storage import delete_file_from_cloudinary, upload_file_to_cloudinary
-from app.core.validation import safe_filename, sniff_mime_or_raise
+from app.core.validation import resolve_upload_mime, safe_filename, sniff_mime_or_raise
 from app.models.document import Document, DocumentSource, DocumentStatus
 from app.models.tenant import Tenant
 from app.models.tenant_quota import TenantQuota
@@ -143,11 +143,9 @@ async def upload_documents(
     total_new_storage = 0.0
 
     for file in files:
-        if file.content_type not in ALLOWED_MIME_TYPES:
-            raise HTTPException(
-                status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-                detail=f"File type '{file.content_type}' is not allowed. Allowed: PDF, DOCX, TXT, MD.",
-            )
+        # Canonicalize the declared type (charset suffixes, aliases, missing/
+        # octet-stream types resolved by allow-listed extension) or 415.
+        mime_type = resolve_upload_mime(file.filename, file.content_type, ALLOWED_MIME_TYPES)
 
         content = await file.read()
         if len(content) == 0:
@@ -155,7 +153,7 @@ async def upload_documents(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=f"'{file.filename}' is empty.",
             )
-        sniff_mime_or_raise(content, file.content_type)
+        sniff_mime_or_raise(content, mime_type)
 
         filename = safe_filename(file.filename or "document")
         file_size_mb = len(content) / (1024 * 1024)
@@ -181,7 +179,7 @@ async def upload_documents(
             )
 
         total_new_storage += file_size_mb
-        file_data.append((content, file_size_mb, filename, file.content_type, content_hash))
+        file_data.append((content, file_size_mb, filename, mime_type, content_hash))
 
     if quota and quota.max_documents != -1 and (existing_count + len(files)) > quota.max_documents:
         raise HTTPException(
