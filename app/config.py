@@ -122,6 +122,20 @@ class Settings(BaseSettings):
 
     FILE_ENCRYPTION_KEY: str = ""
 
+    # ── Post-quantum cryptography (NIST FIPS 203/204 — see app/core/pq_crypto.py)
+    # Both features are hybrid (classical crypto always remains underneath) and
+    # fully reversible: turning a flag off reverts new operations to classical
+    # while everything already produced keeps decrypting/verifying.
+    # Generate the four keys with: python scripts/generate_pq_keys.py
+    # Hybrid ML-KEM-768 envelope encryption for files at rest.
+    PQ_FILE_ENCRYPTION_ENABLED: bool = False
+    PQ_KEM_PUBLIC_KEY: str = ""
+    PQ_KEM_PRIVATE_KEY: str = ""
+    # ML-DSA-44 signatures appended to widget session tokens.
+    PQ_WIDGET_TOKEN_SIGNING_ENABLED: bool = False
+    PQ_SIG_PUBLIC_KEY: str = ""
+    PQ_SIG_PRIVATE_KEY: str = ""
+
     PINECONE_API_KEY: str = ""
     PINECONE_INDEX_NAME: str = "securerag-documents"
 
@@ -361,6 +375,22 @@ class Settings(BaseSettings):
                 f"RAG_CHUNK_OVERLAP ({self.RAG_CHUNK_OVERLAP}) must be smaller than "
                 f"RAG_CHUNK_SIZE ({self.RAG_CHUNK_SIZE}); otherwise chunking degrades "
                 "to near-1-token steps."
+            )
+        if self.PQ_FILE_ENCRYPTION_ENABLED and not (
+            self.PQ_KEM_PUBLIC_KEY and self.PQ_KEM_PRIVATE_KEY
+        ):
+            raise ValueError(
+                "PQ_FILE_ENCRYPTION_ENABLED is on but PQ_KEM_PUBLIC_KEY/"
+                "PQ_KEM_PRIVATE_KEY are not set — run scripts/generate_pq_keys.py "
+                "and add the printed values to .env, or turn the flag off."
+            )
+        if self.PQ_WIDGET_TOKEN_SIGNING_ENABLED and not (
+            self.PQ_SIG_PUBLIC_KEY and self.PQ_SIG_PRIVATE_KEY
+        ):
+            raise ValueError(
+                "PQ_WIDGET_TOKEN_SIGNING_ENABLED is on but PQ_SIG_PUBLIC_KEY/"
+                "PQ_SIG_PRIVATE_KEY are not set — run scripts/generate_pq_keys.py "
+                "and add the printed values to .env, or turn the flag off."
             )
         return self
 
