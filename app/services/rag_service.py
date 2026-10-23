@@ -123,8 +123,19 @@ def _format_history(history: list[dict] | None, bot_name: str) -> str:
         return ""
     return "\nCONVERSATION SO FAR (oldest first — do not repeat yourself):\n" + "\n".join(lines) + "\n"
 
-def _build_behavior_prompt(config: dict, context: str, query: str, history: list[dict] | None = None) -> tuple:
-    """Build (prompt, max_tokens, handoff_enabled) from the tenant's chatbot config."""
+def _build_behavior_prompt(
+    config: dict,
+    context: str,
+    query: str,
+    history: list[dict] | None = None,
+    conflict_note: str = "",
+) -> tuple:
+    """Build (prompt, max_tokens, handoff_enabled) from the tenant's chatbot config.
+
+    conflict_note, when non-empty, is a rendered instruction from
+    confidence.conflict_prompt_note() — it joins the STYLE RULES (trusted
+    instructions), deliberately NOT the CONTEXT block, which the injection
+    armor below declares to be data-never-instructions."""
     identity = config.get("identity", {}) if config else {}
     behavior = config.get("behavior", {}) if config else {}
 
@@ -170,18 +181,23 @@ def _build_behavior_prompt(config: dict, context: str, query: str, history: list
     else:
         rules.append("Do not mention document names or that you are reading from documents.")
 
+    if conflict_note:
+        rules.append(conflict_note)
+
     handoff = bool(behavior.get("handoffToHuman"))
-    confidence_instruction = ""
-    if handoff:
-        confidence_instruction = (
-            "\nIMPORTANT: The very first line of your reply must be exactly "
-            "'CONFIDENCE: <number 0-100>' — your confidence that you can properly answer "
-            "this message. Then continue the reply on the next line. "
-            "For a real question, this is your confidence that the context below actually "
-            "answers it. If the message needs nothing looked up at all — a greeting, a "
-            "thank-you, a goodbye, or a reply that follows from the conversation so far — "
-            "then you already have everything you need, so score CONFIDENCE: 100."
-        )
+    # The confidence line is now requested UNCONDITIONALLY (it used to be
+    # handoff-only): with handoff off it drives the low-confidence refusal
+    # and the clarify option instead of a handoff — without it, a tenant who
+    # disabled handoff got weak answers shipped with no gate at all.
+    confidence_instruction = (
+        "\nIMPORTANT: The very first line of your reply must be exactly "
+        "'CONFIDENCE: <number 0-100>' — your confidence that you can properly answer "
+        "this message. Then continue the reply on the next line. "
+        "For a real question, this is your confidence that the context below actually "
+        "answers it. If the message needs nothing looked up at all — a greeting, a "
+        "thank-you, a goodbye, or a reply that follows from the conversation so far — "
+        "then you already have everything you need, so score CONFIDENCE: 100."
+    )
 
     rules_text = "\n".join(f"- {r}" for r in rules)
     history_block = _format_history(history, bot_name)
@@ -232,6 +248,55 @@ def _parse_confidence(answer: str) -> tuple:
         return None, answer
     return min(int(match.group(1)), 100), answer[match.end():].strip()
 
+def _effective_confidence(self_reported: int | None, metrics: dict) -> int | None:
+    """The confidence value gating actually uses: the LLM's self-reported
+    score when it produced one, else the computed retrieval confidence
+    (similarity/coverage/entropy formula in app/services/confidence.py) as
+    the guard — so a model that ignores the CONFIDENCE instruction no longer
+    means an ungated answer. None only when neither signal exists."""
+    if self_reported is not None:
+        return self_reported
+    value = (metrics or {}).get("retrievalConfidence")
+    return int(value) if value is not None else None
+
+def _gate_decision(confidence: int | None, threshold: int, handoff_enabled: bool) -> str:
+    """Map a confidence value onto what the reply should be:
+        'answer'  — confident enough, ship the model's answer
+        'clarify' — borderline band [threshold, threshold+RAG_CLARIFY_BAND):
+                    ask ONE clarifying question instead
+        'handoff' — below threshold with human handoff enabled
+        'refuse'  — below threshold with handoff disabled: return the
+                    fallback message rather than shipping a weak answer
+                    (previously this case was completely ungated)."""
+    if confidence is None:
+        return "answer"
+    if confidence < threshold:
+        return "handoff" if handoff_enabled else "refuse"
+    if settings.RAG_CLARIFY_ENABLED and confidence < threshold + settings.RAG_CLARIFY_BAND:
+        return "clarify"
+    return "answer"
+
+async def _generate_clarify_question(query: str, bot_name: str = "Support Assistant") -> str | None:
+    """One short clarifying question for a borderline-confidence message,
+    via the cheap classification model. Best-effort: None on any failure,
+    and callers then just ship the normal answer instead."""
+    prompt = (
+        f"A customer asked a support chatbot named {bot_name!r}: \"{query[:500]}\"\n"
+        "The bot is only partially sure what they mean. Write exactly ONE short, "
+        "friendly clarifying question (max 25 words) that would let the bot answer "
+        "precisely. Reply with the question only — no preamble, no quotes."
+    )
+    try:
+        result = await llm_router.classify(
+            prompt, provider_name="gemini", model=settings.GEMINI_CLASSIFICATION_MODEL,
+            max_tokens=60,
+        )
+        question = (result.text or "").strip().strip('"').strip()
+        return question or None
+    except Exception as e:
+        logger.warning("Clarify-question generation failed: %s", e)
+        return None
+
 def _build_citation_sources(chunks: list[dict], doc_names: dict | None) -> list[dict]:
     """Shape retrieved chunks into the citation payload the frontend renders —
     document identity, a short snippet, and the retrieval score as a
@@ -259,13 +324,18 @@ async def _prepare_generation(
 ) -> tuple:
     """
     Shared front half of both answer_question() and answer_question_stream():
-    embed the query, search Pinecone, label chunks, build the prompt.
+    embed the query, search Pinecone, label chunks, compute the retrieval
+    confidence metrics + cross-document conflicts, build the prompt.
 
-    Returns (chunks, prompt, response_max_tokens, handoff_enabled). An empty
-    `chunks` list means nothing relevant was retrieved — callers fall back
-    to the tenant's configured fallback message rather than calling Gemini
-    with no context.
+    Returns (chunks, prompt, response_max_tokens, handoff_enabled, metrics).
+    `metrics` is confidence.compute_retrieval_metrics() output plus a
+    "conflicts" list. An empty `chunks` list means nothing relevant was
+    retrieved — callers fall back to the tenant's configured fallback
+    message rather than calling Gemini with no context.
     """
+    from app.services import confidence as confidence_service
+
+    empty_metrics = {**confidence_service.compute_retrieval_metrics([]), "conflicts": []}
     # Active-document pre-filter: doc_names is the caller's {document_id: name}
     # map of documents that are still active. Pass those ids into the search
     # itself so stale vectors (deactivated/reindexed docs whose Pinecone
@@ -276,7 +346,7 @@ async def _prepare_generation(
     # can be retrieved, so skip the search round trips entirely.
     document_ids = list(doc_names.keys()) if doc_names is not None else None
     if document_ids is not None and not document_ids:
-        return [], "", max_tokens, False
+        return [], "", max_tokens, False, empty_metrics
 
     t0 = time.monotonic()
     if settings.RAG_HYBRID_SEARCH:
@@ -316,7 +386,7 @@ async def _prepare_generation(
     # path emptied `chunks` when the top cosine score was below
     # RAG_MIN_RELEVANCE_SCORE), so an empty list here means "no context".
     if not chunks:
-        return [], "", max_tokens, False
+        return [], "", max_tokens, False, empty_metrics
 
     # Safety net behind the document_ids pre-filter above: the search already
     # excluded inactive documents, so this only catches a mismatch between
@@ -325,7 +395,7 @@ async def _prepare_generation(
     if doc_names is not None:
         chunks = [c for c in chunks if str(c.get("document_id")) in doc_names]
         if not chunks:
-            return [], "", max_tokens, False
+            return [], "", max_tokens, False, empty_metrics
 
     # Label each chunk with its source document so the model can cite it. A
     # configured menu (e.g. a restaurant's items) is prepended as always-present
@@ -340,8 +410,23 @@ async def _prepare_generation(
         labeled.append(f"{header}{chunk['text']}")
     context = "\n\n---\n\n".join(labeled)
 
+    # Computed confidence signals (similarity / coverage / entropy) and
+    # cross-document conflict scan — all from data already in hand, so this
+    # adds no model calls. Conflicts become a STYLE-RULES disclosure
+    # instruction; tenant safety is structural (retrieval is tenant-scoped,
+    # so compared chunks always share one tenant).
+    metrics = confidence_service.compute_retrieval_metrics(chunks)
+    conflicts = (
+        confidence_service.detect_conflicts(chunks)
+        if settings.RAG_CONFLICT_DETECTION_ENABLED else []
+    )
+    metrics["conflicts"] = conflicts
+    conflict_note = confidence_service.conflict_prompt_note(conflicts, doc_names)
+
     if config:
-        prompt, response_max_tokens, handoff_enabled = _build_behavior_prompt(config, context, query, history)
+        prompt, response_max_tokens, handoff_enabled = _build_behavior_prompt(
+            config, context, query, history, conflict_note
+        )
     else:
         handoff_enabled = False
         response_max_tokens = max_tokens
@@ -354,7 +439,7 @@ QUESTION: {query}
 
 Please answer the question based on the context provided. If the answer is not in the context, say so."""
 
-    return chunks, prompt, response_max_tokens, handoff_enabled
+    return chunks, prompt, response_max_tokens, handoff_enabled, metrics
 
 async def answer_question(
     tenant_id: str,
@@ -387,7 +472,7 @@ async def answer_question(
         {"answer", "sources", "model", "confidence", "handoff"}
     """
     try:
-        chunks, prompt, response_max_tokens, handoff_enabled = await _prepare_generation(
+        chunks, prompt, response_max_tokens, handoff_enabled, metrics = await _prepare_generation(
             tenant_id, query, max_tokens, config, doc_names, history
         )
 
@@ -398,20 +483,21 @@ async def answer_question(
                 "model": None,
                 "confidence": 0,
                 "handoff": False,
+                "retrieval": metrics,
             }
 
         t_prep = time.monotonic()
         result = await llm_router.generate(
             prompt,
             tenant_provider=tenant_provider,
-            max_tokens=response_max_tokens + (50 if handoff_enabled else 0),
+            # +50 covers the CONFIDENCE line, now requested whenever a
+            # tenant config shaped the prompt (not only with handoff on).
+            max_tokens=response_max_tokens + (50 if config else 0),
             timeout_seconds=settings.GEMINI_REQUEST_TIMEOUT_SECONDS,
         )
         answer = result.text
 
-        confidence = None
-        if handoff_enabled:
-            confidence, answer = _parse_confidence(answer)
+        confidence, answer = _parse_confidence(answer)
 
         if not answer.strip():
             # The model can return a confidence line (or nothing at all) and
@@ -434,17 +520,47 @@ async def answer_question(
 
         t_gen = time.monotonic()
         logger.info(
-            "rag timing tenant=%s generate=%.0fms provider=%s model=%s confidence=%s",
-            tenant_id, (t_gen - t_prep) * 1000, result.usage.provider, result.usage.model, confidence,
+            "rag timing tenant=%s generate=%.0fms provider=%s model=%s confidence=%s retrieval_conf=%s",
+            tenant_id, (t_gen - t_prep) * 1000, result.usage.provider, result.usage.model,
+            confidence, metrics.get("retrievalConfidence"),
         )
 
+        # Confidence gate (central — callers must respect these flags instead
+        # of re-deriving them): answer / clarify / handoff / refuse.
+        behavior = (config or {}).get("behavior", {})
+        threshold = behavior.get("confidenceThreshold", 60)
+        fallback = (config or {}).get("identity", {}).get("fallbackMessage") or "I'm not sure about that yet."
+        effective = _effective_confidence(confidence, metrics) if config else confidence
+        decision = _gate_decision(effective, threshold, handoff_enabled) if config else "answer"
+
+        base = {
+            "model": result.usage.model,
+            "confidence": effective,
+            "usage": result.usage,
+            "retrieval": metrics,
+        }
+        if decision in ("handoff", "refuse"):
+            return {
+                **base, "answer": fallback, "sources": [],
+                "handoff": decision == "handoff", "refused": decision == "refuse",
+            }
+        if decision == "clarify":
+            question = await _generate_clarify_question(
+                query, (config or {}).get("identity", {}).get("name", "Support Assistant")
+            )
+            if question:
+                return {
+                    **base, "answer": question, "sources": [],
+                    "handoff": False, "clarify": True,
+                }
+            # Clarify generation failed — the confident-enough answer is
+            # still better than a refusal; fall through and ship it.
+
         return {
+            **base,
             "answer": answer,
             "sources": _build_citation_sources(chunks, doc_names),
-            "model": result.usage.model,
-            "confidence": confidence,
             "handoff": False,
-            "usage": result.usage,
         }
 
     except Exception as e:
@@ -629,7 +745,7 @@ async def answer_question_stream(
     threshold = behavior.get("confidenceThreshold", 60)
 
     try:
-        chunks, prompt, response_max_tokens, handoff_enabled = await _prepare_generation(
+        chunks, prompt, response_max_tokens, handoff_enabled, metrics = await _prepare_generation(
             tenant_id, query, max_tokens, config, doc_names, history
         )
     except Exception as e:
@@ -642,6 +758,7 @@ async def answer_question_stream(
         yield {
             "type": "final", "answer": fallback, "sources": [],
             "model": None, "confidence": 0, "handoff": False, "usage": None,
+            "retrieval": metrics,
         }
         return
 
@@ -650,7 +767,7 @@ async def answer_question_stream(
         stream = llm_router.generate_stream(
             prompt,
             tenant_provider=tenant_provider,
-            max_tokens=response_max_tokens + (50 if handoff_enabled else 0),
+            max_tokens=response_max_tokens + (50 if config else 0),
             timeout_seconds=settings.GEMINI_REQUEST_TIMEOUT_SECONDS,
         )
         iterator = stream.__aiter__()
@@ -672,7 +789,10 @@ async def answer_question_stream(
     full: list[str] = []
     confidence = None
     usage = None
-    gate_open = not handoff_enabled  # no CONFIDENCE line to wait for
+    # The CONFIDENCE line is requested whenever a tenant config shaped the
+    # prompt (no longer handoff-only), so that's when the gate must buffer.
+    gate_open = config is None
+    clarify_name = (config or {}).get("identity", {}).get("name", "Support Assistant")
     buf = ""
     try:
         async for chunk in _prepend(first_chunk, iterator):
@@ -689,16 +809,31 @@ async def answer_question_stream(
             state, parsed, rest = _try_parse_confidence_prefix(buf)
             if state == "pending":
                 continue
-            confidence = parsed
-            if handoff_enabled and confidence is not None and confidence < threshold:
+            confidence = _effective_confidence(parsed, metrics)
+            decision = _gate_decision(confidence, threshold, handoff_enabled)
+            if decision in ("handoff", "refuse"):
                 await _aclose(iterator)
                 yield {"type": "token", "text": fallback}
                 yield {
                     "type": "final", "answer": fallback, "sources": [],
                     "model": usage.model if usage else None, "confidence": confidence,
-                    "handoff": True, "usage": usage,
+                    "handoff": decision == "handoff", "refused": decision == "refuse",
+                    "usage": usage, "retrieval": metrics,
                 }
                 return
+            if decision == "clarify":
+                question = await _generate_clarify_question(query, clarify_name)
+                if question:
+                    await _aclose(iterator)
+                    yield {"type": "token", "text": question}
+                    yield {
+                        "type": "final", "answer": question, "sources": [],
+                        "model": usage.model if usage else None, "confidence": confidence,
+                        "handoff": False, "clarify": True, "usage": usage, "retrieval": metrics,
+                    }
+                    return
+                # Clarify generation failed — stream the confident-enough
+                # answer instead of refusing.
             gate_open = True
             if rest:
                 full.append(rest)
@@ -711,15 +846,27 @@ async def answer_question_stream(
             state, parsed, rest = _try_parse_confidence_prefix(buf)
             text = rest if state == "parsed" else buf
             if state == "parsed":
-                confidence = parsed
-            if handoff_enabled and confidence is not None and confidence < threshold:
+                confidence = _effective_confidence(parsed, metrics)
+            decision = _gate_decision(confidence, threshold, handoff_enabled)
+            if decision in ("handoff", "refuse"):
                 yield {"type": "token", "text": fallback}
                 yield {
                     "type": "final", "answer": fallback, "sources": [],
                     "model": usage.model if usage else None, "confidence": confidence,
-                    "handoff": True, "usage": usage,
+                    "handoff": decision == "handoff", "refused": decision == "refuse",
+                    "usage": usage, "retrieval": metrics,
                 }
                 return
+            if decision == "clarify":
+                question = await _generate_clarify_question(query, clarify_name)
+                if question:
+                    yield {"type": "token", "text": question}
+                    yield {
+                        "type": "final", "answer": question, "sources": [],
+                        "model": usage.model if usage else None, "confidence": confidence,
+                        "handoff": False, "clarify": True, "usage": usage, "retrieval": metrics,
+                    }
+                    return
             if text:
                 full.append(text)
                 yield {"type": "token", "text": text}
@@ -760,13 +907,14 @@ async def answer_question_stream(
         yield {
             "type": "final", "answer": fallback, "sources": [],
             "model": usage.model if usage else None, "confidence": 0,
-            "handoff": handoff_enabled, "usage": usage,
+            "handoff": handoff_enabled, "usage": usage, "retrieval": metrics,
         }
         return
 
     yield {
         "type": "final", "answer": answer, "sources": _build_citation_sources(chunks, doc_names),
-        "model": usage.model if usage else None, "confidence": confidence, "handoff": False, "usage": usage,
+        "model": usage.model if usage else None, "confidence": confidence, "handoff": False,
+        "usage": usage, "retrieval": metrics,
     }
 
 async def verify_llm_providers() -> None:

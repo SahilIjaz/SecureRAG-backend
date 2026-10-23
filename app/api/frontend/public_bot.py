@@ -227,16 +227,21 @@ async def public_chat(
         usage.questions_used = (usage.questions_used or 0) + 1
 
     handoff = False
-    confidence = result.get("confidence")
-    threshold = behavior.get("confidenceThreshold", 60)
-    if not result.get("sources"):
-        reply = fallback
-        conversation.unresolved_reason = "No matching doc"
-    elif behavior.get("handoffToHuman") and confidence is not None and confidence < threshold:
-        reply = fallback
+    # Gating is central in answer_question() — trust its flags, checked
+    # before the no-sources branch (gated results also carry sources=[]).
+    if result.get("handoff"):
+        reply = result["answer"]
         handoff = True
         conversation.status = "Handed off"
         conversation.unresolved_reason = "Low confidence"
+    elif result.get("refused"):
+        reply = result["answer"]
+        conversation.unresolved_reason = "Low confidence, refused"
+    elif result.get("clarify"):
+        reply = result["answer"]
+    elif not result.get("sources"):
+        reply = fallback
+        conversation.unresolved_reason = "No matching doc"
     else:
         reply = result["answer"]
 

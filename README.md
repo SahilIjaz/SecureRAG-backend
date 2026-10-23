@@ -109,3 +109,27 @@ and put the printed `whsec_...` into `.env` as `STRIPE_WEBHOOK_SECRET`.
 - **Two auth surfaces**: dashboard requests use a JWT Bearer token
   (`get_current_user`); the public widget uses a separate per-tenant API key
   and has no access to any dashboard-authenticated route.
+
+## Confidence, conflict detection & evaluation
+
+Every reply is confidence-gated (see `app/services/confidence.py` and the
+gate in `app/services/rag_service.py`). Two signals: the LLM's self-reported
+`CONFIDENCE: NN` line, and a computed retrieval score —
+`100·(0.5·similarity + 0.3·coverage + 0.2·(1−entropy))` over the retrieved
+chunks' relevance scores — used as the guard when the self-report is absent.
+Four outcomes: **answer** (confident), **clarify** (borderline band
+`RAG_CLARIFY_BAND` above the tenant threshold → the bot asks one clarifying
+question), **handoff** (below threshold, handoff enabled), **refuse** (below
+threshold, handoff disabled — a weak answer is never shipped).
+
+Retrieved chunks are also scanned for cross-document numeric contradictions
+(`detect_conflicts`); any conflict is disclosed in the answer with both
+sources named rather than silently resolved. Comparison is tenant-safe by
+construction — retrieval is namespace-scoped, so compared chunks always
+belong to one tenant.
+
+Evaluation (`scripts/evaluate_rag.py`) measures RAGAS-style faithfulness
+(LLM judge counts answer claims supported by the retrieved context) plus
+tenant isolation (citation authorization + cross-tenant probes):
+
+    PYTHONPATH=. ./venv/bin/python scripts/evaluate_rag.py --questions 20 --json results.json
