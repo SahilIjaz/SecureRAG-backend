@@ -357,15 +357,22 @@ async def test_chat(
         logger.exception("Failed to record LLM usage for tenant %s", current_user.tenant_id)
 
     confidence = result.get("confidence")
-    threshold = behavior.get("confidenceThreshold", 60)
     unresolved_reason = None
     notif_type = None
-    if not result.get("sources"):
+    # Gating is central in answer_question() now — trust its flags, and
+    # check them BEFORE the no-sources branch (refusal/handoff/clarify
+    # results also carry sources=[]).
+    if result.get("handoff"):
+        reply, sources, handoff = result["answer"], [], True
+        unresolved_reason, notif_type = "Low-confidence answer, handed off", "unresolved_conversations"
+    elif result.get("refused"):
+        reply, sources, handoff = result["answer"], [], False
+        unresolved_reason, notif_type = "Low-confidence answer refused (handoff disabled)", "unresolved_conversations"
+    elif result.get("clarify"):
+        reply, sources, handoff = result["answer"], [], False
+    elif not result.get("sources"):
         reply, sources, handoff = fallback, [], False
         unresolved_reason, notif_type = "No matching document found", "knowledge_gaps_detected"
-    elif behavior.get("handoffToHuman") and confidence is not None and confidence < threshold:
-        reply, sources, handoff = fallback, [], True
-        unresolved_reason, notif_type = "Low-confidence answer, handed off", "unresolved_conversations"
     else:
         # Respect the tenant's showSources toggle for the citation data
         # itself, not just prompt labeling — previously this always leaked
@@ -487,6 +494,10 @@ async def test_chat_stream(
                     # retrieved" — sources alone can't tell the two apart here.
                     if handoff:
                         unresolved_reason, notif_type = "Low-confidence answer, handed off", "unresolved_conversations"
+                    elif ev.get("refused"):
+                        unresolved_reason, notif_type = "Low-confidence answer refused (handoff disabled)", "unresolved_conversations"
+                    elif ev.get("clarify"):
+                        pass  # a clarifying question, not a gap
                     elif not ev["sources"]:
                         unresolved_reason, notif_type = "No matching document found", "knowledge_gaps_detected"
                     # Respect the tenant's showSources toggle for the citation

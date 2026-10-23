@@ -267,6 +267,19 @@ class Settings(BaseSettings):
     RAG_RERANK_ENABLED: bool = True
     RAG_RERANK_CANDIDATES: int = 20
     RAG_RERANK_MODEL: str = "bge-reranker-v2-m3"
+    # Clarify band: when the reply's confidence lands in
+    # [confidenceThreshold, confidenceThreshold + RAG_CLARIFY_BAND) — sure
+    # enough not to refuse, not sure enough to answer — the bot asks ONE
+    # short clarifying question instead of answering or escalating.
+    RAG_CLARIFY_ENABLED: bool = True
+    RAG_CLARIFY_BAND: int = 15
+    # Cross-document conflict detection (see app/services/confidence.py):
+    # retrieved chunks are compared for numeric contradictions and the score
+    # distribution's entropy; detected conflicts are disclosed in the answer
+    # rather than silently resolved. Tenant-boundary-aware by construction —
+    # retrieval is already namespace-scoped, so chunks compared here can only
+    # ever belong to one tenant.
+    RAG_CONFLICT_DETECTION_ENABLED: bool = True
 
     # Background-job recovery: how long a document may sit in "processing"
     # before a startup sweep assumes the worker died and reschedules it.
@@ -328,6 +341,11 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=True,
+        # A .env legitimately carries variables this branch doesn't define —
+        # keys for features on other branches (e.g. the post-quantum work),
+        # or deployment-only settings. pydantic-settings' default `forbid`
+        # turns every such key into a startup crash; ignore them instead.
+        extra="ignore",
     )
 
     @property

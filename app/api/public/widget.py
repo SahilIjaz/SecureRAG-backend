@@ -373,16 +373,25 @@ async def post_widget_message(
                 logger.exception("Failed to record LLM usage for tenant %s", tenant.id)
 
             should_classify = True
-            confidence = result.get("confidence")
-            threshold = behavior.get("confidenceThreshold", 60)
-            if not result.get("sources"):
+            # Gating now happens centrally in answer_question() — trust its
+            # flags instead of re-deriving from confidence/threshold here.
+            # Flags are checked BEFORE the no-sources branch: a refusal,
+            # handoff or clarify result also carries sources=[] and must not
+            # be misread as a knowledge gap.
+            if result.get("handoff"):
+                reply, sources, handoff = result["answer"], [], True
+                unresolved_reason = "Low-confidence answer, handed off"
+                notif_type = "unresolved_conversations"
+            elif result.get("refused"):
+                reply, sources, handoff = result["answer"], [], False
+                unresolved_reason = "Low-confidence answer refused (handoff disabled)"
+                notif_type = "unresolved_conversations"
+            elif result.get("clarify"):
+                reply, sources, handoff = result["answer"], [], False
+            elif not result.get("sources"):
                 reply, sources, handoff = fallback, [], False
                 unresolved_reason = "No matching document found"
                 notif_type = "knowledge_gaps_detected"
-            elif behavior.get("handoffToHuman") and confidence is not None and confidence < threshold:
-                reply, sources, handoff = fallback, [], True
-                unresolved_reason = "Low-confidence answer, handed off"
-                notif_type = "unresolved_conversations"
             else:
                 reply, sources, handoff = result["answer"], result["sources"], False
 
@@ -608,6 +617,11 @@ async def post_widget_message_stream(
                             if handoff:
                                 unresolved_reason = "Low-confidence answer, handed off"
                                 notif_type = "unresolved_conversations"
+                            elif ev.get("refused"):
+                                unresolved_reason = "Low-confidence answer refused (handoff disabled)"
+                                notif_type = "unresolved_conversations"
+                            elif ev.get("clarify"):
+                                pass  # a clarifying question, not a gap
                             elif not ev["sources"]:
                                 unresolved_reason = "No matching document found"
                                 notif_type = "knowledge_gaps_detected"
