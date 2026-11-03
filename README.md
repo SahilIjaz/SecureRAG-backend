@@ -133,3 +133,30 @@ Evaluation (`scripts/evaluate_rag.py`) measures RAGAS-style faithfulness
 tenant isolation (citation authorization + cross-tenant probes):
 
     PYTHONPATH=. ./venv/bin/python scripts/evaluate_rag.py --questions 20 --json results.json
+
+## Post-quantum cryptography (quantum-safe mode)
+
+The platform's two self-owned crypto surfaces can run in a hybrid
+post-quantum mode built on the NIST-standardized lattice algorithms
+(`app/core/pq_crypto.py`):
+
+- **Files at rest** — envelope encryption: each uploaded/scraped file gets a
+  fresh symmetric key, which is wrapped under an **ML-KEM-768** (Kyber,
+  FIPS 203) encapsulation against the platform public key. This defeats
+  *harvest-now-decrypt-later*: ciphertext stolen today stays unreadable even
+  to a future quantum adversary. Measured overhead ≈ 8–23 ms and +1.2 KB per
+  file.
+- **Widget session tokens** — an **ML-DSA-44** (Dilithium, FIPS 204)
+  signature is appended to the existing HMAC JWT; verification requires both
+  layers. Trade-off: ≈ 78 ms to sign, token grows from ~130 B to ~3.4 KB.
+
+Both features are **hybrid** (classical crypto always remains underneath),
+**off by default**, and **fully reversible** — the PQ envelope is detected by
+a magic prefix inside the stored blob and legacy unsigned tokens stay
+accepted, so flipping the flags never strands existing data or sessions.
+
+Setup: `python scripts/generate_pq_keys.py`, paste the printed keys into
+`.env`, set `PQ_FILE_ENCRYPTION_ENABLED=true` and/or
+`PQ_WIDGET_TOKEN_SIGNING_ENABLED=true`. Benchmarks:
+`PYTHONPATH=. python scripts/benchmark_pq.py` · Tests:
+`PYTHONPATH=. pytest tests/`.

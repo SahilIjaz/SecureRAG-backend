@@ -77,7 +77,15 @@ def create_widget_session_token(tenant_id: str, conversation_id: str) -> str:
         "type": WIDGET_SESSION_TOKEN_TYPE,
         "exp": expire,
     }
-    return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    token = jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    # Hybrid post-quantum hardening: append an ML-DSA-44 signature over the
+    # HMAC-signed JWT (see app/core/pq_crypto.py). Verification requires BOTH
+    # layers to pass, so a quantum adversary who could forge one still fails.
+    from app.core import pq_crypto
+
+    if pq_crypto.token_signing_ready():
+        token = pq_crypto.sign_token(token)
+    return token
 
 def decode_widget_session_token(token: str) -> Optional[dict]:
     """Returns the payload if valid, or None for any failure (expired, tampered,
@@ -85,8 +93,16 @@ def decode_widget_session_token(token: str) -> Optional[dict]:
     None as "no session" and start fresh rather than erroring the request."""
     if not token:
         return None
+    # Strip + verify the optional PQ signature layer first. A PQ-signed token
+    # with a bad signature is rejected outright; a legacy (unsigned) token
+    # passes through so sessions issued before the flag flip stay valid.
+    from app.core import pq_crypto
+
+    inner = pq_crypto.split_and_verify_token(token)
+    if inner is None:
+        return None
     try:
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        payload = jwt.decode(inner, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
     except JWTError:
         return None
     if payload.get("type") != WIDGET_SESSION_TOKEN_TYPE:

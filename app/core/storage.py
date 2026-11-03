@@ -76,10 +76,20 @@ async def upload_file_to_cloudinary(
     public_id → stored as file_path in DB (used for deletion)
     secure_url → the HTTPS URL to access the file
 
-    File is encrypted before upload for security.
+    File is encrypted before upload for security. With PQ file encryption
+    enabled (see app/core/pq_crypto.py), the per-file key is additionally
+    wrapped under an ML-KEM-768 envelope so the stored blob resists
+    harvest-now-decrypt-later quantum attacks; otherwise the legacy
+    shared-Fernet-key scheme is used unchanged.
     """
-    cipher = _get_cipher()
-    encrypted_content = cipher.encrypt(file_content)
+    from app.core import pq_crypto
+
+    if pq_crypto.file_encryption_ready():
+        # Pure-Python Kyber is CPU-bound — keep it off the event loop.
+        encrypted_content = await asyncio.to_thread(pq_crypto.hybrid_encrypt, file_content)
+    else:
+        cipher = _get_cipher()
+        encrypted_content = cipher.encrypt(file_content)
 
     # Only ever trust an allow-listed extension in the storage key — anything
     # else (including path-like junk smuggled through a crafted filename)
@@ -110,7 +120,16 @@ async def decrypt_file(encrypted_content: bytes) -> bytes:
 
     Returns:
         Decrypted file bytes
+
+    Dispatches on the blob itself: PQ-envelope blobs (magic-prefixed) are
+    opened via ML-KEM regardless of the current flag state, and legacy
+    Fernet blobs keep decrypting after PQ is enabled — so enabling or
+    disabling PQ never strands existing files.
     """
+    from app.core import pq_crypto
+
+    if pq_crypto.is_pq_blob(encrypted_content):
+        return await asyncio.to_thread(pq_crypto.hybrid_decrypt, encrypted_content)
     cipher = _get_cipher()
     return cipher.decrypt(encrypted_content)
 
