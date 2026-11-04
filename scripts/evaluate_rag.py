@@ -45,12 +45,27 @@ from app.services import rag_service  # noqa: E402
 from app.services.llm import router as llm_router  # noqa: E402
 
 
-async def _classify(prompt: str, max_tokens: int = 200) -> str:
-    result = await llm_router.classify(
-        prompt, provider_name="gemini", model=settings.GEMINI_CLASSIFICATION_MODEL,
-        max_tokens=max_tokens,
-    )
-    return (result.text or "").strip()
+async def _classify(prompt: str, max_tokens: int = 200, attempts: int = 8) -> str:
+    """Judge/question-generation call. Retries transient provider errors
+    (notably Gemini free-tier 429 RESOURCE_EXHAUSTED, 15 req/min) with
+    exponential backoff so a long evaluation run doesn't die mid-way."""
+    from app.services.llm.base import ProviderTransientError
+
+    delay = 5.0
+    for attempt in range(attempts):
+        try:
+            result = await llm_router.classify(
+                prompt, provider_name="gemini", model=settings.GEMINI_CLASSIFICATION_MODEL,
+                max_tokens=max_tokens,
+            )
+            return (result.text or "").strip()
+        except ProviderTransientError:
+            if attempt == attempts - 1:
+                raise
+            print(f"    (provider busy — retrying in {delay:.0f}s)")
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 60.0)
+    return ""
 
 
 async def load_tenants_with_chunks(min_chunks: int = 2) -> list[dict]:
@@ -121,6 +136,24 @@ async def judge_faithfulness(question: str, answer: str, context_texts: list[str
     return 1.0 if total == 0 else min(1.0, supported / total)
 
 
+async def _answer(tenant_id: str, question: str, doc_names: dict, attempts: int = 8) -> dict:
+    """Production answer path with the same backoff as _classify — the
+    router's own retry (~1.2s) is too short for a free-tier 429 window."""
+    from app.services.llm.base import ProviderTransientError
+
+    delay = 5.0
+    for attempt in range(attempts):
+        try:
+            return await rag_service.answer_question(tenant_id, question, doc_names=doc_names)
+        except ProviderTransientError:
+            if attempt == attempts - 1:
+                raise
+            print(f"    (provider busy — retrying answer in {delay:.0f}s)")
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 60.0)
+    return {}
+
+
 def authorized(sources: list[dict], owned_doc_ids: set) -> bool:
     """Every citation must reference a document the asking tenant owns."""
     return all((s.get("documentId") in owned_doc_ids) for s in sources if s.get("documentId"))
@@ -152,9 +185,7 @@ async def main() -> None:
         print(f"Tenant {tenant['tenant_id'][:8]}… — {len(questions)} questions")
         for q in questions:
             t0 = time.perf_counter()
-            result = await rag_service.answer_question(
-                tenant["tenant_id"], q, doc_names=tenant["doc_names"],
-            )
+            result = await _answer(tenant["tenant_id"], q, tenant["doc_names"])
             elapsed_ms = (time.perf_counter() - t0) * 1000
             sources = result.get("sources") or []
             if sources:
@@ -196,9 +227,7 @@ async def main() -> None:
         print(f"\nCross-tenant probes: asking tenant {asking_t['tenant_id'][:8]}… "
               f"questions from tenant {source_t['tenant_id'][:8]}…'s documents")
         for q in probe_questions:
-            result = await rag_service.answer_question(
-                asking_t["tenant_id"], q, doc_names=asking_t["doc_names"],
-            )
+            result = await _answer(asking_t["tenant_id"], q, asking_t["doc_names"])
             sources = result.get("sources") or []
             leaked = any(s.get("documentId") in foreign_docs and s.get("documentId") not in asking_docs
                          for s in sources)

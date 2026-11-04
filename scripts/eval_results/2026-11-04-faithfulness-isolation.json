@@ -1,0 +1,360 @@
+[
+  {
+    "kind": "positive",
+    "tenant": "64534e2b-d1dc-491b-934f-ee834b37b3fc",
+    "question": "Why did the British colonial state focus their investments and attention on the Punjab countryside rather than cities?",
+    "answered": true,
+    "faithfulness": 0.8333333333333334,
+    "authorized": true,
+    "confidence": null,
+    "retrieval": {
+      "similarity": 0.9796,
+      "coverage": 1.0,
+      "entropy": 0.9981,
+      "retrievalConfidence": 79,
+      "conflicts": []
+    },
+    "latency_ms": 6965
+  },
+  {
+    "kind": "positive",
+    "tenant": "64534e2b-d1dc-491b-934f-ee834b37b3fc",
+    "question": "How do I view the commit history for my currently active Git branch?",
+    "answered": true,
+    "faithfulness": 1.0,
+    "authorized": true,
+    "confidence": null,
+    "retrieval": {
+      "similarity": 0.9598,
+      "coverage": 1.0,
+      "entropy": 1.0,
+      "retrievalConfidence": 78,
+      "conflicts": []
+    },
+    "latency_ms": 2264
+  },
+  {
+    "kind": "positive",
+    "tenant": "64534e2b-d1dc-491b-934f-ee834b37b3fc",
+    "question": "Which suburban areas and villages ultimately became part of the town of Lahore?",
+    "answered": true,
+    "faithfulness": 1.0,
+    "authorized": true,
+    "confidence": null,
+    "retrieval": {
+      "similarity": 0.9975,
+      "coverage": 1.0,
+      "entropy": 0.9668,
+      "retrievalConfidence": 81,
+      "conflicts": []
+    },
+    "latency_ms": 2610
+  },
+  {
+    "kind": "positive",
+    "tenant": "64534e2b-d1dc-491b-934f-ee834b37b3fc",
+    "question": "Who is the author of \"Life, and Work of Guru Arjan\"?",
+    "answered": true,
+    "faithfulness": 1.0,
+    "authorized": true,
+    "confidence": null,
+    "retrieval": {
+      "similarity": 0.6405,
+      "coverage": 0.3333,
+      "entropy": 0.5346,
+      "retrievalConfidence": 51,
+      "conflicts": []
+    },
+    "latency_ms": 2546
+  },
+  {
+    "kind": "positive",
+    "tenant": "64534e2b-d1dc-491b-934f-ee834b37b3fc",
+    "question": "When did the British East India Company seize control of Lahore?",
+    "answered": true,
+    "faithfulness": 1.0,
+    "authorized": true,
+    "confidence": null,
+    "retrieval": {
+      "similarity": 0.9967,
+      "coverage": 1.0,
+      "entropy": 0.9954,
+      "retrievalConfidence": 80,
+      "conflicts": []
+    },
+    "latency_ms": 2460
+  },
+  {
+    "kind": "positive",
+    "tenant": "64534e2b-d1dc-491b-934f-ee834b37b3fc",
+    "question": "How long is the Orange Line Metro Train in Lahore?",
+    "answered": true,
+    "faithfulness": 1.0,
+    "authorized": true,
+    "confidence": null,
+    "retrieval": {
+      "similarity": 0.9666,
+      "coverage": 1.0,
+      "entropy": 1.0,
+      "retrievalConfidence": 78,
+      "conflicts": []
+    },
+    "latency_ms": 2588
+  },
+  {
+    "kind": "positive",
+    "tenant": "64534e2b-d1dc-491b-934f-ee834b37b3fc",
+    "question": "What are the main cultural and tourist attractions in Lahore?",
+    "answered": true,
+    "faithfulness": 0.8571428571428571,
+    "authorized": true,
+    "confidence": null,
+    "retrieval": {
+      "similarity": 0.9693,
+      "coverage": 1.0,
+      "entropy": 1.0,
+      "retrievalConfidence": 78,
+      "conflicts": []
+    },
+    "latency_ms": 3422
+  },
+  {
+    "kind": "positive",
+    "tenant": "64534e2b-d1dc-491b-934f-ee834b37b3fc",
+    "question": "What are the major cities in Pakistan?",
+    "answered": true,
+    "faithfulness": 1.0,
+    "authorized": true,
+    "confidence": null,
+    "retrieval": {
+      "similarity": 0.9997,
+      "coverage": 1.0,
+      "entropy": 0.9996,
+      "retrievalConfidence": 80,
+      "conflicts": []
+    },
+    "latency_ms": 3428
+  },
+  {
+    "kind": "positive",
+    "tenant": "64534e2b-d1dc-491b-934f-ee834b37b3fc",
+    "question": "Who authored the book Muslim Saints of South Asia published in 2004?",
+    "answered": true,
+    "faithfulness": 1.0,
+    "authorized": true,
+    "confidence": null,
+    "retrieval": {
+      "similarity": 0.6081,
+      "coverage": 0.6667,
+      "entropy": 0.6677,
+      "retrievalConfidence": 57,
+      "conflicts": []
+    },
+    "latency_ms": 58469
+  },
+  {
+    "kind": "positive",
+    "tenant": "64534e2b-d1dc-491b-934f-ee834b37b3fc",
+    "question": "When did Sikh forces first occupy Lahore?",
+    "answered": true,
+    "faithfulness": 1.0,
+    "authorized": true,
+    "confidence": null,
+    "retrieval": {
+      "similarity": 0.984,
+      "coverage": 1.0,
+      "entropy": 0.999,
+      "retrievalConfidence": 79,
+      "conflicts": []
+    },
+    "latency_ms": 3616
+  },
+  {
+    "kind": "positive",
+    "tenant": "da512f81-fcb7-436e-9ca2-e9e369c2afd1",
+    "question": "Can I use the Example Domain for testing and monitoring purposes?",
+    "answered": true,
+    "faithfulness": 1.0,
+    "authorized": true,
+    "confidence": null,
+    "retrieval": {
+      "similarity": 0.9975,
+      "coverage": 0.6667,
+      "entropy": 0.631,
+      "retrievalConfidence": 77,
+      "conflicts": []
+    },
+    "latency_ms": 6358
+  },
+  {
+    "kind": "positive",
+    "tenant": "da512f81-fcb7-436e-9ca2-e9e369c2afd1",
+    "question": "What is your refund policy?",
+    "answered": true,
+    "faithfulness": 0.6666666666666666,
+    "authorized": true,
+    "confidence": null,
+    "retrieval": {
+      "similarity": 0.8899,
+      "coverage": 0.6667,
+      "entropy": 0.6422,
+      "retrievalConfidence": 72,
+      "conflicts": [
+        {
+          "documentA": "65901b2b-1fdb-4e8d-be15-a39d9244de06",
+          "documentB": "0850dec0-a408-43af-a7d4-55b61219cb1f",
+          "valueA": 30.0,
+          "valueB": 14.0,
+          "context": "days within"
+        }
+      ]
+    },
+    "latency_ms": 2191
+  },
+  {
+    "kind": "positive",
+    "tenant": "da512f81-fcb7-436e-9ca2-e9e369c2afd1",
+    "question": "What is your return policy?",
+    "answered": true,
+    "faithfulness": 0.6666666666666666,
+    "authorized": true,
+    "confidence": null,
+    "retrieval": {
+      "similarity": 0.7161,
+      "coverage": 0.6667,
+      "entropy": 0.6508,
+      "retrievalConfidence": 63,
+      "conflicts": [
+        {
+          "documentA": "65901b2b-1fdb-4e8d-be15-a39d9244de06",
+          "documentB": "0850dec0-a408-43af-a7d4-55b61219cb1f",
+          "valueA": 30.0,
+          "valueB": 14.0,
+          "context": "days within"
+        }
+      ]
+    },
+    "latency_ms": 2586
+  },
+  {
+    "kind": "positive",
+    "tenant": "da512f81-fcb7-436e-9ca2-e9e369c2afd1",
+    "question": "What is the capital of QA-land?",
+    "answered": true,
+    "faithfulness": 1.0,
+    "authorized": true,
+    "confidence": null,
+    "retrieval": {
+      "similarity": 0.9988,
+      "coverage": 0.6667,
+      "entropy": 0.7172,
+      "retrievalConfidence": 76,
+      "conflicts": []
+    },
+    "latency_ms": 2160
+  },
+  {
+    "kind": "positive",
+    "tenant": "86c9b44a-f7ff-4aee-a0d0-45af556b175a",
+    "question": "Where can I download free imagem stock photos and backgrounds?",
+    "answered": true,
+    "faithfulness": 1.0,
+    "authorized": true,
+    "confidence": null,
+    "retrieval": {
+      "similarity": 0.9962,
+      "coverage": 0.6667,
+      "entropy": 0.6316,
+      "retrievalConfidence": 77,
+      "conflicts": []
+    },
+    "latency_ms": 2414
+  },
+  {
+    "kind": "positive",
+    "tenant": "86c9b44a-f7ff-4aee-a0d0-45af556b175a",
+    "question": "How do I submit feedback about my search experience?",
+    "answered": true,
+    "faithfulness": 1.0,
+    "authorized": true,
+    "confidence": null,
+    "retrieval": {
+      "similarity": 0.315,
+      "coverage": 0.0,
+      "entropy": 0.8896,
+      "retrievalConfidence": 18,
+      "conflicts": []
+    },
+    "latency_ms": 2659
+  },
+  {
+    "kind": "cross_tenant_probe",
+    "tenant": "da512f81-fcb7-436e-9ca2-e9e369c2afd1",
+    "question": "What are the population statistics and percentages for Hinduism, Sikhism, Christianity, Jainism, and Zoroastrianism?",
+    "leaked": false,
+    "cited_sources": 3
+  },
+  {
+    "kind": "cross_tenant_probe",
+    "tenant": "da512f81-fcb7-436e-9ca2-e9e369c2afd1",
+    "question": "What are the details and requirements for Assignment 1 and Assignment 2 in the Data Warehousing course?",
+    "leaked": false,
+    "cited_sources": 3
+  },
+  {
+    "kind": "cross_tenant_probe",
+    "tenant": "da512f81-fcb7-436e-9ca2-e9e369c2afd1",
+    "question": "When was Lahore's posh Model Town established?",
+    "leaked": false,
+    "cited_sources": 3
+  },
+  {
+    "kind": "cross_tenant_probe",
+    "tenant": "da512f81-fcb7-436e-9ca2-e9e369c2afd1",
+    "question": "Which business school in Pakistan is AACSB accredited?",
+    "leaked": false,
+    "cited_sources": 3
+  },
+  {
+    "kind": "cross_tenant_probe",
+    "tenant": "da512f81-fcb7-436e-9ca2-e9e369c2afd1",
+    "question": "Who installed Tatar Khan as the governor of Lahore?",
+    "leaked": false,
+    "cited_sources": 3
+  },
+  {
+    "kind": "cross_tenant_probe",
+    "tenant": "da512f81-fcb7-436e-9ca2-e9e369c2afd1",
+    "question": "How did the British re-purpose Mughal-era monuments in Civil Station under early British rule?",
+    "leaked": false,
+    "cited_sources": 3
+  },
+  {
+    "kind": "cross_tenant_probe",
+    "tenant": "da512f81-fcb7-436e-9ca2-e9e369c2afd1",
+    "question": "Which cities were awarded the Hilal-i-istaqlal by the Government of Pakistan in 1966?",
+    "leaked": false,
+    "cited_sources": 3
+  },
+  {
+    "kind": "cross_tenant_probe",
+    "tenant": "da512f81-fcb7-436e-9ca2-e9e369c2afd1",
+    "question": "What are the daily mean and minimum temperatures in Celsius and Fahrenheit?",
+    "leaked": false,
+    "cited_sources": 3
+  },
+  {
+    "kind": "cross_tenant_probe",
+    "tenant": "da512f81-fcb7-436e-9ca2-e9e369c2afd1",
+    "question": "When did Pakistani Sikhs reopen their temple?",
+    "leaked": false,
+    "cited_sources": 3
+  },
+  {
+    "kind": "cross_tenant_probe",
+    "tenant": "da512f81-fcb7-436e-9ca2-e9e369c2afd1",
+    "question": "When did Lahore open Pakistan's first metro line?",
+    "leaked": false,
+    "cited_sources": 3
+  }
+]
