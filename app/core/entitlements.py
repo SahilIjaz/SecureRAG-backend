@@ -120,3 +120,23 @@ def get_entitlements(subscription: Optional[Subscription]) -> Entitlements:
     anything the client sent. This is the function every route should use."""
     plan = subscription.plan_name if subscription is not None else None
     return entitlements_for_plan(plan)
+
+
+def apply_plan_restrictions(config: dict, ent: Entitlements) -> dict:
+    """Strip paid-only chatbot features from a config dict the plan doesn't
+    include, so a lower tier can't persist (or serve to its widget) lead
+    capture, live handoff, hidden branding or a quick-reply menu. Mutates and
+    returns `config`. Called on every save (api/frontend/chatbot.save_config)."""
+    behavior = config.setdefault("behavior", {})
+    appearance = config.setdefault("appearance", {})
+    if not ent.menu:
+        config["menu"] = []
+    if not ent.lead_capture:
+        behavior["collectEmailBeforeChat"] = False
+        behavior["collectNameBeforeChat"] = False
+        behavior["collectPhoneBeforeChat"] = False
+    if not ent.live_handoff:
+        behavior["handoffToHuman"] = False
+    if not ent.remove_branding:
+        appearance["showPoweredBy"] = True
+    return config

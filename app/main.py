@@ -61,6 +61,8 @@ async def ensure_frontend_schema() -> None:
         "ALTER TABLE documents ADD COLUMN IF NOT EXISTS question TEXT",
         "ALTER TABLE documents ADD COLUMN IF NOT EXISTS answer TEXT",
         "ALTER TABLE documents ADD COLUMN IF NOT EXISTS content_hash VARCHAR(64)",
+        # Why the last indexing attempt failed — see app/models/document.py.
+        "ALTER TABLE documents ADD COLUMN IF NOT EXISTS error_message VARCHAR(500)",
         "CREATE INDEX IF NOT EXISTS ix_documents_content_hash ON documents (content_hash)",
         # The Knowledge page's stats/documents/urls/faqs endpoints all filter
         # on exactly this pair (tenant_id, is_active) — covers the hottest
@@ -297,6 +299,54 @@ app.add_middleware(
 # transaction lists, etc.) — previously every response went over the wire
 # uncompressed regardless of size.
 app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+
+class WidgetPreflightMiddleware:
+    """Answers CORS preflights for the public widget sub-app before the main
+    app's CORSMiddleware sees them.
+
+    Starlette middleware wraps the whole app, mounts included, so the main
+    CORSMiddleware (dashboard allow-list) answered every OPTIONS for
+    /api/public/widget/* with 400 "Disallowed CORS origin" for any origin
+    that wasn't the Nexus frontend — the widget sub-app's own
+    allow_origins=["*"] never ran. Simple GETs/POSTs were unaffected (the
+    sub-app still stamped ACAO:* on the response), which is why only direct
+    customer-page calls with custom headers broke. Added last so it is the
+    outermost layer.
+    """
+
+    PREFIX = "/api/public/widget"
+
+    def __init__(self, app):
+        # Starlette constructs middleware as cls(app=<next layer>).
+        self.inner = app
+
+    async def __call__(self, scope, receive, send):
+        if (
+            scope["type"] == "http"
+            and scope["method"] == "OPTIONS"
+            and scope["path"].startswith(self.PREFIX)
+            and any(k == b"origin" for k, _ in scope["headers"])
+        ):
+            from starlette.responses import PlainTextResponse
+            from app.api.public.widget import WIDGET_CORS_ALLOW_HEADERS, WIDGET_CORS_ALLOW_METHODS
+
+            response = PlainTextResponse(
+                "OK",
+                headers={
+                    "Access-Control-Allow-Origin": "*",
+                    "Access-Control-Allow-Methods": ", ".join(WIDGET_CORS_ALLOW_METHODS),
+                    "Access-Control-Allow-Headers": ", ".join(WIDGET_CORS_ALLOW_HEADERS),
+                    "Access-Control-Max-Age": "3600",
+                    "Vary": "Origin",
+                },
+            )
+            await response(scope, receive, send)
+            return
+        await self.inner(scope, receive, send)
+
+
+app.add_middleware(WidgetPreflightMiddleware)
 
 # Frontend-compat API — paths/shapes match Nexus-frontend/src/api/*.api.ts.
 app.include_router(frontend_router, prefix="/api")

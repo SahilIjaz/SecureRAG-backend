@@ -100,7 +100,10 @@ async def _ensure_baseline_quota(tenant: Tenant, db: AsyncSession) -> TenantQuot
 
 async def _build_summary(user: User, db: AsyncSession) -> Optional[FEOnboardingSummary]:
     tenant, subscription = await helpers.get_tenant_and_subscription(user, db)
-    if subscription is None:
+    # No summary until the wizard actually finished — a subscription row
+    # alone only means step 3's checkout was *started* (see
+    # helpers.onboarding_completed).
+    if subscription is None or tenant.onboarding_completed_at is None:
         return None
 
     docs = await helpers.get_active_documents(user.tenant_id, db)
@@ -337,6 +340,21 @@ async def complete(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Complete plan selection (Step 3) before finishing onboarding.",
         )
+
+    # The trial is only real once Stripe has a card on file for it. Without
+    # this check a client could POST /complete right after /checkout (never
+    # confirming the SetupIntent) and get a card-less, never-expiring trial.
+    # Stripe being unreachable (None) is allowed through — availability over
+    # strictness — but a definite "no card" is a 402.
+    with perf_timing.timed("stripe_confirm_payment_method"):
+        card_confirmed = await stripe_service.has_confirmed_payment_method(subscription)
+    if card_confirmed is False:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail="Add a payment card in the Plan step to start your free trial.",
+        )
+    if card_confirmed and subscription.trial_used_at is None:
+        subscription.trial_used_at = datetime.now(timezone.utc)
 
     # SECURITY: derive the plan from the Stripe price on the subscription row
     # (set server-side at /checkout), never from body.plan. Trusting body.plan

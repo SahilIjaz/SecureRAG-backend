@@ -6,6 +6,7 @@ These mirror Nexus-frontend/src/types/api.types.ts + entities.types.ts EXACTLY
 renders). Keep the two files in sync — the frontend is the source of truth.
 """
 
+import re
 from typing import List, Literal, Optional
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
@@ -13,6 +14,38 @@ from pydantic import BaseModel, EmailStr, Field, field_validator
 from app.config import settings
 
 FEPlanId = Literal["starter", "growth", "business"]
+
+# ── Shared validators ──────────────────────────────────────────────────────────
+
+# Mirrors Nexus-frontend/src/lib/validation.ts `passwordSchema` exactly. The
+# client already enforces this on every password form; without the same rule
+# here, anyone bypassing the UI (curl, an old client) could set "weakweak".
+PASSWORD_RULE = "Password must be at least 8 characters and contain at least one uppercase letter, one lowercase letter, one number, and one special character."
+_PASSWORD_RE = re.compile(r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*(),.?\":{}|<>_\-\\/\[\]`~+=;']).+$")
+
+def validate_strong_password(value: str) -> str:
+    if len(value) < 8 or len(value) > 128 or not _PASSWORD_RE.match(value):
+        raise ValueError(PASSWORD_RULE)
+    return value
+
+def _non_blank(v: str, field_name: str) -> str:
+    # Pydantic's plain min_length counts raw characters, so "   " passes it —
+    # strip first, then check, so whitespace-only input is actually rejected.
+    v = v.strip()
+    if not v:
+        raise ValueError(f"{field_name} cannot be empty.")
+    return v
+
+# Safe CSS colour: hex, rgb()/hsl() with numeric args, or a plain named colour.
+# Anything else (e.g. "javascript:…", "url(…)", "; …") is rejected before it
+# reaches the widget's inline styles.
+_CSS_COLOR_RE = re.compile(r"^(#[0-9a-fA-F]{3,8}|(rgb|hsl)a?\([\d\s.,%/]+\)|[a-zA-Z]{3,20})$")
+
+def validate_css_color(value: str) -> str:
+    value = value.strip()
+    if not _CSS_COLOR_RE.match(value):
+        raise ValueError("Colour must be a hex value like #D97706.")
+    return value
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
@@ -29,6 +62,16 @@ class FESignupRequest(BaseModel):
     email: EmailStr
     password: str = Field(..., min_length=8, max_length=128)
     companyName: str = Field(..., min_length=1, max_length=255)
+
+    @field_validator("password")
+    @classmethod
+    def _strong_password(cls, v: str) -> str:
+        return validate_strong_password(v)
+
+    @field_validator("companyName")
+    @classmethod
+    def _company_not_blank(cls, v: str) -> str:
+        return _non_blank(v, "Company name")
 
 class FESignupResponse(BaseModel):
     success: bool
@@ -66,12 +109,29 @@ class FEResetPasswordRequest(BaseModel):
     otp: str = Field(..., min_length=6, max_length=6)
     newPassword: str = Field(..., min_length=8, max_length=128)
 
+    @field_validator("newPassword")
+    @classmethod
+    def _strong_password(cls, v: str) -> str:
+        return validate_strong_password(v)
+
 class FESuccessResponse(BaseModel):
     success: bool = True
 
 class FEChangePasswordRequest(BaseModel):
     currentPassword: str = Field(..., max_length=128)
     newPassword: str = Field(..., min_length=8, max_length=128)
+
+    @field_validator("newPassword")
+    @classmethod
+    def _strong_password(cls, v: str) -> str:
+        return validate_strong_password(v)
+
+class FEChangePasswordResponse(BaseModel):
+    success: bool = True
+    # A fresh access token minted under the new token_version, so the device
+    # that changed the password stays signed in while every other session is
+    # invalidated (previously the very next request on this device 401'd).
+    token: str
 
 # ── Onboarding ────────────────────────────────────────────────────────────────
 
@@ -206,6 +266,11 @@ class FEChatbotBehavior(BaseModel):
 
 class FEChatbotAppearance(BaseModel):
     accentColor: str = Field(..., max_length=32)
+
+    @field_validator("accentColor")
+    @classmethod
+    def _safe_color(cls, v: str) -> str:
+        return validate_css_color(v)
     bubblePosition: Literal["bottom-right", "bottom-left"]
     showPoweredBy: bool
     widgetTheme: Literal["light", "dark", "auto"]
@@ -296,6 +361,11 @@ class FEConversationDetail(FEConversationListItem):
 class FESendReplyRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=8000)
 
+    @field_validator("text")
+    @classmethod
+    def _text_not_blank(cls, v: str) -> str:
+        return _non_blank(v, "Reply")
+
 class FESendReplyResponse(BaseModel):
     message: FEConversationMessage
 
@@ -319,6 +389,9 @@ class FEKnowledgeDocument(BaseModel):
     chunks: Optional[int] = None
     sizeLabel: str
     addedLabel: str
+    # Why indexing failed (set only when status == "Failed") so the user can
+    # tell a corrupt PDF from a transient outage instead of just "Failed".
+    error: Optional[str] = None
 
 class FEKnowledgeUrl(BaseModel):
     id: str
@@ -326,6 +399,7 @@ class FEKnowledgeUrl(BaseModel):
     status: Literal["Indexed", "Processing", "Failed"]
     chunks: Optional[int] = None
     addedLabel: str
+    error: Optional[str] = None
 
 class FEKnowledgeStats(BaseModel):
     documentsUsed: int
@@ -350,14 +424,6 @@ class FEFaqEntry(BaseModel):
     status: Literal["Indexed", "Processing", "Failed"]
     chunks: Optional[int] = None
     addedLabel: str
-
-def _non_blank(v: str, field_name: str) -> str:
-    # Pydantic's plain min_length counts raw characters, so "   " passes it —
-    # strip first, then check, so whitespace-only input is actually rejected.
-    v = v.strip()
-    if not v:
-        raise ValueError(f"{field_name} cannot be empty.")
-    return v
 
 class FEAddFaqRequest(BaseModel):
     question: str = Field(..., max_length=settings.FAQ_QUESTION_MAX_LEN)
@@ -425,7 +491,9 @@ class FEBillingInfo(BaseModel):
     status: Literal["Active", "Trialing", "Past Due", "Canceled"]
     priceLabel: str
     renewsOn: str
-    paymentMethod: FEPaymentMethod
+    # None until Stripe has synced a real card (previously a placeholder
+    # "VISA •••• 0000 12/30" was shown as if a card were on file).
+    paymentMethod: Optional[FEPaymentMethod] = None
     trialEndsOn: Optional[str] = None
     # Prepaid wallet — separate concept from the plan above (plan quota
     # covers document/storage limits; the wallet covers real LLM $ cost).
@@ -510,6 +578,16 @@ class FEAcceptInviteRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     password: str = Field(..., min_length=8, max_length=128)
 
+    @field_validator("password")
+    @classmethod
+    def _strong_password(cls, v: str) -> str:
+        return validate_strong_password(v)
+
+    @field_validator("name")
+    @classmethod
+    def _name_not_blank(cls, v: str) -> str:
+        return _non_blank(v, "Name")
+
 # ── Profile ───────────────────────────────────────────────────────────────────
 
 class FEUserProfile(BaseModel):
@@ -524,6 +602,16 @@ class FESaveProfileRequest(BaseModel):
     email: EmailStr
     companyName: str = Field(..., min_length=1, max_length=255)
     avatarUrl: Optional[str] = None
+
+    @field_validator("name")
+    @classmethod
+    def _name_not_blank(cls, v: str) -> str:
+        return _non_blank(v, "Name")
+
+    @field_validator("companyName")
+    @classmethod
+    def _company_not_blank(cls, v: str) -> str:
+        return _non_blank(v, "Company name")
 
 class FESaveProfileResponse(BaseModel):
     success: bool

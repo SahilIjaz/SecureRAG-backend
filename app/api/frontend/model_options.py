@@ -20,6 +20,7 @@ from app.api.frontend import helpers
 from app.config import settings as app_settings
 from app.database import get_db
 from app.models.user import User
+from app.core.rbac import require_owner
 from app.services.auth_service import get_current_user
 from app.services.llm import pricing
 from app.services.llm.provider_catalog import get_catalog_entry
@@ -110,9 +111,11 @@ async def get_model_preference(
 @router.put("/settings/model", response_model=FEModelPreference)
 async def set_model_preference(
     body: FEModelPreference,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_owner),
     db: AsyncSession = Depends(get_db),
 ) -> FEModelPreference:
+    # Owner only — switching provider changes what the tenant's wallet is
+    # charged per message.
     if body.provider is not None and body.provider not in KNOWN_PROVIDERS:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Unknown provider {body.provider!r}.")
 

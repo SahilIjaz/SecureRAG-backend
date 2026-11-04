@@ -42,7 +42,7 @@ from app.core.background import fire_and_forget
 from app.core.rate_limit import limiter
 from app.core.subscription_guard import is_subscription_usable
 from app.schemas.frontend import CitationSource
-from app.core.widget_auth import create_widget_session_token, decode_widget_session_token, is_origin_allowed
+from app.core.widget_auth import create_widget_session_token, decode_widget_session_token, is_embed_allowed
 from app.database import AsyncSessionLocal, get_db
 from app.models.chatbot_config import ChatbotConfig
 from app.models.conversation import Conversation, ConversationMessage
@@ -65,7 +65,9 @@ def _widget_key_or_ip(request: Request) -> str:
     key = request.headers.get("x-widget-key")
     return f"widget:{key}" if key else get_remote_address(request)
 
-async def _resolve_tenant_by_key(key: str, request: Request, db: AsyncSession) -> tuple[Tenant, ChatbotConfig]:
+async def _resolve_tenant_by_key(
+    key: str, request: Request, db: AsyncSession, embed_host: Optional[str] = None
+) -> tuple[Tenant, ChatbotConfig]:
     resolved = await helpers.get_tenant_by_widget_api_key(key, db)
     if resolved is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid widget API key.")
@@ -78,7 +80,11 @@ async def _resolve_tenant_by_key(key: str, request: Request, db: AsyncSession) -
             detail="This chatbot has no allowed domains configured yet.",
         )
     origin = request.headers.get("origin")
-    if not is_origin_allowed(origin, allowed_domains):
+    # The embedding site's hostname, as reported by the widget iframe (from
+    # document.referrer) — see widget_auth.resolve_embed_host for why the
+    # Origin header alone can never identify a customer's site.
+    widget_host = embed_host or request.headers.get("x-widget-host")
+    if not is_embed_allowed(origin, widget_host, allowed_domains):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="This domain is not allowed to embed this chatbot.",
@@ -869,6 +875,8 @@ class WidgetLeaveRequest(BaseModel):
     # navigator.sendBeacon() on page unload, which can't set custom headers.
     apiKey: str = Field(..., min_length=1)
     sessionToken: str = Field(..., min_length=1)
+    # Same reason as apiKey: sendBeacon can't set X-Widget-Host either.
+    host: Optional[str] = Field(None, max_length=255)
 
 @router.post("/leave", status_code=status.HTTP_204_NO_CONTENT)
 @limiter.limit("30/minute", key_func=_widget_key_or_ip)
@@ -895,7 +903,7 @@ async def post_widget_leave(
     except (ValidationError, ValueError):
         return
     try:
-        tenant, _ = await _resolve_tenant_by_key(body.apiKey, request, db)
+        tenant, _ = await _resolve_tenant_by_key(body.apiKey, request, db, embed_host=body.host)
     except HTTPException:
         return
     payload = decode_widget_session_token(body.sessionToken)
@@ -959,12 +967,15 @@ widget_app.state.limiter = limiter
 async def _widget_rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
     return JSONResponse(status_code=429, content={"detail": "Rate limit exceeded. Please try again later."})
 
+WIDGET_CORS_ALLOW_HEADERS = ["Content-Type", "Accept", "X-Widget-Key", "X-Widget-Host"]
+WIDGET_CORS_ALLOW_METHODS = ["GET", "POST", "OPTIONS"]
+
 widget_app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=False,
-    allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type", "X-Widget-Key"],
+    allow_methods=WIDGET_CORS_ALLOW_METHODS,
+    allow_headers=WIDGET_CORS_ALLOW_HEADERS,
     max_age=3600,
 )
 

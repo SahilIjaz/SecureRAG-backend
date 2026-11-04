@@ -64,6 +64,7 @@ def _fe_document(doc: Document) -> FEKnowledgeDocument:
         chunks=doc.chunk_count,
         sizeLabel=helpers.size_label(doc.file_size_mb),
         addedLabel=helpers.time_ago(doc.created_at),
+        error=doc.error_message if doc.status == DocumentStatus.failed else None,
     )
 
 def _fe_url(doc: Document) -> FEKnowledgeUrl:
@@ -73,6 +74,7 @@ def _fe_url(doc: Document) -> FEKnowledgeUrl:
         status=helpers.doc_status_to_fe(doc.status),
         chunks=doc.chunk_count,
         addedLabel=helpers.time_ago(doc.created_at),
+        error=doc.error_message if doc.status == DocumentStatus.failed else None,
     )
 
 def _fe_faq(doc: Document) -> FEFaqEntry:
@@ -248,6 +250,23 @@ async def add_url(
             detail=f"This URL can't be added: {e}",
         )
 
+    # Files are deduped by content_hash; URLs were not, so the same page could
+    # be added repeatedly — each copy consuming document quota and feeding
+    # duplicate chunks to the LLM.
+    dup = await db.execute(
+        select(Document.id).where(
+            Document.tenant_id == current_user.tenant_id,
+            Document.is_active == True,
+            Document.source == DocumentSource.scraped,
+            Document.source_url == url,
+        ).limit(1)
+    )
+    if dup.scalar_one_or_none() is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This URL is already in your knowledge base.",
+        )
+
     quota = await document_service.lock_quota_row(current_user.tenant_id, db)
     if quota and quota.max_documents != -1:
         result = await db.execute(
@@ -375,6 +394,7 @@ async def reindex_all(
     for doc in docs:
         if doc.status == DocumentStatus.failed and _reindexable_source(doc):
             doc.status = DocumentStatus.pending
+            doc.error_message = None
     await db.commit()
     schedule_document_processing(reindexable)
     return FESuccessResponse()

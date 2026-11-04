@@ -20,7 +20,7 @@ from typing import List
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from app.core.rate_limit import limiter
-from app.core.rbac import require_owner
+from app.core.rbac import require_admin, require_owner
 from sqlalchemy import func, select, update as _sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -87,13 +87,16 @@ async def get_workspace(
 @router.put("/workspace", response_model=FESaveWorkspaceSettingsResponse)
 async def save_workspace(
     body: FEWorkspaceSettings,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> FESaveWorkspaceSettingsResponse:
     tenant = await helpers.get_tenant(current_user, db)
 
-    if body.name.strip():
-        tenant.workspace_name = body.name.strip()
+    if not body.name.strip():
+        # Previously a blank name was silently ignored but still answered
+        # 200, which the UI rendered as a successful save.
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Workspace name cannot be empty.")
+    tenant.workspace_name = body.name.strip()
     if body.industry.strip():
         tenant.business_category = body.industry.strip()
 
@@ -225,7 +228,14 @@ async def _billing_info(user: User, db: AsyncSession) -> FEBillingInfo:
         status=fe_status,
         priceLabel=helpers.PLAN_PRICE_LABELS[fe_plan],
         renewsOn=helpers.format_date(renews_on),
-        paymentMethod=FEPaymentMethod(brand=payment.brand, last4=payment.last4, expiry=payment.expiry),
+        # The row is seeded with placeholder defaults ("VISA"/"0000"/"12/30")
+        # until the Stripe webhook syncs a real card; don't present those as
+        # a card on file.
+        paymentMethod=(
+            FEPaymentMethod(brand=payment.brand, last4=payment.last4, expiry=payment.expiry)
+            if payment.last4 and payment.last4 != "0000"
+            else None
+        ),
         trialEndsOn=trial_ends_on,
         walletBalanceUsd=float(tenant.balance_usd or 0),
         trialMessagesRemaining=trial_messages_remaining,
@@ -234,7 +244,7 @@ async def _billing_info(user: User, db: AsyncSession) -> FEBillingInfo:
 
 @router.get("/billing", response_model=FEBillingInfo)
 async def get_billing(
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_owner),
     db: AsyncSession = Depends(get_db),
 ) -> FEBillingInfo:
     return await _billing_info(current_user, db)
@@ -313,7 +323,7 @@ async def create_payment_method_setup_intent(
 @router.post("/billing/wallet/topup", response_model=FEWalletTopupResponse)
 async def start_wallet_topup(
     body: FEWalletTopupRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_owner),
     db: AsyncSession = Depends(get_db),
 ) -> FEWalletTopupResponse:
     """Creates a one-time Stripe Checkout Session that credits
@@ -338,7 +348,7 @@ _WALLET_TRANSACTIONS_PAGE_SIZE = 10
 @router.get("/billing/wallet/transactions", response_model=FEWalletTransactionsResponse)
 async def get_wallet_transactions(
     page: int = Query(1, ge=1),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_owner),
     db: AsyncSession = Depends(get_db),
 ) -> FEWalletTransactionsResponse:
     """Paginated wallet ledger entries — top-ups and deductions — for the
@@ -376,7 +386,7 @@ async def get_wallet_transactions(
 
 @router.get("/api-keys", response_model=List[FEApiKey])
 async def list_api_keys(
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_owner),
     db: AsyncSession = Depends(get_db),
 ) -> List[FEApiKey]:
     result = await db.execute(

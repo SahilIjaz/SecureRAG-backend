@@ -38,6 +38,66 @@ def _normalize_allowlist_entry(entry: str) -> Optional[str]:
     host = entry.split("/", 1)[0].split(":", 1)[0].strip().lower()
     return host or None
 
+def _trusted_frontend_hosts() -> set[str]:
+    """Hostnames the widget *page itself* is served from (the Nexus frontend
+    and local dev ports) — requests from these are the embed iframe talking,
+    not a customer site, so the embedding site must be read from the
+    X-Widget-Host header instead of the Origin."""
+    hosts = set()
+    for origin in settings.cors_allowed_origins:
+        host = _hostname(origin)
+        if host:
+            hosts.add(host)
+    return hosts
+
+def resolve_embed_host(origin_header: Optional[str], widget_host_header: Optional[str]) -> Optional[str]:
+    """
+    Which hostname should be checked against the tenant's allowed domains.
+
+    The widget is embedded as an <iframe src="{NEXUS}/widget/…"> (see
+    Frontend/public/widget-loader.js), so every API call it makes carries
+    the *Nexus frontend's* Origin — the customer's domain never appears in
+    any browser-controlled header. Before this, "Allowed domains = acme.com"
+    could therefore never match and every real embed got 403 (silently —
+    the widget renders nothing on a load error).
+
+    Resolution:
+      - Origin is one of our own frontend hosts → this is the iframe. The
+        page reads the embedding site from `document.referrer` (set by the
+        browser, not forgeable by the embedding page) and sends it as
+        X-Widget-Host; that is the host to check. Missing header → None
+        (rejected by the caller) rather than falling back to our own host.
+      - Any other Origin → a direct browser call from a customer page (the
+        "developer API" path); check the Origin's host as before.
+      - No Origin at all → None (non-browser caller; see is_origin_allowed's
+        WIDGET_REQUIRE_ORIGIN escape hatch).
+    """
+    if not origin_header:
+        return None
+    origin_host = _hostname(origin_header)
+    if not origin_host:
+        return None
+    if origin_host in _trusted_frontend_hosts():
+        return _normalize_allowlist_entry(widget_host_header or "") if widget_host_header else None
+    return origin_host
+
+def is_embed_allowed(
+    origin_header: Optional[str], widget_host_header: Optional[str], allowed_domains_csv: str
+) -> bool:
+    """Exact-hostname allowlist check against the host resolve_embed_host()
+    picks. Same escape hatch as is_origin_allowed for origin-less callers."""
+    if not origin_header:
+        return not settings.WIDGET_REQUIRE_ORIGIN
+    host = resolve_embed_host(origin_header, widget_host_header)
+    if not host:
+        return False
+    allowed = {
+        normalized
+        for d in allowed_domains_csv.split(",")
+        if (normalized := _normalize_allowlist_entry(d))
+    }
+    return host in allowed
+
 def is_origin_allowed(origin_header: Optional[str], allowed_domains_csv: str) -> bool:
     """
     Exact-hostname allowlist check — never substring/suffix matching, so an

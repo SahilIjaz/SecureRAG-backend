@@ -70,6 +70,9 @@ class Document(Base):
     question: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     answer: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     chunk_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Last indexing/scrape failure reason (truncated), surfaced in the
+    # Knowledge page so "Failed" isn't a dead end. Cleared when re-queued.
+    error_message: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     # SHA-256 hex digest of the raw file bytes — lets upload_documents() detect
     # a byte-identical re-upload before it burns a Cloudinary + Pinecone cost.
     # Only populated for source == uploaded (see document_service.upload_documents).

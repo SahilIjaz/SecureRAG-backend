@@ -239,6 +239,13 @@ class Settings(BaseSettings):
     # genuine stall, not normal variance.
     GEMINI_REQUEST_TIMEOUT_SECONDS: float = 20.0
 
+    # End-to-end budget for one answer across every provider/model retry in
+    # app/services/llm/router.py. Without it a bad upstream day stacked the
+    # per-attempt timeout (lite 20s → flash 20s → flash again 20s) into a
+    # 65-second wait before the user saw an error. Attempts that can't start
+    # within the budget are skipped; the last attempt gets only the time left.
+    LLM_TOTAL_BUDGET_SECONDS: float = 40.0
+
     # Redis — optional. When set (e.g. redis://localhost:6379/0), it backs the
     # rate limiter and the query-embedding cache with shared, restart-surviving
     # state across workers. When empty, both fall back to per-process in-memory

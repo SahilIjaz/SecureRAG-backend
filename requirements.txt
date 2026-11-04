@@ -29,3 +29,7 @@ stripe==11.4.1
 redis>=5.0.0
 kyber-py==1.2.0
 dilithium-py==1.4.0
+
+# Security: Pillow <13 carries 11 open CVEs (pip-audit 2026-11-03). crawl4ai 0.4.243 declares
+# pillow~=10.4 but runs fine on 13 (verified with a live scrape); keep this explicit pin.
+pillow>=13.0.0

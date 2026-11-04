@@ -92,10 +92,33 @@ class AnthropicProvider:
         return await self.generate(prompt, model=model, max_tokens=max_tokens, timeout_seconds=settings.ANTHROPIC_REQUEST_TIMEOUT_SECONDS)
 
     async def health_check(self, model: str) -> bool:
-        # This SDK version (0.25.1) has no models-list/metadata endpoint —
-        # unlike Gemini there's no free reachability probe available, and a
-        # real generation call would cost real money on every check. This
-        # only confirms a key is configured, not that the key/model
-        # combination actually works; a bad key still surfaces at the first
-        # real call, same as it would have before this provider existed.
-        return bool(settings.ANTHROPIC_API_KEY)
+        """Free, authenticated probe: GET /v1/models/{model}. A revoked key
+        comes back 401/403 and an unknown model 404 — both mean "not
+        reachable", so a dead key is a startup log line + a hidden option on
+        the AI Model page instead of a live tenant's failed chat. (The
+        previous check only tested that a key string was *configured*.) A
+        network blip is treated as reachable rather than flapping the
+        provider off."""
+        if not settings.ANTHROPIC_API_KEY:
+            return False
+        import httpx
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(
+                    f"https://api.anthropic.com/v1/models/{model}",
+                    headers={
+                        "x-api-key": settings.ANTHROPIC_API_KEY,
+                        "anthropic-version": "2023-06-01",
+                    },
+                )
+        except httpx.HTTPError as e:
+            logger.warning("Anthropic health check for %s could not connect (%s); assuming reachable", model, e)
+            return True
+        if resp.status_code in (401, 403):
+            logger.error("Anthropic API key was rejected (%s) — rotate ANTHROPIC_API_KEY.", resp.status_code)
+            return False
+        if resp.status_code == 404:
+            logger.warning("Anthropic model %r not found for this key.", model)
+            return False
+        return resp.status_code < 500

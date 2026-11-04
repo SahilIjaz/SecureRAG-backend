@@ -53,7 +53,7 @@ def schedule_url_scrape(document_ids: list[uuid.UUID]) -> None:
 async def _scrape_and_process_url_safe(document_id: uuid.UUID) -> None:
     try:
         scraped = await _scrape_url_into_document(document_id)
-    except Exception:
+    except Exception as e:
         logger.exception("Scrape failed for document %s", document_id)
         try:
             async with AsyncSessionLocal() as db:
@@ -62,6 +62,7 @@ async def _scrape_and_process_url_safe(document_id: uuid.UUID) -> None:
                 ).scalar_one_or_none()
                 if doc is not None:
                     doc.status = DocumentStatus.failed
+                    doc.error_message = _failure_reason(e)
                     await db.commit()
         except Exception:
             logger.error("Could not mark document %s failed after scrape error", document_id)
@@ -261,10 +262,22 @@ async def recover_stuck_documents() -> None:
     logger.warning("Recovered %d document(s) stuck in processing; rescheduling", len(stuck_ids))
     schedule_document_processing(stuck_ids)
 
+def _failure_reason(exc: BaseException) -> str:
+    """Short, user-readable reason stored on the document (see
+    Document.error_message). Maps the common parser errors to plain words;
+    everything else keeps the exception's own message, truncated."""
+    name = type(exc).__name__
+    text = str(exc).strip() or name
+    if "PdfReadError" in name or "startxref" in text or "EOF marker" in text:
+        return "The PDF appears to be corrupt or isn't a real PDF file."
+    if "Timeout" in name or "timed out" in text.lower():
+        return "Timed out while reading the source — try re-indexing."
+    return f"{name}: {text}"[:500]
+
 async def _process_document_safe(document_id: uuid.UUID) -> None:
     try:
         await _process_document(document_id)
-    except Exception:
+    except Exception as e:
         logger.exception("Indexing failed for document %s", document_id)
         try:
             async with AsyncSessionLocal() as db:
@@ -273,6 +286,7 @@ async def _process_document_safe(document_id: uuid.UUID) -> None:
                 ).scalar_one_or_none()
                 if doc is not None:
                     doc.status = DocumentStatus.failed
+                    doc.error_message = _failure_reason(e)
                     await db.commit()
         except Exception as mark_error:
             logger.error("Could not mark document %s failed: %s", document_id, mark_error)

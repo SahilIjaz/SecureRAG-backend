@@ -69,7 +69,7 @@ async def _fe_user(user: User, db: AsyncSession) -> FEUser:
         id=str(user.id),
         email=user.email,
         companyName=company,
-        onboardingCompleted=helpers.onboarding_completed(subscription),
+        onboardingCompleted=helpers.onboarding_completed(tenant),
         role=await helpers.role_for(user, db),
     )
 

@@ -157,13 +157,13 @@ async def save_config(
     new_config = body.model_dump()
     new_config.setdefault("deploy", {})["apiKey"] = existing_key
 
-    # Menu is a paid feature — drop it on save if the plan doesn't include it,
-    # so a lower tier can't persist (or serve) a menu.
-    from app.core.entitlements import get_entitlements
+    # Paid features (menu, lead capture, live handoff, hidden branding) are
+    # stripped on save if the plan doesn't include them, so a lower tier
+    # can't persist — or serve to its widget — what it hasn't paid for.
+    from app.core.entitlements import apply_plan_restrictions, get_entitlements
     subscription = await helpers.get_subscription(current_user.tenant_id, db)
-    if not get_entitlements(subscription).menu:
-        new_config["menu"] = []
-        body.menu = []
+    apply_plan_restrictions(new_config, get_entitlements(subscription))
+    body = FEChatbotConfig.model_validate(new_config)
 
     record.config = new_config
     await db.flush()

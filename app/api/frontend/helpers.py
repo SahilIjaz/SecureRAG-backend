@@ -443,12 +443,23 @@ def is_visitor_still_present(conversation: Conversation) -> bool:
     return age < timedelta(seconds=settings.VISITOR_PRESENCE_WINDOW_SECONDS)
 
 def fe_plan_for_subscription(subscription: Optional[Subscription]) -> str:
+    # Fallback must be a *frontend* plan id — "free" is the backend enum name
+    # and isn't a key of PLAN_DISPLAY_LIMITS/PLAN_PRICE_LABELS (it 500'd
+    # GET /knowledge/stats for any tenant without a subscription row).
     if subscription is None:
-        return "free"
-    return BE_TO_FE_PLAN.get(subscription.plan_name, "free")
+        return "starter"
+    return BE_TO_FE_PLAN.get(subscription.plan_name, "starter")
 
-def onboarding_completed(subscription: Optional[Subscription]) -> bool:
-    return subscription is not None
+def onboarding_completed(tenant: Tenant) -> bool:
+    """Onboarding is complete only once POST /onboarding/complete has run.
+
+    Previously this was `subscription is not None`, but the Subscription row
+    is created by POST /onboarding/checkout (step 3) *before* any card is
+    confirmed — so closing the tab mid-step-3 and logging back in skipped
+    the rest of the wizard and landed on the dashboard with a card-less
+    trial.
+    """
+    return tenant.onboarding_completed_at is not None
 
 async def role_for(user: User, db: AsyncSession) -> str:
     """The user's workspace role as a string ('owner'/'admin'/'agent'), from the

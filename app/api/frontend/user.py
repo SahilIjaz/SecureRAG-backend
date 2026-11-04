@@ -17,12 +17,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.frontend import helpers
 from app.core.rate_limit import limiter
-from app.core.security import hash_password, verify_password
+from app.core.security import create_access_token, hash_password, verify_password
 from app.database import get_db
 from app.models.user import User
 from app.services.auth_service import invalidate_user_cache
 from app.schemas.frontend import (
     FEChangePasswordRequest,
+    FEChangePasswordResponse,
     FESaveProfileRequest,
     FESaveProfileResponse,
     FESuccessResponse,
@@ -101,11 +102,11 @@ async def get_me(
         id=str(current_user.id),
         email=current_user.email,
         companyName=company,
-        onboardingCompleted=helpers.onboarding_completed(subscription),
+        onboardingCompleted=helpers.onboarding_completed(tenant),
         role=await helpers.role_for(current_user, db),
     )
 
-@router.put("/password", response_model=FESuccessResponse)
+@router.put("/password", response_model=FEChangePasswordResponse)
 @limiter.limit("5/minute")
 async def change_password(
     request: Request,
@@ -132,11 +133,17 @@ async def change_password(
 
     current_user.password_hash = await loop.run_in_executor(None, hash_password, body.newPassword)
     # Invalidate every existing session for this user — a password change must
-    # log out other devices.
+    # log out other devices...
     current_user.token_version = (current_user.token_version or 0) + 1
     await db.flush()
     invalidate_user_cache(current_user.id)
-    return FESuccessResponse()
+    # ...but not THIS one: hand back a token minted under the new version so
+    # the device that changed the password stays signed in (previously its
+    # next request 401'd and the app hard-redirected to "/").
+    token = create_access_token(
+        {"sub": str(current_user.id), "tenant_id": str(current_user.tenant_id), "tv": current_user.token_version}
+    )
+    return FEChangePasswordResponse(success=True, token=token)
 
 @router.get("/profile", response_model=FEUserProfile)
 async def get_profile(
@@ -153,13 +160,16 @@ async def save_profile(
 ) -> FESaveProfileResponse:
     new_email = body.email.lower().strip()
     if new_email != current_user.email:
-        result = await db.execute(select(User).where(User.email == new_email))
-        if result.scalar_one_or_none() is not None:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="An account with this email already exists.",
-            )
-        current_user.email = new_email
+        # The email is the login identity and the only thing that was ever
+        # verified (OTP at signup). Letting a session silently swap it to an
+        # unverified address — with no OTP to the new one and no notice to
+        # the old — is an account-takeover vector, so it's refused until a
+        # proper re-verification flow exists. The Profile page shows the
+        # field read-only for the same reason.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Changing your email address isn't supported yet. Contact support to update it.",
+        )
 
     current_user.full_name = body.name.strip()
     # Distinguish "field omitted" (leave unchanged) from an explicit null

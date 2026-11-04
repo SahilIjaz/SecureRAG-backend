@@ -60,7 +60,24 @@ async def notify_tenant(
     Record a notification for a tenant and email it if enabled. Does not
     commit — participates in whatever transaction the caller is already in
     (matches helpers.increment_questions_used's own convention).
+
+    Deduplicated: if an *unread* notification with the same type and link
+    already exists, nothing new is recorded or emailed — a visitor pressing
+    "Talk to a human" twice (or a handoff followed by an escalation on the
+    same conversation) used to produce one bell entry + email per call.
     """
+    if link:
+        existing = await db.execute(
+            select(Notification.id).where(
+                Notification.tenant_id == tenant_id,
+                Notification.type == notif_type,
+                Notification.link == link,
+                Notification.is_read == False,  # noqa: E712
+            ).limit(1)
+        )
+        if existing.scalar_one_or_none() is not None:
+            return
+
     db.add(Notification(tenant_id=tenant_id, type=notif_type, title=title, body=body, link=link))
 
     result = await db.execute(

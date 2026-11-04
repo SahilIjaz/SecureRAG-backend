@@ -32,7 +32,7 @@ from app.models.conversation import Conversation, ConversationMessage
 from app.models.ptt_session import PTTSession
 from app.models.tenant_user import TenantUser
 from app.models.user import User
-from app.core.rbac import require_owner
+from app.core.rbac import require_admin, require_owner
 from app.schemas.frontend import (
     FEConversationDetail,
     FEConversationLiveSummary,
@@ -389,23 +389,25 @@ async def join_conversation(
 @router.delete("/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_conversation(
     conversation_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> None:
     """Soft delete — sets deleted_at rather than removing the row, so it's
     recoverable for CONVERSATION_TRASH_RETENTION_DAYS (see conversation_service
-    .trash_purge_loop, which hard-deletes it after that window)."""
+    .trash_purge_loop, which hard-deletes it after that window). Owner/admin
+    only — agents handle chats, they don't remove them from the record."""
     convo = await _get_conversation_or_404(conversation_id, current_user, db)
     convo.deleted_at = datetime.now(timezone.utc)
     await db.flush()
 
 @router.post("/purge-old-messages", response_model=FEPurgeMessagesResponse)
 async def purge_old_messages(
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_owner),
     db: AsyncSession = Depends(get_db),
 ) -> FEPurgeMessagesResponse:
     """Manual "clean up old messages" action (Settings -> Workspace) — see
-    conversation_service.purge_old_message_text for exactly what qualifies."""
+    conversation_service.purge_old_message_text for exactly what qualifies.
+    Owner only: it irreversibly wipes message text for the whole tenant."""
     purged = await purge_old_message_text(current_user.tenant_id, db)
     return FEPurgeMessagesResponse(purged=purged)
 

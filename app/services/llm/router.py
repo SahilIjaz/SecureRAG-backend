@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import AsyncIterator
 
 from app.config import settings
@@ -62,20 +63,57 @@ def _attempts(model_chain: list[str]) -> list[tuple[str, float]]:
     return attempts
 
 
+# Minimum time an attempt must have left to be worth starting — a model
+# that gets 2s before being cut off just adds a guaranteed failure.
+_MIN_ATTEMPT_SECONDS = 5.0
+
+
+class _Budget:
+    """Tracks the end-to-end answer budget (settings.LLM_TOTAL_BUDGET_SECONDS)
+    across provider/model retries. `remaining_for(timeout)` returns the
+    per-attempt timeout clamped to what's left, or None if the attempt
+    shouldn't start at all."""
+
+    def __init__(self, total_seconds: float | None = None) -> None:
+        self.total = total_seconds if total_seconds is not None else settings.LLM_TOTAL_BUDGET_SECONDS
+        self.started = time.monotonic()
+
+    def remaining(self) -> float:
+        return self.total - (time.monotonic() - self.started)
+
+    def remaining_for(self, timeout_seconds: float) -> float | None:
+        left = self.remaining()
+        if left < _MIN_ATTEMPT_SECONDS:
+            return None
+        return min(timeout_seconds, left)
+
+
+def _budget_error(budget: _Budget, last_error: Exception | None) -> Exception:
+    return ProviderTransientError(
+        f"No answer within {budget.total:.0f}s (last error: {last_error})"
+        if last_error else f"No answer within {budget.total:.0f}s"
+    )
+
+
 async def generate(
     prompt: str, *, tenant_provider: str | None = None, max_tokens: int, timeout_seconds: float,
 ) -> LLMResult:
     last_error: Exception | None = None
+    budget = _Budget()
     for provider_name in _resolve_provider_chain(tenant_provider):
         provider = _get_provider(provider_name)
         if provider is None:
             continue
         for model, delay in _attempts(provider.model_chain()):
+            attempt_timeout = budget.remaining_for(timeout_seconds + delay)
+            if attempt_timeout is None:
+                logger.warning("LLM budget exhausted before trying %s/%s", provider_name, model)
+                raise _budget_error(budget, last_error)
             if delay:
                 await asyncio.sleep(delay)
             try:
                 return await provider.generate(
-                    prompt, model=model, max_tokens=max_tokens, timeout_seconds=timeout_seconds
+                    prompt, model=model, max_tokens=max_tokens, timeout_seconds=attempt_timeout
                 )
             except ProviderTransientError as e:
                 last_error = e
@@ -89,16 +127,21 @@ async def generate_stream(
     prompt: str, *, tenant_provider: str | None = None, max_tokens: int, timeout_seconds: float,
 ) -> AsyncIterator[LLMStreamChunk]:
     last_error: Exception | None = None
+    budget = _Budget()
     for provider_name in _resolve_provider_chain(tenant_provider):
         provider = _get_provider(provider_name)
         if provider is None:
             continue
         for model, delay in _attempts(provider.model_chain()):
+            attempt_timeout = budget.remaining_for(timeout_seconds + delay)
+            if attempt_timeout is None:
+                logger.warning("LLM budget exhausted before trying %s/%s", provider_name, model)
+                raise _budget_error(budget, last_error)
             if delay:
                 await asyncio.sleep(delay)
             try:
                 raw = provider.generate_stream(
-                    prompt, model=model, max_tokens=max_tokens, timeout_seconds=timeout_seconds
+                    prompt, model=model, max_tokens=max_tokens, timeout_seconds=attempt_timeout
                 )
                 iterator = raw.__aiter__()
                 first_chunk = await iterator.__anext__()

@@ -15,7 +15,7 @@ api/frontend/helpers.py's FE_TO_BE_PLAN.
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import stripe
@@ -118,13 +118,36 @@ async def start_trial_subscription(
     with perf_timing.timed("stripe_get_or_create_customer_total"):
         customer_id = await get_or_create_customer(tenant, user, subscription, db)
 
-    # If the user already started (but never completed) a trial on a
-    # different plan — e.g. picked Starter, backed up, picked Growth
-    # instead — that earlier subscription is still sitting in Stripe as
-    # `incomplete`/`trialing` with no confirmed payment method. Cancel it
-    # rather than leaving it orphaned; it was never activated (no
-    # customer.subscription.created webhook would have fired for it without
-    # a confirmed SetupIntent), so this can't cancel a real paying sub.
+    # Retry of the SAME plan (card declined / bad ZIP / reload mid-step-3):
+    # reuse the pending Stripe subscription instead of creating a second one.
+    # Previously every retry created a fresh subscription with NO trial
+    # (because trial_used_at had already been stamped at the first attempt),
+    # returned a PaymentIntent secret the frontend couldn't confirm, and
+    # orphaned the first subscription — the user could never finish signup.
+    if subscription.stripe_subscription_id and subscription.stripe_price_id == price_id:
+        try:
+            with perf_timing.timed("stripe_api_subscription_retrieve"):
+                existing = await _run(
+                    stripe.Subscription.retrieve,
+                    subscription.stripe_subscription_id,
+                    expand=["pending_setup_intent", "latest_invoice.payment_intent"],
+                )
+        except stripe.error.StripeError as e:
+            logger.warning("Could not retrieve subscription %s, creating a new one: %s", subscription.stripe_subscription_id, e)
+            existing = None
+        if existing is not None and existing.get("status") in ("trialing", "incomplete", "active"):
+            secret = _client_secret_from(existing)
+            if secret is not None:
+                return secret
+            if existing.get("default_payment_method"):
+                # Card already on file — nothing left to collect.
+                return ""
+
+    # Switching plans mid-wizard (picked Starter, backed up, picked Growth):
+    # the earlier subscription is still sitting in Stripe as incomplete/
+    # trialing with no confirmed payment method. Cancel it rather than
+    # leaving it orphaned; it was never activated, so this can't cancel a
+    # real paying sub.
     if subscription.stripe_subscription_id and subscription.stripe_price_id != price_id:
         try:
             with perf_timing.timed("stripe_api_cancel_stale_subscription"):
@@ -133,10 +156,11 @@ async def start_trial_subscription(
             logger.warning("Could not cancel stale trial subscription %s: %s", subscription.stripe_subscription_id, e)
 
     # One-time trial: a tenant gets the 3-day trial only on their very first
-    # subscription. Once trial_used_at is set, any later checkout creates a
-    # subscription with NO trial period, so the card is charged immediately —
-    # this closes the cancel-then-recheckout loophole that granted unlimited
-    # free trials.
+    # *confirmed* subscription. trial_used_at is stamped once Stripe reports
+    # the subscription trialing/active (webhook) or /onboarding/complete sees
+    # a card on file — never here, so an abandoned card form doesn't burn the
+    # trial. Once it is set, later checkouts carry no trial period and the
+    # card is charged immediately (closes the cancel-then-recheckout loophole).
     is_first_trial = subscription.trial_used_at is None
     create_kwargs = dict(
         customer=customer_id,
@@ -153,25 +177,65 @@ async def start_trial_subscription(
 
     subscription.stripe_subscription_id = stripe_sub.id
     subscription.stripe_price_id = price_id
-    if is_first_trial:
-        subscription.trial_used_at = datetime.now(timezone.utc)
+    if is_first_trial and subscription.expires_at is None:
+        # Give subscription_guard a real deadline from day one. The webhook
+        # overwrites this with Stripe's own period end once it lands; without
+        # it, expires_at=NULL read as "never expires" if the webhook was
+        # delayed or never configured.
+        subscription.expires_at = datetime.now(timezone.utc) + timedelta(days=TRIAL_DAYS)
     with perf_timing.timed("db_flush"):
         await db.flush()
 
-    # First trial: a trialing subscription has no invoice yet, so Stripe hands
-    # back a SetupIntent to collect (not charge) the card. Repeat checkout: the
-    # subscription bills right away, so the client secret lives on the first
-    # invoice's PaymentIntent instead. Return whichever this checkout produced.
-    setup_intent = stripe_sub.pending_setup_intent
-    if setup_intent is not None and setup_intent.client_secret:
-        return setup_intent.client_secret
+    secret = _client_secret_from(stripe_sub)
+    if secret is not None:
+        return secret
+    raise RuntimeError("Stripe returned neither a SetupIntent nor a PaymentIntent client secret.")
 
-    invoice = getattr(stripe_sub, "latest_invoice", None)
+
+def _client_secret_from(stripe_sub) -> Optional[str]:
+    """First trial: a trialing subscription has no invoice yet, so Stripe hands
+    back a SetupIntent to collect (not charge) the card. Repeat checkout: the
+    subscription bills right away, so the client secret lives on the first
+    invoice's PaymentIntent instead. Returns whichever exists, else None."""
+    setup_intent = stripe_sub.get("pending_setup_intent") if hasattr(stripe_sub, "get") else getattr(stripe_sub, "pending_setup_intent", None)
+    if setup_intent is not None and getattr(setup_intent, "client_secret", None):
+        return setup_intent.client_secret
+    invoice = stripe_sub.get("latest_invoice") if hasattr(stripe_sub, "get") else getattr(stripe_sub, "latest_invoice", None)
     payment_intent = getattr(invoice, "payment_intent", None) if invoice else None
     if payment_intent is not None and getattr(payment_intent, "client_secret", None):
         return payment_intent.client_secret
+    return None
 
-    raise RuntimeError("Stripe returned neither a SetupIntent nor a PaymentIntent client secret.")
+
+async def has_confirmed_payment_method(subscription: Subscription) -> Optional[bool]:
+    """Whether Stripe has a card on file for this tenant's subscription.
+
+    True  — default_payment_method set, or the pending SetupIntent succeeded.
+    False — Stripe says there is definitely no card yet.
+    None  — unknown (no Stripe subscription on the row, or Stripe unreachable);
+            callers should not block on None.
+    """
+    if not subscription.stripe_subscription_id:
+        return None
+    try:
+        stripe_sub = await _run(
+            stripe.Subscription.retrieve,
+            subscription.stripe_subscription_id,
+            expand=["pending_setup_intent", "customer"],
+        )
+    except stripe.error.StripeError as e:
+        logger.warning("Could not verify payment method for %s: %s", subscription.stripe_subscription_id, e)
+        return None
+    if stripe_sub.get("default_payment_method"):
+        return True
+    setup_intent = stripe_sub.get("pending_setup_intent")
+    if setup_intent is not None and getattr(setup_intent, "status", None) == "succeeded":
+        return True
+    customer = stripe_sub.get("customer")
+    invoice_settings = getattr(customer, "invoice_settings", None) if customer is not None and not isinstance(customer, str) else None
+    if invoice_settings is not None and getattr(invoice_settings, "default_payment_method", None):
+        return True
+    return False
 
 # ── Post-trial plan changes ─────────────────────────────────────────────────
 
@@ -256,6 +320,10 @@ async def sync_subscription_from_stripe(stripe_sub: dict, db: AsyncSession) -> N
         await _apply_quota(subscription.tenant_id, plan_name, db)
 
     subscription.status = _status_from_stripe(stripe_sub["status"])
+    # The trial is "used" only once Stripe confirms it actually started —
+    # see start_trial_subscription for why this isn't stamped at checkout.
+    if stripe_sub["status"] in ("trialing", "active") and subscription.trial_used_at is None:
+        subscription.trial_used_at = datetime.now(timezone.utc)
 
     # As of Stripe API version 2026-07-29 (and some earlier ones), Subscription
     # no longer carries current_period_end at the top level — it moved to the
