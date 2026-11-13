@@ -230,5 +230,9 @@ async def purge_old_message_text(tenant_id: uuid.UUID, db: AsyncSession) -> int:
     if not to_purge:
         return 0
 
+    # Answer traces hold the same question/answer text — purge them with
+    # the transcript so retention actually removes the visitor's words.
+    from app.models.answer_trace import AnswerTrace
+    await db.execute(delete(AnswerTrace).where(AnswerTrace.conversation_id.in_(to_purge)))
     result = await db.execute(delete(ConversationMessage).where(ConversationMessage.conversation_id.in_(to_purge)))
     return result.rowcount or 0

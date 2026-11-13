@@ -1,9 +1,9 @@
 """
 Audit trail: append-only, hash-chained, tenant-scoped.
 
-    record(...)        — append one entry (own transaction, never raises to
-                         the caller: an audit failure is logged loudly but
-                         must not fail the user's request).
+    record(...)        — append one entry in its own transaction. Never
+                         raises to the caller: an audit failure is logged
+                         loudly but must not fail the user's request.
     list_entries(...)  — cursor-paginated, filterable read for the admin UI.
     verify_chain(...)  — recompute the per-tenant hash chain and report the
                          first broken link, if any.
@@ -13,9 +13,23 @@ Audit trail: append-only, hash-chained, tenant-scoped.
 
 Hash chain: entry_hash = SHA-256(prev_hash || canonical JSON of the entry's
 content). prev_hash is the entry_hash of the previous entry of the same
-tenant (or null for the first). Appends take a per-tenant advisory lock for
-the duration of the insert transaction so concurrent requests can't both
-read the same "previous" row.
+tenant (null for the first). Appends take a per-tenant advisory lock for
+the duration of the insert transaction and assign a per-tenant `seq`, so
+concurrent requests can neither fork the chain nor be mis-ordered by clock
+skew; reads and verification order by `seq`.
+
+Retention: after the sweep removes the oldest rows, the oldest *surviving*
+row still carries the hash of a deleted predecessor. verify_chain treats
+that row as the chain's anchor (its own hash is recomputed from its stored
+prev_hash) and checks linkage from the next row on.
+
+Canonicalisation: `details` is normalised to plain JSON (dates/UUIDs →
+strings, numbers → their decimal form) BEFORE hashing and storing, so what
+Postgres hands back from JSONB hashes identically to what was hashed.
+
+Threat model: protects against accidental or application-level edits and
+ORM deletes; a compromised database credential is out of scope (it could
+drop the trigger). Pair with database-level backups/WAL for that.
 """
 
 from __future__ import annotations
@@ -23,8 +37,10 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import uuid
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from typing import Any, Iterable, Optional
 
 from sqlalchemy import delete, func, select, text
@@ -37,14 +53,78 @@ from app.models.audit_log import AuditLog
 logger = logging.getLogger(__name__)
 
 GLOBAL_CHAIN_KEY = "global"  # events with no tenant (unknown-email logins)
+EXPORT_ROW_LIMIT = 100_000
 
 
-# ── Hashing (pure) ───────────────────────────────────────────────────────────
+# ── Canonicalisation + hashing (pure) ────────────────────────────────────────
 
-def canonical_content(entry: dict) -> str:
-    """Deterministic serialisation of the fields that are covered by the
-    hash. Field order is fixed by sort_keys; datetimes/UUIDs are rendered as
-    strings so the Python object and the DB row hash identically."""
+def _canon_number(v) -> str:
+    """Decimal text that is identical for a Python float/int and for the
+    numeric Postgres JSONB returns for it (1e22 → '10000000000000000000000',
+    -0.0 → '0', 1.5 → '1.5')."""
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, int):
+        return str(v)
+    if isinstance(v, float):
+        if not math.isfinite(v):
+            return repr(v)
+        d = Decimal(repr(v))
+    else:
+        d = Decimal(str(v))
+    if d == 0:
+        return "0"
+    s = format(d.normalize(), "f")
+    return s
+
+
+def _canon(v):
+    """Recursively normalise a JSON-ish value for hashing."""
+    if v is None or isinstance(v, (str, bool)):
+        return v
+    if isinstance(v, (int, float, Decimal)):
+        return {"$n": _canon_number(v)}
+    if isinstance(v, dict):
+        return {str(k): _canon(x) for k, x in sorted(v.items(), key=lambda kv: str(kv[0]))}
+    if isinstance(v, (list, tuple)):
+        return [_canon(x) for x in v]
+    return str(v)
+
+
+def normalize_details(details: Optional[dict]) -> Optional[dict]:
+    """What gets STORED: plain JSON (dates/UUIDs/Decimals → strings via
+    default=str, non-finite floats → strings) so the insert can never fail
+    on a value type and the read-back is JSON-equal."""
+    if details is None:
+        return None
+
+    def fix(v):
+        if isinstance(v, float) and not math.isfinite(v):
+            return repr(v)
+        if isinstance(v, dict):
+            return {str(k): fix(x) for k, x in v.items()}
+        if isinstance(v, (list, tuple)):
+            return [fix(x) for x in v]
+        return v
+
+    try:
+        return json.loads(json.dumps(fix(details), default=str))
+    except (TypeError, ValueError):
+        return {"_unserialisable": str(details)[:500]}
+
+
+HASH_VERSION = 2  # scheme new rows are written with; verify accepts every known version
+KNOWN_HASH_VERSIONS = (2, 1)
+
+
+def canonical_content(entry: dict, version: int = HASH_VERSION) -> str:
+    """Deterministic serialisation of the hashed fields. Datetimes/UUIDs are
+    rendered as strings so the Python object and the DB row hash
+    identically. Version 2 passes `details` through _canon so JSONB numeric
+    normalisation can't change the hash; version 1 (rows written before
+    that fix) serialised the raw dict. The scheme is versioned per row so a
+    future change never invalidates history."""
+    details = _canon(entry.get("details")) if version >= 2 else entry.get("details")
     covered = {
         "tenant_id": _s(entry.get("tenant_id")),
         "actor_user_id": _s(entry.get("actor_user_id")),
@@ -61,14 +141,16 @@ def canonical_content(entry: dict) -> str:
         "ip": entry.get("ip"),
         "user_agent": entry.get("user_agent"),
         "request_id": entry.get("request_id"),
-        "details": entry.get("details"),
+        "details": details,
         "created_at": _iso(entry.get("created_at")),
     }
+    if version >= 2:
+        return json.dumps(covered, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     return json.dumps(covered, sort_keys=True, separators=(",", ":"), default=str)
 
 
-def compute_hash(prev_hash: Optional[str], entry: dict) -> str:
-    return hashlib.sha256(((prev_hash or "") + "|" + canonical_content(entry)).encode("utf-8")).hexdigest()
+def compute_hash(prev_hash: Optional[str], entry: dict, version: int = HASH_VERSION) -> str:
+    return hashlib.sha256(((prev_hash or "") + "|" + canonical_content(entry, version)).encode("utf-8")).hexdigest()
 
 
 def _s(v: Any) -> Optional[str]:
@@ -100,23 +182,51 @@ def _chain_key(tenant_id: Optional[uuid.UUID]) -> str:
     return str(tenant_id) if tenant_id else GLOBAL_CHAIN_KEY
 
 
+def _tenant_filter(tenant_id: Optional[uuid.UUID]):
+    return AuditLog.tenant_id == tenant_id if tenant_id else AuditLog.tenant_id.is_(None)
+
+
 # ── Writes ───────────────────────────────────────────────────────────────────
 
 async def _append(db: AsyncSession, entry: dict) -> AuditLog:
     tenant_id = entry.get("tenant_id")
     # Per-tenant advisory lock (transaction-scoped) → the "previous row" read
-    # below is stable until our insert commits.
+    # and the seq assignment below are stable until our insert commits.
     await db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": "audit:" + _chain_key(tenant_id)})
     prev = (await db.execute(
-        select(AuditLog.entry_hash)
-        .where(AuditLog.tenant_id == tenant_id if tenant_id else AuditLog.tenant_id.is_(None))
-        .order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+        select(AuditLog.entry_hash, AuditLog.seq)
+        .where(_tenant_filter(tenant_id))
+        .order_by(AuditLog.seq.desc().nulls_last(), AuditLog.created_at.desc(), AuditLog.id.desc())
         .limit(1)
-    )).scalar_one_or_none()
+    )).first()
+    prev_hash = prev.entry_hash if prev else None
+    seq = (prev.seq or 0) + 1 if prev else 1
     entry = {**entry, "created_at": entry.get("created_at") or datetime.now(timezone.utc)}
-    row = AuditLog(**entry, prev_hash=prev, entry_hash=compute_hash(prev, entry))
+    row = AuditLog(**entry, seq=seq, prev_hash=prev_hash, hash_version=HASH_VERSION,
+                   entry_hash=compute_hash(prev_hash, entry, HASH_VERSION))
     db.add(row)
     return row
+
+
+async def _lookup_actor(db: AsyncSession, user_id: Optional[str], tenant_id: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """(email, role) for a token's actor — same session as the append."""
+    if not user_id:
+        return None, None
+    from app.models.tenant_user import TenantUser
+    from app.models.user import User
+
+    uid = _uuid(user_id)
+    tid = _uuid(tenant_id)
+    if uid is None:
+        return None, None
+    email = (await db.execute(select(User.email).where(User.id == uid))).scalar_one_or_none()
+    role = None
+    if tid is not None:
+        role = (await db.execute(
+            select(TenantUser.role).where(TenantUser.tenant_id == tid, TenantUser.user_id == uid)
+        )).scalar_one_or_none()
+    role_s = role.value if hasattr(role, "value") else role
+    return email, role_s or ("owner" if email else None)
 
 
 async def record(
@@ -137,9 +247,12 @@ async def record(
     user_agent: Optional[str] = None,
     request_id: Optional[str] = None,
     details: Optional[dict] = None,
+    resolve_actor: bool = False,
 ) -> Optional[uuid.UUID]:
-    """Append one audit entry in its own transaction. Returns the new row id,
-    or None if auditing is disabled or the write failed (logged)."""
+    """Append one audit entry in its own transaction. With `resolve_actor`,
+    the actor's email/role are looked up (one session for everything).
+    Returns the new row id, or None if auditing is disabled or the write
+    failed (logged)."""
     if not settings.AUDIT_ENABLED:
         return None
     entry = {
@@ -151,10 +264,14 @@ async def record(
         "outcome": "success" if outcome == "success" else "failure",
         "status_code": status_code, "method": method, "path": (path or None) and path[:255],
         "ip": (ip or None) and ip[:64], "user_agent": (user_agent or None) and user_agent[:255],
-        "request_id": request_id, "details": details,
+        "request_id": request_id, "details": normalize_details(details),
     }
     try:
         async with AsyncSessionLocal() as db:
+            if resolve_actor and actor_user_id:
+                email, role = await _lookup_actor(db, str(actor_user_id), _s(tenant_id))
+                entry["actor_email"] = entry["actor_email"] or email
+                entry["actor_role"] = entry["actor_role"] or role
             row = await _append(db, entry)
             await db.commit()
             return row.id
@@ -174,22 +291,27 @@ def _uuid(v) -> Optional[uuid.UUID]:
 
 # ── Reads ────────────────────────────────────────────────────────────────────
 
+def _order_desc():
+    return (AuditLog.seq.desc().nulls_last(), AuditLog.created_at.desc(), AuditLog.id.desc())
+
+
 async def list_entries(
     db: AsyncSession,
     tenant_id: uuid.UUID,
     *,
     limit: int = 50,
-    cursor: Optional[datetime] = None,
+    cursor: Optional[int] = None,
     action: Optional[str] = None,
     actor: Optional[str] = None,
     outcome: Optional[str] = None,
     since: Optional[datetime] = None,
     until: Optional[datetime] = None,
-) -> tuple[list[AuditLog], Optional[datetime]]:
-    """Newest first. `cursor` is the created_at of the last row seen."""
+) -> tuple[list[AuditLog], Optional[int]]:
+    """Newest first. `cursor` is the seq of the last row seen (strictly
+    less-than, so no boundary row is skipped or repeated)."""
     q = select(AuditLog).where(AuditLog.tenant_id == tenant_id)
-    if cursor:
-        q = q.where(AuditLog.created_at < cursor)
+    if cursor is not None:
+        q = q.where(AuditLog.seq < cursor)
     if action:
         q = q.where(AuditLog.action.like(action.replace("*", "%")))
     if actor:
@@ -200,9 +322,9 @@ async def list_entries(
         q = q.where(AuditLog.created_at >= since)
     if until:
         q = q.where(AuditLog.created_at <= until)
-    q = q.order_by(AuditLog.created_at.desc(), AuditLog.id.desc()).limit(limit + 1)
+    q = q.order_by(*_order_desc()).limit(limit + 1)
     rows = list((await db.execute(q)).scalars().all())
-    next_cursor = rows[limit - 1].created_at if len(rows) > limit else None
+    next_cursor = rows[limit - 1].seq if len(rows) > limit else None
     return rows[:limit], next_cursor
 
 
@@ -223,45 +345,50 @@ async def stats(db: AsyncSession, tenant_id: uuid.UUID) -> dict:
     return {"total": int(total or 0), "oldest": oldest, "newest": newest, "failures": int(failures or 0)}
 
 
+def verify_rows(rows: list[AuditLog]) -> dict:
+    """Pure chain check over rows in chain order (oldest first). The first
+    row is the anchor: its predecessor may have been purged, so only its own
+    content is checked against its stored prev_hash."""
+    prev: Optional[str] = None
+    now = datetime.now(timezone.utc)
+    for i, row in enumerate(rows):
+        if i > 0 and row.prev_hash != prev:
+            return {"valid": False, "entries": len(rows), "checked": i, "brokenAt": str(row.id),
+                    "reason": "previous-hash link does not match", "checkedAt": now}
+        content = _row_dict(row)
+        versions = [row.hash_version or 1] + [v for v in KNOWN_HASH_VERSIONS if v != (row.hash_version or 1)]
+        if not any(row.entry_hash == compute_hash(row.prev_hash, content, v) for v in versions):
+            return {"valid": False, "entries": len(rows), "checked": i, "brokenAt": str(row.id),
+                    "reason": "entry content does not match its hash", "checkedAt": now}
+        prev = row.entry_hash
+    return {"valid": True, "entries": len(rows), "checked": len(rows), "brokenAt": None, "reason": None, "checkedAt": now}
+
+
 async def verify_chain(db: AsyncSession, tenant_id: uuid.UUID) -> dict:
-    """Recompute every hash for the tenant, oldest first. Detects edited
-    content (hash mismatch), a broken link (prev_hash ≠ previous entry_hash)
-    and, for the first entry, a non-null prev_hash."""
     rows = (await db.execute(
         select(AuditLog).where(AuditLog.tenant_id == tenant_id)
-        .order_by(AuditLog.created_at.asc(), AuditLog.id.asc())
+        .order_by(AuditLog.seq.asc().nulls_first(), AuditLog.created_at.asc(), AuditLog.id.asc())
     )).scalars().all()
-    prev: Optional[str] = None
-    for i, row in enumerate(rows):
-        if row.prev_hash != prev:
-            return {"valid": False, "entries": len(rows), "checked": i, "brokenAt": str(row.id),
-                    "reason": "previous-hash link does not match", "checkedAt": datetime.now(timezone.utc)}
-        expected = compute_hash(prev, _row_dict(row))
-        if row.entry_hash != expected:
-            return {"valid": False, "entries": len(rows), "checked": i, "brokenAt": str(row.id),
-                    "reason": "entry content does not match its hash", "checkedAt": datetime.now(timezone.utc)}
-        prev = row.entry_hash
-    return {"valid": True, "entries": len(rows), "checked": len(rows), "brokenAt": None,
-            "reason": None, "checkedAt": datetime.now(timezone.utc)}
+    return verify_rows(list(rows))
 
 
 async def export_rows(
     db: AsyncSession, tenant_id: uuid.UUID, *, since: Optional[datetime] = None, until: Optional[datetime] = None,
-    limit: int = 50_000,
+    limit: int = EXPORT_ROW_LIMIT,
 ) -> Iterable[AuditLog]:
     q = select(AuditLog).where(AuditLog.tenant_id == tenant_id)
     if since:
         q = q.where(AuditLog.created_at >= since)
     if until:
         q = q.where(AuditLog.created_at <= until)
-    q = q.order_by(AuditLog.created_at.asc(), AuditLog.id.asc()).limit(limit)
+    q = q.order_by(AuditLog.seq.asc().nulls_first(), AuditLog.created_at.asc(), AuditLog.id.asc()).limit(limit)
     return (await db.execute(q)).scalars().all()
 
 
 EXPORT_COLUMNS = [
-    "id", "created_at", "tenant_id", "actor_user_id", "actor_email", "actor_role", "action",
+    "id", "seq", "created_at", "tenant_id", "actor_user_id", "actor_email", "actor_role", "action",
     "resource_type", "resource_id", "resource_label", "outcome", "status_code", "method", "path",
-    "ip", "user_agent", "request_id", "details", "prev_hash", "entry_hash",
+    "ip", "user_agent", "request_id", "details", "prev_hash", "entry_hash", "hash_version",
 ]
 
 
@@ -275,16 +402,20 @@ def export_dict(row: AuditLog) -> dict:
 
 # ── Retention ────────────────────────────────────────────────────────────────
 
-async def purge_expired() -> int:
-    """Delete audit rows older than AUDIT_RETENTION_DAYS. Sets the session
-    flag the immutability trigger checks; nothing else may delete."""
+async def purge_expired(tenant_id: Optional[uuid.UUID] = None) -> int:
+    """Delete audit rows older than AUDIT_RETENTION_DAYS (optionally for one
+    tenant). Sets the session flag the immutability trigger checks; nothing
+    else may delete. The oldest surviving row becomes the chain anchor."""
     days = settings.AUDIT_RETENTION_DAYS
     if not days or days <= 0:
         return 0
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     async with AsyncSessionLocal() as db:
         await db.execute(text("SET LOCAL nexus.audit_purge = '1'"))
-        result = await db.execute(delete(AuditLog).where(AuditLog.created_at < cutoff))
+        q = delete(AuditLog).where(AuditLog.created_at < cutoff)
+        if tenant_id is not None:
+            q = q.where(AuditLog.tenant_id == tenant_id)
+        result = await db.execute(q)
         await db.commit()
         n = result.rowcount or 0
     if n:

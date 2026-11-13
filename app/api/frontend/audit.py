@@ -61,10 +61,11 @@ class FEAuditEntry(BaseModel):
     details: Optional[dict] = None
     entryHash: str
     prevHash: Optional[str] = None
+    seq: Optional[int] = None
 
 class FEAuditPage(BaseModel):
     items: List[FEAuditEntry]
-    nextCursor: Optional[str] = None
+    nextCursor: Optional[int] = None  # seq of the last row; pass back as ?cursor=
 
 class FEAuditVerification(BaseModel):
     valid: bool
@@ -135,7 +136,7 @@ def _fe_entry(row) -> FEAuditEntry:
         action=row.action, resourceType=row.resource_type, resourceId=row.resource_id,
         resourceLabel=row.resource_label, outcome=row.outcome, statusCode=row.status_code,
         method=row.method, path=row.path, ip=row.ip, userAgent=row.user_agent, requestId=row.request_id,
-        details=row.details, entryHash=row.entry_hash, prevHash=row.prev_hash,
+        details=row.details, entryHash=row.entry_hash, prevHash=row.prev_hash, seq=row.seq,
     )
 
 
@@ -167,7 +168,7 @@ def _parse_dt(value: Optional[str], name: str) -> Optional[datetime]:
 @router.get("/audit", response_model=FEAuditPage)
 async def list_audit(
     limit: int = Query(50, ge=1, le=200),
-    cursor: Optional[str] = None,
+    cursor: Optional[int] = Query(None, ge=0),
     action: Optional[str] = Query(None, max_length=64),
     actor: Optional[str] = Query(None, max_length=320),
     outcome: Optional[Literal["success", "failure"]] = None,
@@ -177,10 +178,10 @@ async def list_audit(
     db: AsyncSession = Depends(get_db),
 ) -> FEAuditPage:
     rows, next_cursor = await audit_service.list_entries(
-        db, current_user.tenant_id, limit=limit, cursor=_parse_dt(cursor, "cursor"), action=action,
+        db, current_user.tenant_id, limit=limit, cursor=cursor, action=action,
         actor=actor, outcome=outcome, since=_parse_dt(since, "since"), until=_parse_dt(until, "until"),
     )
-    return FEAuditPage(items=[_fe_entry(r) for r in rows], nextCursor=_iso(next_cursor))
+    return FEAuditPage(items=[_fe_entry(r) for r in rows], nextCursor=next_cursor)
 
 
 @router.get("/audit/actions", response_model=List[str])
@@ -258,11 +259,16 @@ async def export_audit(
         user_agent=request.headers.get("user-agent"), details={"format": format, "rows": len(rows)},
     )
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    # The export is capped (audit_service.EXPORT_ROW_LIMIT); say so instead
+    # of silently truncating — the client surfaces this header.
+    extra = {"X-Export-Rows": str(len(rows)), "X-Export-Row-Limit": str(audit_service.EXPORT_ROW_LIMIT),
+             "X-Export-Truncated": "1" if len(rows) >= audit_service.EXPORT_ROW_LIMIT else "0",
+             "Access-Control-Expose-Headers": "Content-Disposition, X-Export-Rows, X-Export-Row-Limit, X-Export-Truncated"}
     if format == "json":
         body = json.dumps([audit_service.export_dict(r) for r in rows], indent=2, default=str)
         return StreamingResponse(
             io.BytesIO(body.encode("utf-8")), media_type="application/json",
-            headers={"Content-Disposition": f'attachment; filename="nexus-audit-{stamp}.json"'},
+            headers={"Content-Disposition": f'attachment; filename="nexus-audit-{stamp}.json"', **extra},
         )
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=audit_service.EXPORT_COLUMNS)
@@ -273,7 +279,7 @@ async def export_audit(
         writer.writerow(d)
     return StreamingResponse(
         io.BytesIO(buf.getvalue().encode("utf-8")), media_type="text/csv",
-        headers={"Content-Disposition": f'attachment; filename="nexus-audit-{stamp}.csv"'},
+        headers={"Content-Disposition": f'attachment; filename="nexus-audit-{stamp}.csv"', **extra},
     )
 
 

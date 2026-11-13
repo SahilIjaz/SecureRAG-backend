@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, Integer, SmallInteger, String
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -25,14 +25,17 @@ class AuditLog(Base):
     SHA-256 of the row's canonical content plus the previous row's hash for
     the same tenant; `GET /api/audit/verify` recomputes the chain. The table
     also carries a database trigger that rejects UPDATE/DELETE except from
-    the retention sweep (see migrations/add_audit_trail.sql), so even a
-    privileged application bug cannot silently rewrite history.
+    the retention sweep (see migrations/add_audit_trail.sql), which protects
+    against accidental or application-level edits and ORM deletes. A
+    compromised database credential is out of scope (it could drop the
+    trigger) — pair with backups/WAL for that.
     """
 
     __tablename__ = "audit_logs"
     __table_args__ = (
         Index("ix_audit_logs_tenant_created", "tenant_id", "created_at"),
         Index("ix_audit_logs_tenant_action", "tenant_id", "action"),
+        Index("ix_audit_logs_tenant_seq", "tenant_id", "seq"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -41,9 +44,10 @@ class AuditLog(Base):
     tenant_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=True, index=True
     )
-    actor_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
-    )
+    # Deliberately NOT a foreign key: SET NULL on user deletion would be an
+    # UPDATE on an append-only table (rejected by the trigger) and would
+    # change hashed content. The id stays as recorded.
+    actor_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
     actor_email: Mapped[Optional[str]] = mapped_column(String(320), nullable=True)
     actor_role: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     # Dotted verb, e.g. "document.delete", "auth.login", "settings.workspace.update".
@@ -59,8 +63,14 @@ class AuditLog(Base):
     user_agent: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     request_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
     details: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    # Per-tenant monotonic sequence assigned under the append lock — the
+    # chain order, independent of wall-clock skew between app instances.
+    seq: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     prev_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     entry_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Which canonicalisation scheme produced entry_hash (audit_service.HASH_VERSION).
+    # Rows that predate the column verify as version 1.
+    hash_version: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=2, server_default="1")
     # Set by the application (not server_default) because it is part of the
     # hashed content.
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)

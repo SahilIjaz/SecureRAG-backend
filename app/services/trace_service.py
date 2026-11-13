@@ -106,8 +106,11 @@ async def record_trace(
             chunks=trace.get("chunks"),
             conflicts=trace.get("conflicts"),
         )
-        db.add(row)
-        await db.flush()
+        # SAVEPOINT: if the flush fails the caller's session stays usable —
+        # the visitor's message must never be lost because its trace was.
+        async with db.begin_nested():
+            db.add(row)
+            await db.flush()
         return row
     except Exception:
         logger.exception("TRACE WRITE FAILED tenant=%s channel=%s", tenant_id, channel)

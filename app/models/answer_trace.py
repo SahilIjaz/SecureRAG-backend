@@ -24,7 +24,10 @@ class AnswerTrace(Base):
 
     Never contains the prompt itself (the system prompt is not tenant data)
     and snippets are capped (TRACE_SNIPPET_CHARS) — the full chunk text is
-    recoverable from document_chunks by document_id + chunk_id.
+    recoverable from document_chunks by document_id + chunk_id. It DOES
+    store the visitor's question and the reply verbatim: traces are deleted
+    with their conversation, with the message purge, and after
+    TRACE_RETENTION_DAYS.
     """
 
     __tablename__ = "answer_traces"
@@ -36,8 +39,11 @@ class AnswerTrace(Base):
     tenant_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    # CASCADE: deleting a conversation (owner delete, trash purge) removes
+    # its traces too — a visitor's question/answer text never outlives the
+    # conversation it belongs to.
     conversation_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("conversations.id", ondelete="SET NULL"), nullable=True, index=True
+        UUID(as_uuid=True), ForeignKey("conversations.id", ondelete="CASCADE"), nullable=True, index=True
     )
     message_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
     channel: Mapped[str] = mapped_column(String(16), nullable=False)  # widget | public | test

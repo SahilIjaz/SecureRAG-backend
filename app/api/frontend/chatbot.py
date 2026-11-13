@@ -557,9 +557,10 @@ async def test_chat_stream(
                     final_text = ev["answer"]
                     final_usage = ev.get("usage")
                     final_trace = ev.get("trace")
-                    # The trace row is written after the stream closes (see
-                    # finally below); pre-assign its id so the client can
-                    # offer "Why this answer?" immediately.
+                    # The trace is persisted right here (own session) under a
+                    # pre-assigned id, so the id in the done event already
+                    # resolves; the bot message written in `finally` links
+                    # back to it.
                     final_trace_id = uuid.uuid4() if final_trace else None
                     if final_trace:
                         # Persist the trace *now* (own session) so the id

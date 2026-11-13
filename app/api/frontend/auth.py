@@ -223,6 +223,7 @@ async def google_login(
         await db.flush()
 
     token = create_access_token({"sub": str(user.id), "tenant_id": str(user.tenant_id), "tv": user.token_version})
+    await _audit_auth(request, "auth.login", "success", user.email, user, provider="google")
     return FELoginResponse(success=True, token=token, user=await _fe_user(user, db))
 
 async def _verify_otp_async(plain_otp: str, hashed_otp: str) -> bool:
@@ -303,6 +304,7 @@ async def verify_otp_endpoint(
         token = create_access_token({"sub": str(user.id), "tenant_id": str(user.tenant_id), "tv": user.token_version})
         with perf_timing.timed("build_fe_user"):
             fe_user = await _fe_user(user, db)
+        await _audit_auth(request, "auth.email_verified", "success", user.email, user)
         return FEOtpVerifyResponse(success=True, token=token, user=fe_user)
 
     # Verified account — this is the forgot-password flow.
@@ -370,8 +372,10 @@ async def reset_password(
 
     otp_record = await _latest_valid_otp(user.id, OTPPurpose.password_reset, db)
     if otp_record is None:
+        await _audit_auth(request, "auth.password_reset", "failure", body.email, user, reason="reset_code_missing_or_expired")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Reset code has expired or does not exist. Please request a new one.")
     if not await _verify_otp_async(body.otp, otp_record.otp_code):
+        await _audit_auth(request, "auth.password_reset", "failure", body.email, user, reason="reset_code_invalid")
         await _fail_otp_attempt(otp_record, db, kind="reset code")
 
     otp_record.is_used = True
@@ -381,6 +385,7 @@ async def reset_password(
     user.token_version = (user.token_version or 0) + 1
     await db.flush()
     auth_service.invalidate_user_cache(user.id)
+    await _audit_auth(request, "auth.password_reset", "success", body.email, user)
     return FESuccessResponse()
 
 @router.post("/accept-invite", response_model=FELoginResponse)
@@ -399,4 +404,5 @@ async def accept_invite(
     await db.commit()
     token = create_access_token({"sub": str(user.id), "tenant_id": str(user.tenant_id), "tv": user.token_version})
     fe_user = await _fe_user(user, db)
+    await _audit_auth(request, "team.invite.accepted", "success", user.email, user)
     return FELoginResponse(success=True, token=token, user=fe_user)

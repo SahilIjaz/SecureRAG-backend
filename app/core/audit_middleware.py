@@ -15,6 +15,12 @@ Handlers enrich an entry by setting, at any point before returning:
         "details": {...},                      # small, JSON-serialisable
     }
 
+The row is written in the background (fire_and_forget) after the response
+is sent — it costs a few database round trips and must not add latency to
+every mutating request. Unmatched routes and anonymous requests without
+handler enrichment are not recorded (noise; and an unauthenticated client
+must not be able to fill the trail).
+
 What is NOT audited here (and why):
   * GET/HEAD/OPTIONS — reads; the audit trail is about changes. Reads of
     the audit log itself and exports are recorded explicitly by their
@@ -130,8 +136,9 @@ def _template_for(request: Request) -> Optional[str]:
     endpoint = request.scope.get("endpoint")
     if endpoint is None:
         return None
-    if not _route_templates:
-        for route in request.app.routes:
+    app = getattr(request, "app", None)
+    if not _route_templates and app is not None:
+        for route in app.routes:
             if isinstance(route, APIRoute):
                 _route_templates[route.endpoint] = route.path
     return _route_templates.get(endpoint)
@@ -157,31 +164,6 @@ def client_ip(request: Request) -> Optional[str]:
     return request.client.host if request.client else None
 
 
-async def _actor_details(user_id: Optional[str], tenant_id: Optional[str]) -> tuple[Optional[str], Optional[str]]:
-    """(email, role) for the actor — one cached user load + one role query."""
-    if not user_id:
-        return None, None
-    try:
-        from app.database import AsyncSessionLocal
-        from app.models.tenant_user import TenantUser
-        from app.models.user import User
-        from sqlalchemy import select
-
-        async with AsyncSessionLocal() as db:
-            email = (await db.execute(select(User.email).where(User.id == uuid.UUID(user_id)))).scalar_one_or_none()
-            role = None
-            if tenant_id:
-                role = (await db.execute(
-                    select(TenantUser.role).where(
-                        TenantUser.tenant_id == uuid.UUID(tenant_id), TenantUser.user_id == uuid.UUID(user_id)
-                    )
-                )).scalar_one_or_none()
-            return email, (role.value if hasattr(role, "value") else role) or ("owner" if email else None)
-    except Exception:
-        logger.exception("audit: actor lookup failed")
-        return None, None
-
-
 async def audit_middleware(request: Request, call_next):
     if not settings.AUDIT_ENABLED or not should_audit(request.method, request.url.path):
         return await call_next(request)
@@ -200,19 +182,30 @@ async def audit_middleware(request: Request, call_next):
         raise
     finally:
         try:
-            await _record(request, request_id, status_code, error)
+            _schedule_record(request, request_id, status_code, error)
         except Exception:
-            logger.exception("audit middleware: record failed")
+            logger.exception("audit middleware: scheduling failed")
     if response is not None:
         response.headers["X-Request-Id"] = request_id
     return response
 
 
-async def _record(request: Request, request_id: str, status_code: Optional[int], error: Optional[str]) -> None:
+def _schedule_record(request: Request, request_id: str, status_code: Optional[int], error: Optional[str]) -> None:
+    """Capture everything from the request synchronously, then write the
+    entry in the background: the audit row costs a few database round trips
+    and must not sit on the user's response path."""
+    from app.core.background import fire_and_forget
+
+    # Unmatched routes (404 on a random path) and anonymous requests with
+    # no handler enrichment are noise, not actions — and would let an
+    # unauthenticated client fill the global chain.
+    if request.scope.get("endpoint") is None:
+        return
     user_id, tenant_id = _actor_from_token(request)
-    email, role = await _actor_details(user_id, tenant_id)
-    template = _template_for(request)
     enrich = getattr(request.state, "audit", None) or {}
+    if not user_id and not enrich:
+        return
+    template = _template_for(request)
     params = request.path_params or {}
     resource_type = enrich.get("resource_type")
     resource_id = enrich.get("resource_id")
@@ -225,13 +218,13 @@ async def _record(request: Request, request_id: str, status_code: Optional[int],
     details = dict(enrich.get("details") or {})
     if error:
         details["error"] = error
-    await audit_service.record(
+    fire_and_forget(audit_service.record(
         action=enrich.get("action") or action_for(request.method, template, request.url.path),
         outcome="success" if status_code is not None and status_code < 400 else "failure",
         tenant_id=enrich.get("tenant_id") or tenant_id,
         actor_user_id=user_id,
-        actor_email=enrich.get("actor_email") or email,
-        actor_role=role,
+        actor_email=enrich.get("actor_email"),
+        actor_role=None,
         resource_type=resource_type,
         resource_id=resource_id,
         resource_label=enrich.get("resource_label"),
@@ -242,4 +235,5 @@ async def _record(request: Request, request_id: str, status_code: Optional[int],
         user_agent=request.headers.get("user-agent"),
         request_id=request_id,
         details=details or None,
-    )
+        resolve_actor=True,
+    ))
