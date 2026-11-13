@@ -1,3 +1,18 @@
+---
+title: Nexus API
+emoji: 🛡️
+colorFrom: indigo
+colorTo: green
+sdk: docker
+app_port: 8000
+pinned: false
+short_description: Multi-tenant RAG support-chatbot API (FastAPI)
+---
+
+<!-- The YAML block above is read by Hugging Face Spaces when this repo is
+     pushed to a Docker Space (see deploy/huggingface/README.md); GitHub
+     renders it as a small table and otherwise ignores it. -->
+
 # Nexus Backend
 
 FastAPI backend for **Nexus** (also referenced internally as SecureRAG++) — a
