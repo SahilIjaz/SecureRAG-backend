@@ -30,3 +30,5 @@ deploy/
 docker-compose.yml
 Dockerfile
 .dockerignore
+
+render.yaml
