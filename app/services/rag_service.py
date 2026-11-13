@@ -656,6 +656,42 @@ Please answer the question based on the context provided. If the answer is not i
 
     return chunks, prompt, response_max_tokens, handoff_enabled, metrics
 
+# ── Response traceability ────────────────────────────────────────────────────
+
+def _usage_dict(usage) -> dict | None:
+    if usage is None:
+        return None
+    return {
+        "provider": getattr(usage, "provider", None), "model": getattr(usage, "model", None),
+        "promptTokens": getattr(usage, "prompt_tokens", None),
+        "completionTokens": getattr(usage, "completion_tokens", None),
+        "totalTokens": getattr(usage, "total_tokens", None),
+    }
+
+def _build_trace(
+    query: str, answer: str, decision: str, chunks: list[dict], metrics: dict | None,
+    usage, confidence: int | None, doc_names: dict | None, t_start: float,
+) -> dict:
+    """Everything an admin needs to reconstruct *why* this reply happened —
+    persisted by the API caller via trace_service.record_trace() and linked
+    to the stored bot message. See app/models/answer_trace.py."""
+    from app.services.trace_service import build_trace_chunks
+
+    m = dict(metrics or {})
+    conflicts = m.pop("conflicts", None)
+    m.pop("traceChunks", None)
+    return {
+        "question": query,
+        "answer": answer,
+        "decision": decision,
+        "confidence": confidence,
+        "usage": _usage_dict(usage),
+        "latencyMs": int((time.monotonic() - t_start) * 1000),
+        "retrieval": m,
+        "chunks": build_trace_chunks(chunks, doc_names),
+        "conflicts": conflicts or [],
+    }
+
 async def answer_question(
     tenant_id: str,
     query: str,
@@ -686,19 +722,22 @@ async def answer_question(
     Returns:
         {"answer", "sources", "model", "confidence", "handoff"}
     """
+    t_start = time.monotonic()
     try:
         chunks, prompt, response_max_tokens, handoff_enabled, metrics = await _prepare_generation(
             tenant_id, query, max_tokens, config, doc_names, history
         )
 
         if not chunks:
+            no_ctx = "No relevant documents found for your question."
             return {
-                "answer": "No relevant documents found for your question.",
+                "answer": no_ctx,
                 "sources": [],
                 "model": None,
                 "confidence": 0,
                 "handoff": False,
                 "retrieval": metrics,
+                "trace": _build_trace(query, no_ctx, "no_context", [], metrics, None, 0, doc_names, t_start),
             }
 
         behavior = (config or {}).get("behavior", {})
@@ -711,6 +750,7 @@ async def answer_question(
         blocked = _conflict_block_result(metrics, fallback, handoff_enabled, doc_names, show_names)
         if blocked is not None:
             logger.info("rag tenant=%s unresolved conflict → %s", tenant_id, settings.RAG_UNRESOLVED_CONFLICT_ACTION)
+            blocked["trace"] = _build_trace(query, fallback, "conflict_blocked", chunks, metrics, None, 0, doc_names, t_start)
             return blocked
 
         t_prep = time.monotonic()
@@ -771,6 +811,7 @@ async def answer_question(
             return {
                 **base, "answer": fallback, "sources": [],
                 "handoff": decision == "handoff", "refused": decision == "refuse",
+                "trace": _build_trace(query, fallback, decision, chunks, metrics, result.usage, effective, doc_names, t_start),
             }
         if decision == "clarify":
             question = await _generate_clarify_question(
@@ -780,6 +821,7 @@ async def answer_question(
                 return {
                     **base, "answer": question, "sources": [],
                     "handoff": False, "clarify": True,
+                    "trace": _build_trace(query, question, "clarify", chunks, metrics, result.usage, effective, doc_names, t_start),
                 }
             # Clarify generation failed — the confident-enough answer is
             # still better than a refusal; fall through and ship it.
@@ -795,6 +837,10 @@ async def answer_question(
             "answer": answer,
             "sources": _build_citation_sources(chunks, doc_names),
             "handoff": False,
+            "trace": _build_trace(
+                query, answer, "empty" if confidence == 0 and answer == fallback else "answer",
+                chunks, metrics, result.usage, effective, doc_names, t_start,
+            ),
         }
 
     except Exception as e:
@@ -977,6 +1023,10 @@ async def answer_question_stream(
     behavior = (config or {}).get("behavior", {})
     fallback = identity.get("fallbackMessage", "I'm not sure about that yet.")
     threshold = behavior.get("confidenceThreshold", 60)
+    t_start = time.monotonic()
+
+    def _trace(answer_text: str, decision: str, usage_obj, conf) -> dict:
+        return _build_trace(query, answer_text, decision, chunks, metrics, usage_obj, conf, doc_names, t_start)
 
     try:
         chunks, prompt, response_max_tokens, handoff_enabled, metrics = await _prepare_generation(
@@ -992,7 +1042,7 @@ async def answer_question_stream(
         yield {
             "type": "final", "answer": fallback, "sources": [],
             "model": None, "confidence": 0, "handoff": False, "usage": None,
-            "retrieval": metrics,
+            "retrieval": metrics, "trace": _trace(fallback, "no_context", None, 0),
         }
         return
 
@@ -1003,7 +1053,7 @@ async def answer_question_stream(
     if blocked is not None:
         logger.info("rag tenant=%s unresolved conflict → %s (stream)", tenant_id, settings.RAG_UNRESOLVED_CONFLICT_ACTION)
         yield {"type": "token", "text": fallback}
-        yield {"type": "final", **blocked}
+        yield {"type": "final", **blocked, "trace": _trace(fallback, "conflict_blocked", None, 0)}
         return
 
     t_attempts_start = time.monotonic()
@@ -1063,6 +1113,7 @@ async def answer_question_stream(
                     "model": usage.model if usage else None, "confidence": confidence,
                     "handoff": decision == "handoff", "refused": decision == "refuse",
                     "usage": usage, "retrieval": metrics, **conflict_info,
+                    "trace": _trace(fallback, decision, usage, confidence),
                 }
                 return
             if decision == "clarify":
@@ -1074,6 +1125,7 @@ async def answer_question_stream(
                         "type": "final", "answer": question, "sources": [],
                         "model": usage.model if usage else None, "confidence": confidence,
                         "handoff": False, "clarify": True, "usage": usage, "retrieval": metrics, **conflict_info,
+                        "trace": _trace(question, "clarify", usage, confidence),
                     }
                     return
                 # Clarify generation failed — stream the confident-enough
@@ -1099,6 +1151,7 @@ async def answer_question_stream(
                     "model": usage.model if usage else None, "confidence": confidence,
                     "handoff": decision == "handoff", "refused": decision == "refuse",
                     "usage": usage, "retrieval": metrics, **conflict_info,
+                    "trace": _trace(fallback, decision, usage, confidence),
                 }
                 return
             if decision == "clarify":
@@ -1109,6 +1162,7 @@ async def answer_question_stream(
                         "type": "final", "answer": question, "sources": [],
                         "model": usage.model if usage else None, "confidence": confidence,
                         "handoff": False, "clarify": True, "usage": usage, "retrieval": metrics, **conflict_info,
+                        "trace": _trace(question, "clarify", usage, confidence),
                     }
                     return
             if text:
@@ -1152,6 +1206,7 @@ async def answer_question_stream(
             "type": "final", "answer": fallback, "sources": [],
             "model": usage.model if usage else None, "confidence": 0,
             "handoff": handoff_enabled, "usage": usage, "retrieval": metrics, **conflict_info,
+            "trace": _trace(fallback, "empty", usage, 0),
         }
         return
 
@@ -1167,6 +1222,7 @@ async def answer_question_stream(
         "type": "final", "answer": answer, "sources": _build_citation_sources(chunks, doc_names),
         "model": usage.model if usage else None, "confidence": confidence, "handoff": False,
         "usage": usage, "retrieval": metrics, **conflict_info,
+        "trace": _trace(answer, "answer", usage, confidence),
     }
 
 async def verify_llm_providers() -> None:

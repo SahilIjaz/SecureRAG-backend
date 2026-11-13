@@ -88,6 +88,7 @@ def _message(msg: ConversationMessage) -> FEConversationMessage:
         text=msg.text,
         createdAt=helpers._as_aware(msg.created_at).isoformat(),
         sources=msg.sources or [],
+        traceId=str(msg.trace_id) if msg.trace_id else None,
     )
 
 async def _get_conversation_or_404(

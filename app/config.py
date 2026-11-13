@@ -326,6 +326,20 @@ class Settings(BaseSettings):
     #   refuse   — skip generation and return the tenant's fallback message
     RAG_UNRESOLVED_CONFLICT_ACTION: str = "disclose"
 
+    # ── Audit trail & response traceability (see app/services/audit_service.py,
+    # app/services/trace_service.py, app/core/audit_middleware.py) ──────────
+    # Every mutating dashboard/API request plus explicit auth events are
+    # recorded in audit_logs (hash-chained per tenant, UPDATE/DELETE blocked
+    # by a trigger). Every generated reply is recorded in answer_traces.
+    AUDIT_ENABLED: bool = True
+    # Rows older than this are purged by the daily retention sweep (the only
+    # path allowed to delete from audit_logs). 0 disables purging.
+    AUDIT_RETENTION_DAYS: int = 365
+    TRACE_RETENTION_DAYS: int = 180
+    # Cap on the chunk snippet kept in a trace; the full text stays in
+    # document_chunks and is recoverable by document_id + chunk_id.
+    TRACE_SNIPPET_CHARS: int = 300
+
     # Background-job recovery: how long a document may sit in "processing"
     # before a startup sweep assumes the worker died and reschedules it.
     INDEXING_STALE_MINUTES: int = 15

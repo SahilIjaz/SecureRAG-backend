@@ -10,6 +10,7 @@ Paths match Nexus-frontend/src/api/*.api.ts exactly:
 from fastapi import APIRouter
 
 from app.api.frontend import (
+    audit,
     auth,
     chatbot,
     conversations,
@@ -38,5 +39,6 @@ router.include_router(settings.router)
 router.include_router(notifications.router)
 router.include_router(presence.router)
 router.include_router(public_bot.router)
+router.include_router(audit.router)
 router.include_router(team.router)
 router.include_router(model_options.router)

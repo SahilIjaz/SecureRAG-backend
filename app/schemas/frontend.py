@@ -354,6 +354,8 @@ class FEConversationMessage(BaseModel):
     # server's UTC hour instead of the owner's local hour.
     createdAt: str
     sources: List[CitationSource] = []
+    # Response-traceability link (GET /api/traces/{traceId}) for bot replies.
+    traceId: Optional[str] = None
 
 class FEConversationDetail(FEConversationListItem):
     messages: List[FEConversationMessage]

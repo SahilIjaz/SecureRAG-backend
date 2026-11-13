@@ -21,6 +21,8 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.frontend import helpers
+from app.models.answer_trace import AnswerTrace
+from app.services import trace_service
 from app.core.rate_limit import limiter
 from app.database import AsyncSessionLocal, get_db
 from app.models.chatbot_config import ChatbotConfig
@@ -297,6 +299,8 @@ class FETestChatResponse(BaseModel):
     # only when at least one cross-document conflict stayed unresolved.
     conflicts: List[FEConflictInfo] = []
     conflict: bool = False
+    # Response-traceability record for this reply (GET /api/traces/{traceId}).
+    traceId: Optional[str] = None
 
 @router.post("/test-chat", response_model=FETestChatResponse)
 @limiter.limit("20/minute")
@@ -422,10 +426,27 @@ async def test_chat(
         sources = result["sources"] if behavior.get("showSources", True) else []
         handoff = False
 
+    # Every test reply gets a trace (channel "test"); when the turn is also
+    # persisted as a simulated conversation the trace is linked to the
+    # stored message like a real visitor's.
+    trace_id = None
+    bot_msg = None
     if convo is not None:
-        db.add(ConversationMessage(
+        bot_msg = ConversationMessage(
             conversation_id=convo.id, role="bot", text=reply, sources=sources or None,
-        ))
+        )
+        db.add(bot_msg)
+        await db.flush()
+    trace_row = await trace_service.record_trace(
+        db, tenant_id=current_user.tenant_id, trace=result.get("trace"), channel="test",
+        conversation_id=convo.id if convo is not None else None,
+        message_id=bot_msg.id if bot_msg is not None else None,
+    )
+    if trace_row is not None:
+        trace_id = str(trace_row.id)
+        if bot_msg is not None:
+            bot_msg.trace_id = trace_row.id
+    if convo is not None:
         if handoff and convo.status == "Open":
             convo.status = "Handed off"
         if unresolved_reason:
@@ -439,10 +460,13 @@ async def test_chat(
             )
         fire_and_forget(store_conversation_classification(convo.id, current_user.tenant_id, body.message, reply))
 
+    if convo is None:
+        await db.commit()  # the trace is the only write on a plain test turn
     return FETestChatResponse(
         reply=reply, sources=sources, handoff=handoff, confidence=confidence,
         conversationId=str(convo.id) if convo is not None else None,
         conflicts=_fe_conflicts(result.get("conflicts")), conflict=bool(result.get("conflict")),
+        traceId=trace_id,
     )
 
 def _sse(event: str, payload: dict) -> str:
@@ -516,6 +540,8 @@ async def test_chat_stream(
         final_text = None
         final_sources: list = []
         final_usage = None
+        final_trace = None
+        final_trace_id = None
         unresolved_reason = None
         notif_type = None
         handoff = False
@@ -530,6 +556,26 @@ async def test_chat_stream(
                     succeeded = True
                     final_text = ev["answer"]
                     final_usage = ev.get("usage")
+                    final_trace = ev.get("trace")
+                    # The trace is persisted right here (own session) under a
+                    # pre-assigned id, so the id in the done event already
+                    # resolves; the bot message written in `finally` links
+                    # back to it.
+                    final_trace_id = uuid.uuid4() if final_trace else None
+                    if final_trace:
+                        # Persist the trace *now* (own session) so the id
+                        # announced in the done event resolves immediately;
+                        # the bot message written below links back to it.
+                        try:
+                            async with AsyncSessionLocal() as s_trace:
+                                await trace_service.record_trace(
+                                    s_trace, tenant_id=tenant_id, trace=final_trace, channel="test",
+                                    conversation_id=conversation_id, trace_id=final_trace_id,
+                                )
+                                await s_trace.commit()
+                        except Exception:
+                            logger.exception("Failed to persist answer trace for tenant %s", tenant_id)
+                            final_trace_id = None
                     handoff = ev["handoff"]
                     # Check handoff *before* sources: answer_question_stream()
                     # deliberately blanks sources to [] for a suppressed
@@ -557,6 +603,7 @@ async def test_chat_stream(
                         "conversationId": str(conversation_id) if conversation_id else None,
                         "conflicts": [c.model_dump() for c in _fe_conflicts(ev.get("conflicts"))],
                         "conflict": bool(ev.get("conflict")),
+                        "traceId": str(final_trace_id) if final_trace_id else None,
                     })
                 elif ev["type"] == "error":
                     yield _sse("error", {"message": f"Chat backend error: {ev['message']}"})
@@ -576,11 +623,21 @@ async def test_chat_stream(
                             )
                         except Exception:
                             logger.exception("Failed to record LLM usage for tenant %s", tenant_id)
+                        bot_msg = None
                         if conversation_id is not None:
-                            session.add(ConversationMessage(
+                            bot_msg = ConversationMessage(
                                 conversation_id=conversation_id, role="bot", text=final_text or "",
                                 sources=final_sources or None,
-                            ))
+                            )
+                            session.add(bot_msg)
+                            await session.flush()
+                        if final_trace_id is not None and bot_msg is not None:
+                            bot_msg.trace_id = final_trace_id
+                            await session.execute(
+                                update(AnswerTrace).where(AnswerTrace.id == final_trace_id)
+                                .values(message_id=bot_msg.id)
+                            )
+                        if conversation_id is not None:
                             if handoff:
                                 await session.execute(
                                     update(Conversation)

@@ -139,6 +139,9 @@ class ConversationMessage(Base):
     # Citation data for a bot reply — [{documentId, documentName, snippet, page, score}, ...].
     # Only ever populated for role="bot"; null for user/agent messages.
     sources: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+    # Response-traceability link: the AnswerTrace recording how this bot
+    # reply was produced (retrieved chunks, scores, decision, model).
+    trace_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True)
     # Python-side default (not just server_default): Postgres now() returns the
     # TRANSACTION start time, so a user message and its bot reply written in one
     # transaction would share a timestamp and make response time compute to 0.

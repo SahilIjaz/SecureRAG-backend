@@ -18,6 +18,8 @@ from app.models.invite import Invite
 from app.models.notification import Notification
 from app.models.wallet_transaction import WalletTransaction
 from app.models.llm_usage_log import LLMUsageLog
+from app.models.audit_log import AuditLog
+from app.models.answer_trace import AnswerTrace
 
 __all__ = [
     "Tenant",
@@ -45,4 +47,6 @@ __all__ = [
     "Notification",
     "WalletTransaction",
     "LLMUsageLog",
+    "AuditLog",
+    "AnswerTrace",
 ]

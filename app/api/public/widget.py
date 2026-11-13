@@ -21,6 +21,8 @@ bottom) rather than included in the main `frontend_router`, for two reasons:
 
 import json
 import logging
+
+from app.services import trace_service
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -330,6 +332,7 @@ async def post_widget_message(
     # acknowledgement, not a real reply, and persisting it on every message
     # sent while waiting would spam the transcript.
     already_handed_off = conversation.status == "Handed off"
+    trace_payload = None  # set when a real generation ran (see below)
 
     if already_handed_off:
         reply = "Thanks for the extra detail — a teammate will pick this up and reply here shortly."
@@ -364,6 +367,7 @@ async def post_widget_message(
             reply, sources, handoff = fallback, [], False
             t_gen_done = time.monotonic()
         else:
+            trace_payload = result.get("trace")
             if usage is not None:
                 await helpers.increment_questions_used(tenant.id, db)
 
@@ -406,7 +410,19 @@ async def post_widget_message(
         # Via the relationship, not conversation_id=conversation.id — for a
         # brand-new conversation .id is still None here (no flush has run
         # yet; see the comment above where it's constructed).
-        db.add(ConversationMessage(conversation=conversation, role="bot", text=reply))
+        # Citations are persisted for real visitors too (previously only the
+        # dashboard test chat kept them) and the reply is linked to its
+        # answer trace so an admin can open "Why this answer?" later.
+        bot_msg = ConversationMessage(conversation=conversation, role="bot", text=reply, sources=sources or None)
+        db.add(bot_msg)
+        if trace_payload:
+            await db.flush()
+            trace_row = await trace_service.record_trace(
+                db, tenant_id=tenant.id, trace=trace_payload, channel="widget",
+                conversation_id=conversation.id, message_id=bot_msg.id,
+            )
+            if trace_row is not None:
+                bot_msg.trace_id = trace_row.id
     if handoff and conversation.status == "Open":
         conversation.status = "Handed off"
         conversation.live_wait_started_at = datetime.now(timezone.utc)
@@ -588,6 +604,8 @@ async def post_widget_message_stream(
         handoff = False
         count_usage = False
         llm_usage = None
+        final_sources: list = []
+        final_trace = None
         unresolved_reason = None
         notif_type = None
 
@@ -618,6 +636,8 @@ async def post_widget_message_stream(
                             handoff = ev["handoff"]
                             count_usage = True
                             llm_usage = ev.get("usage")
+                            final_sources = ev.get("sources") or []
+                            final_trace = ev.get("trace")
                             # Check handoff *before* sources: answer_question_stream()
                             # deliberately blanks sources to [] for a suppressed
                             # low-confidence answer too, not just a genuine "nothing
@@ -668,7 +688,19 @@ async def post_widget_message_stream(
                 # spam the transcript if stored on every message sent while
                 # waiting for a human.
                 if not already_handed_off:
-                    session.add(ConversationMessage(conversation_id=conversation_id, role="bot", text=final_text or fallback))
+                    bot_msg = ConversationMessage(
+                        conversation_id=conversation_id, role="bot", text=final_text or fallback,
+                        sources=final_sources or None,
+                    )
+                    session.add(bot_msg)
+                    if final_trace:
+                        await session.flush()
+                        trace_row = await trace_service.record_trace(
+                            session, tenant_id=tenant_id, trace=final_trace, channel="widget",
+                            conversation_id=conversation_id, message_id=bot_msg.id,
+                        )
+                        if trace_row is not None:
+                            bot_msg.trace_id = trace_row.id
                 if handoff:
                     await session.execute(
                         update(Conversation)
