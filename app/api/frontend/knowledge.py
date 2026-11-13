@@ -214,6 +214,10 @@ async def delete_document(
     if doc is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
 
+    request.state.audit = {
+        "resource_type": "document", "resource_id": str(doc.id), "resource_label": _doc_label(doc),
+        "details": {"source": doc.source.value, "chunks": doc.chunk_count},
+    }
     doc.is_active = False
 
     # Documents are soft-deleted (is_active=False), so the FK cascade never
@@ -411,6 +415,10 @@ async def update_document_authority(
     )
     docs = await helpers.get_active_documents(current_user.tenant_id, db)
     by_id, superseded_by = _authority_context(docs)
+    request.state.audit = {
+        "resource_type": "document", "resource_id": str(doc.id), "resource_label": _doc_label(doc),
+        "details": {k: v for k, v in body.model_dump().items() if k in body.model_fields_set},
+    }
     return _fe_authority(doc, by_id, superseded_by)
 
 @router.post("/faqs", response_model=FEAddFaqResponse, status_code=status.HTTP_201_CREATED)

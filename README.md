@@ -162,6 +162,38 @@ appear in the reply and append them if not), `handoff`, or `refuse`. The
 test-chat response carries `conflicts[]` / `conflict` for the dashboard.
 Tests: `tests/test_conflicts.py`.
 
+## Audit trail, response traceability & compliance evidence
+
+**Audit trail** (`app/core/audit_middleware.py`, `app/services/audit_service.py`,
+table `audit_logs`): every mutating dashboard/API request becomes one
+append-only entry — actor (email/role from the bearer token), action
+(`document.delete`, `settings.workspace.update`, …), resource (handlers add
+the label via `request.state.audit`), outcome + status code, IP, user agent,
+request id. Authentication events are recorded explicitly with the attempted
+email and failure reason (`auth.login`, `auth.logout`, `user.password.change`,
+`audit.export`). Entries form a per-tenant SHA-256 hash chain
+(`prev_hash` → `entry_hash`); a database trigger rejects UPDATE and any
+DELETE other than the daily retention sweep (`AUDIT_RETENTION_DAYS`).
+Admin API: `GET /api/audit` (filter/paginate), `/api/audit/actions`,
+`/api/audit/verify` (recompute the chain), `/api/audit/compliance`
+(controls + retention + integrity), `GET /api/audit/export?format=csv|json`
+(owner only, itself audited). Dashboard: Settings → **Audit log**.
+
+**Response traceability** (`app/services/trace_service.py`, table
+`answer_traces`): every generated reply — real widget visitors, the public
+bot page and dashboard test chats — stores the question, the answer, the
+gate decision, confidence, provider/model/tokens, latency, retrieval
+metrics, the retrieved chunks with similarity/rerank scores and capped
+snippets, and any contradictions with their resolution. The stored bot
+message links to it (`conversation_messages.trace_id`); widget conversations
+now persist citations too. API: `GET /api/traces/{id}`,
+`GET /api/traces?conversationId=…` (admin+). Dashboard: "Why this answer?"
+on bot messages in Conversations and in the Test chatbot. Retention:
+`TRACE_RETENTION_DAYS`.
+
+Usage logging (provider, model, tokens, cost) already lives in
+`llm_usage_logs` / `wallet_transactions`. Tests: `tests/test_audit.py`.
+
 Evaluation (`scripts/evaluate_rag.py`) measures RAGAS-style faithfulness
 (LLM judge counts answer claims supported by the retrieved context) plus
 tenant isolation (citation authorization + cross-tenant probes):

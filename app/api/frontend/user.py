@@ -106,6 +106,18 @@ async def get_me(
         role=await helpers.role_for(current_user, db),
     )
 
+
+async def _audit_password(request: Request, user: User, outcome: str, **details) -> None:
+    from app.core.audit_middleware import client_ip
+    from app.services import audit_service
+
+    await audit_service.record(
+        action="user.password.change", outcome=outcome, tenant_id=user.tenant_id, actor_user_id=user.id,
+        actor_email=user.email, resource_type="user", resource_id=str(user.id), method=request.method,
+        path=request.url.path, ip=client_ip(request), user_agent=request.headers.get("user-agent"),
+        details=details or None,
+    )
+
 @router.put("/password", response_model=FEChangePasswordResponse)
 @limiter.limit("5/minute")
 async def change_password(
@@ -126,12 +138,14 @@ async def change_password(
         None, verify_password, body.currentPassword, current_user.password_hash
     )
     if not valid:
+        await _audit_password(request, current_user, "failure", reason="current_password_incorrect")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Current password is incorrect.",
         )
 
     current_user.password_hash = await loop.run_in_executor(None, hash_password, body.newPassword)
+    await _audit_password(request, current_user, "success")
     # Invalidate every existing session for this user — a password change must
     # log out other devices...
     current_user.token_version = (current_user.token_version or 0) + 1

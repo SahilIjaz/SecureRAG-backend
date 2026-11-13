@@ -28,6 +28,7 @@ from app.api.frontend import helpers
 from app.database import get_db
 from app.models.chatbot_config import ChatbotConfig
 from app.models.conversation import Conversation, ConversationMessage
+from app.services import trace_service
 from app.models.document import Document
 from app.models.tenant import Tenant
 from app.schemas.frontend import FEChatbotAppearance, FEChatbotIdentity
@@ -246,8 +247,17 @@ async def public_chat(
     else:
         reply = result["answer"]
 
-    db.add(ConversationMessage(conversation_id=conversation.id, role="bot", text=reply))
+    bot_msg = ConversationMessage(
+        conversation_id=conversation.id, role="bot", text=reply, sources=result.get("sources") or None,
+    )
+    db.add(bot_msg)
     await db.flush()
+    trace_row = await trace_service.record_trace(
+        db, tenant_id=tenant.id, trace=result.get("trace"), channel="public",
+        conversation_id=conversation.id, message_id=bot_msg.id,
+    )
+    if trace_row is not None:
+        bot_msg.trace_id = trace_row.id
     await db.commit()
 
     # Classify in the background so the dashboard's topic/sentiment/resolution

@@ -156,6 +156,23 @@ async def ensure_frontend_schema() -> None:
         "SELECT gen_random_uuid(), u.tenant_id, u.id, 'owner' FROM users u "
         "WHERE NOT EXISTS (SELECT 1 FROM tenant_users tu WHERE tu.user_id = u.id) "
         "ON CONFLICT DO NOTHING",
+        # Audit trail + response traceability — see migrations/add_audit_trail.sql.
+        # audit_logs / answer_traces tables come from create_all; this links
+        # bot messages to their trace and makes audit_logs append-only at the
+        # database: UPDATE is always rejected, DELETE only when the retention
+        # sweep has set the nexus.audit_purge session flag (or a tenant row
+        # is being removed, which cascades).
+        "ALTER TABLE conversation_messages ADD COLUMN IF NOT EXISTS trace_id UUID",
+        "CREATE OR REPLACE FUNCTION audit_logs_immutable() RETURNS trigger AS $$ "
+        "BEGIN "
+        "  IF TG_OP = 'DELETE' AND current_setting('nexus.audit_purge', true) = '1' THEN RETURN OLD; END IF; "
+        "  IF TG_OP = 'DELETE' AND OLD.tenant_id IS NOT NULL "
+        "     AND NOT EXISTS (SELECT 1 FROM tenants t WHERE t.id = OLD.tenant_id) THEN RETURN OLD; END IF; "
+        "  RAISE EXCEPTION 'audit_logs is append-only (% rejected)', TG_OP; "
+        "END; $$ LANGUAGE plpgsql",
+        "DROP TRIGGER IF EXISTS trg_audit_logs_immutable ON audit_logs",
+        "CREATE TRIGGER trg_audit_logs_immutable BEFORE UPDATE OR DELETE ON audit_logs "
+        "FOR EACH ROW EXECUTE FUNCTION audit_logs_immutable()",
         # Prepaid wallet + one-time signup trial — see
         # app/services/wallet_service.py and NexusContext plan doc
         # i-want-to-implement-floofy-hickey.md section C.
@@ -228,6 +245,11 @@ async def lifespan(app: FastAPI):
     app.state.release_orphaned_task = asyncio.create_task(release_orphaned_live_chats_loop())
     app.state.live_flag_sweep_task = asyncio.create_task(live_flag_sweep_loop())
 
+    # Audit-log / answer-trace retention (daily). The sweep is the only code
+    # path allowed to delete audit rows — see audit_logs_immutable() above.
+    from app.services.audit_service import retention_sweep_loop
+    app.state.audit_retention_task = asyncio.create_task(retention_sweep_loop())
+
     # Optional Redis (shared rate-limit + embedding cache). No-op if unset.
     from app.core.redis_client import init_redis, close_redis
     await init_redis()
@@ -293,6 +315,13 @@ async def perf_timing_middleware(request: Request, call_next):
         )
     response.headers["X-Process-Time-Ms"] = f"{total_ms:.2f}"
     return response
+
+@app.middleware("http")
+async def audit_trail_middleware(request: Request, call_next):
+    """Every mutating dashboard/API request → one append-only audit_logs
+    row (actor, action, resource, outcome, IP). See app/core/audit_middleware.py."""
+    from app.core.audit_middleware import audit_middleware
+    return await audit_middleware(request, call_next)
 
 @app.middleware("http")
 async def security_headers_middleware(request: Request, call_next):

@@ -88,6 +88,23 @@ async def signup(
     )
     return FESignupResponse(success=True, message=result["message"])
 
+
+async def _audit_auth(request: Request, action: str, outcome: str, email, user, **details) -> None:
+    """Explicit audit entry for authentication events — the middleware skips
+    these routes because only the handler knows the attempted email and the
+    reason. Actor identity comes from the user row when known, else from the
+    bearer token (logout)."""
+    from app.core.audit_middleware import _actor_from_token, client_ip
+    from app.services import audit_service
+
+    user_id, tenant_id = (str(user.id), str(user.tenant_id)) if user is not None else _actor_from_token(request)
+    await audit_service.record(
+        action=action, outcome=outcome, tenant_id=tenant_id, actor_user_id=user_id,
+        actor_email=(user.email if user is not None else None) or (str(email) if email else None),
+        method=request.method, path=request.url.path, ip=client_ip(request),
+        user_agent=request.headers.get("user-agent"), details=details or None,
+    )
+
 @router.post("/login", response_model=FELoginResponse)
 @limiter.limit("5/minute")
 async def login(
@@ -113,17 +130,22 @@ async def login(
             None, verify_password, body.password, password_hash
         )
     if user is None or not password_ok:
+        # Audited with the attempted email; the response stays indistinguishable.
+        await _audit_auth(request, "auth.login", "failure", body.email, user, reason="invalid_credentials")
         raise invalid_credentials
 
     # Beyond this point the credentials are valid, so surfacing account state
     # no longer leaks whether the email exists.
     if not user.is_email_verified:
+        await _audit_auth(request, "auth.login", "failure", body.email, user, reason="email_not_verified")
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Email not verified. Please verify your email first.")
     if not user.is_active:
+        await _audit_auth(request, "auth.login", "failure", body.email, user, reason="account_deactivated")
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is deactivated.")
 
     with perf_timing.timed("create_access_token"):
         token = create_access_token({"sub": str(user.id), "tenant_id": str(user.tenant_id), "tv": user.token_version})
+    await _audit_auth(request, "auth.login", "success", body.email, user)
     with perf_timing.timed("build_fe_user"):
         fe_user = await _fe_user(user, db)
     return FELoginResponse(success=True, token=token, user=fe_user)
@@ -331,6 +353,7 @@ async def logout(
     expires. Always returns success — see revoke_current_token's docstring
     for why an already-invalid token isn't an error here.
     """
+    await _audit_auth(request, "auth.logout", "success", None, None)
     return FESuccessResponse()
 
 @router.post("/reset-password", response_model=FESuccessResponse)
