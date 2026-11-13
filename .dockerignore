@@ -1,0 +1,32 @@
+# Never bake secrets or local state into the image.
+.env
+.env.*
+!.env.example
+!.env.production.example
+
+# Local tooling / caches
+.git
+.github
+.vscode
+.idea
+venv/
+.venv/
+env/
+__pycache__/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.log
+
+# Local data that must not ship (tests stay in: `docker compose exec api
+# python -m pytest tests -q` is the on-server smoke check)
+storage/
+scripts/eval_results/
+
+# Deployment helpers run on the host, not inside the container
+deploy/
+docker-compose.yml
+Dockerfile
+.dockerignore
