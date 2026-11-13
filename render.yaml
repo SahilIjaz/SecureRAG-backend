@@ -1,0 +1,91 @@
+# Render Blueprint — free tier, no card required.
+#
+#   Render dashboard → New → Blueprint → pick this repo (branch dev) →
+#   fill in the secrets it asks for → Apply.
+#
+# What you get:
+#   nexus-api   free Docker web service (512 MB, sleeps after 15 min idle)
+#   nexus-redis free Key Value instance (25 MB) wired in as REDIS_URL
+#
+# The website scraper is OFF here (Chromium does not fit in 512 MB); see
+# deploy/render/README.md for the full list of limits and the upgrade path.
+
+services:
+  - type: web
+    name: nexus-api
+    runtime: docker
+    plan: free
+    region: frankfurt          # closest Render region to Pakistan; or singapore
+    branch: dev
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    autoDeploy: true           # every push to dev redeploys
+    envVars:
+      # ── build-time ─────────────────────────────────────────────────────
+      - key: INSTALL_CHROMIUM          # read as a Docker build arg
+        value: "false"
+      # ── runtime: fixed ─────────────────────────────────────────────────
+      - key: DEBUG
+        value: "False"
+      - key: CRAWL4AI_ENABLED
+        value: "false"
+      - key: SCRAPE_OCR_ENABLED
+        value: "false"
+      - key: AUDIT_ENABLED
+        value: "true"
+      - key: LLM_PROVIDER_CHAIN
+        value: gemini
+      - key: GEMINI_ANSWER_MODEL
+        value: gemini-flash-latest
+      - key: GEMINI_FALLBACK_MODELS
+        value: gemini-flash-lite-latest
+      - key: PINECONE_INDEX_NAME
+        value: securerag-documents
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: nexus-redis
+          property: connectionString
+      # ── runtime: you fill these in when applying the blueprint ─────────
+      - key: DATABASE_URL            # postgresql+asyncpg://…neon.tech/neondb?ssl=require
+        sync: false
+      - key: SECRET_KEY
+        generateValue: true          # Render generates a random one
+      - key: FRONTEND_URL            # the deployed dashboard URL (update after Vercel)
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: PINECONE_API_KEY
+        sync: false
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
+      - key: FILE_ENCRYPTION_KEY     # same value as local, or old files can't be decrypted
+        sync: false
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: STRIPE_PRICE_STARTER
+        sync: false
+      - key: STRIPE_PRICE_GROWTH
+        sync: false
+      - key: STRIPE_PRICE_BUSINESS
+        sync: false
+      - key: BREVO_API_KEY           # Render blocks outbound SMTP; use the Brevo HTTP API
+        sync: false
+      - key: EMAILS_FROM_EMAIL
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+
+  - type: keyvalue
+    name: nexus-redis
+    plan: free
+    region: frankfurt
+    maxmemoryPolicy: allkeys-lru
+    ipAllowList: []              # only reachable from Render services
