@@ -34,9 +34,10 @@ RUN apt-get update \
 WORKDIR /app
 
 # Dependencies first so code changes don't invalidate this (slow) layer.
-COPY requirements.txt .
+COPY requirements.txt requirements-post.txt ./
 RUN pip install --upgrade pip \
  && pip install -r requirements.txt \
+ && pip install --no-deps -r requirements-post.txt \
  && if [ "$INSTALL_CHROMIUM" = "true" ]; then \
       playwright install --with-deps chromium; \
     else \

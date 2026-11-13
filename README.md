@@ -62,6 +62,7 @@ migrations/           # reference SQL (init.sql) — not applied automatically
 python -m venv venv
 venv\Scripts\activate        # Windows; use `source venv/bin/activate` on macOS/Linux
 pip install -r requirements.txt
+pip install --no-deps -r requirements-post.txt   # security upgrades beyond a dependency's declared range (Pillow 13)
 
 copy .env.example .env       # then fill in the real values (see below)
 uvicorn app.main:app --reload --port 8000

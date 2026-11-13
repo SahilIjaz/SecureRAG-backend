@@ -31,5 +31,7 @@ kyber-py==1.2.0
 dilithium-py==1.4.0
 
 # Security: Pillow <13 carries 11 open CVEs (pip-audit 2026-11-03). crawl4ai 0.4.243 declares
-# pillow~=10.4 but runs fine on 13 (verified with a live scrape); keep this explicit pin.
-pillow>=13.0.0
+# pillow~=10.4 but runs fine on 13 (verified with a live scrape). Pinning >=13 HERE makes a clean
+# `pip install -r requirements.txt` fail with ResolutionImpossible (crawl4ai's range vs ours), so
+# the upgrade lives in requirements-post.txt and is applied in a second, --no-deps step:
+#   pip install -r requirements.txt && pip install --no-deps -r requirements-post.txt
