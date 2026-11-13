@@ -58,7 +58,7 @@ _MIN_SHARED_SEMANTIC = 2        # … for polarity statements
 _MIN_JACCARD_SEMANTIC = 0.4     # polarity statements must largely overlap
 _MIN_JACCARD_INTRA = 0.6        # same-document pairs must be near-identical
 _NUMERIC_WINDOW = 5             # content words taken each side of a number
-_MAX_SENTENCES_PER_CHUNK = 80
+_MAX_SENTENCES_PER_CHUNK = 30  # a 500-token chunk is ~8–20 sentences; bounds the O(n²) scan
 _MAX_SENTENCE_CHARS = 400
 _STATEMENT_PREVIEW = 200
 
@@ -278,6 +278,7 @@ class _Statement:
     words: set
     negations: list                               # negation targets, see _content_words
     conditions: set
+    tokens: list = field(default_factory=list)    # normalised words in sentence order
     numbers: list = field(default_factory=list)   # [(value, unit_family|None, local_words)]
     dates: list = field(default_factory=list)     # [date]
 
@@ -368,6 +369,7 @@ def _statements(chunks: List[dict]) -> List[_Statement]:
             out.append(_Statement(
                 doc_id=doc_id, chunk_index=idx, text=sentence, words=words,
                 negations=negations, conditions=_condition_words(sentence),
+                tokens=[_norm(t) for t in _WORD_RE.findall(masked)],
                 numbers=_extract_numbers(masked), dates=dates,
             ))
     return out
@@ -398,6 +400,45 @@ def _make_conflict(kind: str, a: _Statement, b: _Statement, value_a, value_b, sh
     }
 
 
+def _qualifier_before(tokens: list, shared: set) -> dict:
+    """For each shared specific word, the nearest *specific* content word
+    that precedes its first occurrence in the sentence ("Basic" before
+    "plan", "Express" before "shipping", "Exchanges" before "processed").
+    Stopwords/generic words are skipped over; a shared word is never its
+    own qualifier."""
+    out = {}
+    for w in shared:
+        if w in _GENERIC_WORDS:
+            continue
+        try:
+            idx = tokens.index(w)
+        except ValueError:
+            continue
+        for prev in reversed(tokens[:idx]):
+            if prev in _STOPWORDS or len(prev) < 3:
+                continue  # "are", "the", "of" sit between a qualifier and its noun
+            # The first real token decides: a generic/shared word there means
+            # the subject is unqualified ("within 30 days of purchase").
+            if prev not in shared and prev not in _GENERIC_WORDS:
+                out[w] = prev
+            break
+    return out
+
+
+def _sibling_facts(a: _Statement, b: _Statement, shared: set) -> bool:
+    """True when both statements qualify a shared subject word with a
+    *different* specific word — "Basic plan … 10" vs "Pro plan … 20",
+    "Standard shipping 5 days" vs "Express shipping 2 days", "Refunds …
+    processed" vs "Exchanges … processed". Those are sibling facts, not a
+    contradiction. A qualifier on one side only ("full refunds" vs
+    "refunds") is fine — a general rule and a specific one can still clash."""
+    qa, qb = _qualifier_before(a.tokens, shared), _qualifier_before(b.tokens, shared)
+    for w in qa.keys() & qb.keys():
+        if qa[w] != qb[w]:
+            return True
+    return False
+
+
 def _pair_allowed(a: _Statement, b: _Statement, intra_document: bool) -> bool:
     if a.doc_id != b.doc_id:
         return True
@@ -410,12 +451,20 @@ def _specific(shared: set) -> set:
     return {w for w in shared if w not in _GENERIC_WORDS}
 
 
-def detect_conflicts(chunks: List[dict], intra_document: Optional[bool] = None) -> List[dict]:
+def detect_conflicts(
+    chunks: List[dict],
+    intra_document: Optional[bool] = None,
+    context_size: Optional[int] = None,
+) -> List[dict]:
     """Scan retrieved chunks for numeric, date and semantic contradictions.
 
     `intra_document` (default: settings.RAG_CONFLICT_INTRA_DOCUMENT) also
     compares near-identical statements *within* one document; those are
     reported with scope="intra_document" and are disclosure-only downstream.
+    `context_size`, when given, means only the first N chunks reach the
+    model: a conflict is kept only if at least one side is among them, so
+    tail-vs-tail disagreements never consume the report cap or the LLM
+    verification budget.
     Returns at most settings.RAG_CONFLICT_MAX_REPORTED conflicts, cross-
     document first, strongest subject overlap first.
     """
@@ -425,13 +474,21 @@ def detect_conflicts(chunks: List[dict], intra_document: Optional[bool] = None) 
     found: list[tuple[tuple, dict]] = []
     seen: set = set()
 
+    def _relevant(a: _Statement, b: _Statement) -> bool:
+        return context_size is None or a.chunk_index < context_size or b.chunk_index < context_size
+
     for i in range(len(stmts)):
         a = stmts[i]
         for j in range(i + 1, len(stmts)):
             b = stmts[j]
+            if not _relevant(a, b):
+                continue
             if not _pair_allowed(a, b, intra_document):
                 continue
             if not _conditions_compatible(a.conditions, b.conditions):
+                continue
+            sentence_shared = a.words & b.words
+            if _sibling_facts(a, b, sentence_shared):
                 continue
 
             # numeric: same local subject, compatible unit, different value
@@ -443,6 +500,8 @@ def detect_conflicts(chunks: List[dict], intra_document: Optional[bool] = None) 
                     if len(shared) < _MIN_SHARED_WORDS or not _specific(shared):
                         continue
                     if not _values_disagree(va, vb):
+                        continue
+                    if _sibling_facts(a, b, shared):
                         continue
                     key = ("numeric", a.doc_id, b.doc_id, frozenset(shared))
                     if key in seen:
@@ -605,8 +664,12 @@ def conflict_prompt_note(conflicts: List[dict], doc_names: Optional[dict], resol
     names = doc_names or {}
     resolved_lines, unresolved_lines = [], []
     for i, c in enumerate(conflicts):
+        if c.get("scope") == "intra_document":
+            # Kept in metrics for evaluation, but "X says 10 but X says 20"
+            # is not an instruction the model can act on sensibly.
+            continue
         name_a = names.get(c["documentA"]) or "one source"
-        name_b = names.get(c["documentB"]) or ("another source" if c["scope"] == "cross_document" else "the same source")
+        name_b = names.get(c["documentB"]) or "another source"
         res = (resolutions or [None] * len(conflicts))[i] if resolutions else None
         if res and res.get("status") == "resolved":
             winner = names.get(res["winner"]) or "the authoritative source"

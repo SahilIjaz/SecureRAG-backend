@@ -106,6 +106,10 @@ def resolve_conflict(conflict: dict, authority: Dict[str, DocumentAuthority], to
                                      older, newer)
                 return _unresolved("superseding_document_not_yet_effective",
                                    f"the superseding document only takes effect {newer.effective_date.isoformat()} and the older one is not approved")
+            if newer.approval_status == "deprecated" or not newer.is_active:
+                # A rolled-back replacement: the link is history, not a
+                # claim. Fall through to the approval rules below.
+                break
             return _unresolved("superseding_document_not_approved",
                                "a newer document claims to supersede the other but has not been approved")
 
