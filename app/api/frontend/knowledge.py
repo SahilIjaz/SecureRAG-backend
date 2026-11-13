@@ -33,14 +33,16 @@ from app.schemas.frontend import (
     FEAddFaqResponse,
     FEAddUrlRequest,
     FEAddUrlResponse,
+    FEDocumentAuthority,
     FEFaqEntry,
     FEKnowledgeDocument,
     FEKnowledgeStats,
     FEKnowledgeUrl,
     FESuccessResponse,
+    FEUpdateDocumentAuthorityRequest,
     FEUpdateFaqRequest,
 )
-from app.services import document_service
+from app.services import document_authority_service, document_service
 from app.services.auth_service import get_current_user
 from app.core.subscription_guard import require_active_subscription
 from app.core.rbac import require_admin
@@ -56,7 +58,41 @@ router = APIRouter(
     dependencies=[Depends(require_admin)],
 )
 
-def _fe_document(doc: Document) -> FEKnowledgeDocument:
+def _doc_label(doc: Document) -> str:
+    """Human name for any knowledge source, whatever its tab."""
+    if doc.source == DocumentSource.faq:
+        return (doc.question or "FAQ").strip()[:80]
+    if doc.source == DocumentSource.scraped:
+        return doc.source_url or doc.original_filename
+    return doc.original_filename
+
+def _fe_authority(doc: Document, by_id: dict | None = None, superseded_by: dict | None = None) -> FEDocumentAuthority:
+    """Authority block for one document. `by_id` ({id: Document} of the
+    tenant's active docs) resolves the superseded document's name;
+    `superseded_by` is document_authority_service.superseded_by_map()."""
+    sup_id = str(doc.supersedes_document_id) if doc.supersedes_document_id else None
+    sup_doc = (by_id or {}).get(sup_id) if sup_id else None
+    newer = (superseded_by or {}).get(str(doc.id))
+    return FEDocumentAuthority(
+        version=int(doc.version or 1),
+        effectiveDate=doc.effective_date.isoformat() if doc.effective_date else None,
+        approvalStatus=doc.approval_status or "unverified",
+        supersedesDocumentId=sup_id,
+        supersedesDocumentName=_doc_label(sup_doc) if sup_doc else None,
+        supersededByDocumentId=str(newer.id) if newer else None,
+        supersededByDocumentName=_doc_label(newer) if newer else None,
+        authorityRank=int(doc.authority_rank or 0),
+        updatedAt=doc.authority_updated_at.isoformat() if doc.authority_updated_at else None,
+    )
+
+def _authority_context(docs: list[Document]) -> tuple[dict, dict]:
+    """(by_id, superseded_by) lookups shared by every row of one listing so
+    names resolve without a query per row."""
+    by_id = {str(d.id): d for d in docs}
+    return by_id, document_authority_service.superseded_by_map(docs)
+
+def _fe_document(doc: Document, ctx: tuple[dict, dict] | None = None) -> FEKnowledgeDocument:
+    by_id, superseded_by = ctx or ({}, {})
     return FEKnowledgeDocument(
         id=str(doc.id),
         name=doc.original_filename,
@@ -65,9 +101,11 @@ def _fe_document(doc: Document) -> FEKnowledgeDocument:
         sizeLabel=helpers.size_label(doc.file_size_mb),
         addedLabel=helpers.time_ago(doc.created_at),
         error=doc.error_message if doc.status == DocumentStatus.failed else None,
+        authority=_fe_authority(doc, by_id, superseded_by),
     )
 
-def _fe_url(doc: Document) -> FEKnowledgeUrl:
+def _fe_url(doc: Document, ctx: tuple[dict, dict] | None = None) -> FEKnowledgeUrl:
+    by_id, superseded_by = ctx or ({}, {})
     return FEKnowledgeUrl(
         id=str(doc.id),
         url=doc.source_url or doc.original_filename,
@@ -75,9 +113,11 @@ def _fe_url(doc: Document) -> FEKnowledgeUrl:
         chunks=doc.chunk_count,
         addedLabel=helpers.time_ago(doc.created_at),
         error=doc.error_message if doc.status == DocumentStatus.failed else None,
+        authority=_fe_authority(doc, by_id, superseded_by),
     )
 
-def _fe_faq(doc: Document) -> FEFaqEntry:
+def _fe_faq(doc: Document, ctx: tuple[dict, dict] | None = None) -> FEFaqEntry:
+    by_id, superseded_by = ctx or ({}, {})
     return FEFaqEntry(
         id=str(doc.id),
         question=doc.question or "",
@@ -85,6 +125,7 @@ def _fe_faq(doc: Document) -> FEFaqEntry:
         status=helpers.doc_status_to_fe(doc.status),
         chunks=doc.chunk_count,
         addedLabel=helpers.time_ago(doc.created_at),
+        authority=_fe_authority(doc, by_id, superseded_by),
     )
 
 @router.get("/stats", response_model=FEKnowledgeStats)
@@ -122,7 +163,8 @@ async def list_documents(
 ) -> List[FEKnowledgeDocument]:
     docs = await helpers.get_active_documents(current_user.tenant_id, db)
     file_docs, _url_docs, _faq_docs = helpers.split_docs_and_urls(docs)
-    return [_fe_document(d) for d in file_docs]
+    ctx = _authority_context(docs)
+    return [_fe_document(d, ctx) for d in file_docs]
 
 @router.post("/documents", response_model=List[FEKnowledgeDocument], status_code=status.HTTP_201_CREATED)
 @limiter.limit("10/minute")
@@ -213,7 +255,8 @@ async def list_urls(
 ) -> List[FEKnowledgeUrl]:
     docs = await helpers.get_active_documents(current_user.tenant_id, db)
     _file_docs, url_docs, _faq_docs = helpers.split_docs_and_urls(docs)
-    return [_fe_url(d) for d in url_docs]
+    ctx = _authority_context(docs)
+    return [_fe_url(d, ctx) for d in url_docs]
 
 @router.post("/urls", response_model=FEAddUrlResponse, status_code=status.HTTP_201_CREATED)
 @limiter.limit("5/minute")
@@ -331,7 +374,44 @@ async def list_faqs(
 ) -> List[FEFaqEntry]:
     docs = await helpers.get_active_documents(current_user.tenant_id, db)
     _file_docs, _url_docs, faq_docs = helpers.split_docs_and_urls(docs)
-    return [_fe_faq(d) for d in faq_docs]
+    ctx = _authority_context(docs)
+    return [_fe_faq(d, ctx) for d in faq_docs]
+
+@router.patch("/documents/{document_id}/authority", response_model=FEDocumentAuthority)
+@limiter.limit("20/minute")
+async def update_document_authority(
+    request: Request,
+    document_id: str,
+    body: FEUpdateDocumentAuthorityRequest,
+    current_user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> FEDocumentAuthority:
+    """Admin/owner-only: set a knowledge source's version, effective date,
+    approval status, explicit supersession link and priority. Works for any
+    source type (uploaded file, scraped URL, FAQ) — they all live in
+    `documents`. The resolver in app/services/conflict_resolution.py uses
+    nothing but these fields to prefer one contradicting source over another,
+    so this endpoint is the single place authority can ever be granted."""
+    try:
+        doc_id = uuid.UUID(document_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+
+    doc = await document_authority_service.update_authority(
+        document_id=doc_id,
+        tenant_id=current_user.tenant_id,
+        actor_user_id=current_user.id,
+        fields_set=set(body.model_fields_set),
+        version=body.version,
+        effective_date=body.effectiveDate,
+        approval_status=body.approvalStatus,
+        supersedes_document_id=body.supersedesDocumentId,
+        authority_rank=body.authorityRank,
+        db=db,
+    )
+    docs = await helpers.get_active_documents(current_user.tenant_id, db)
+    by_id, superseded_by = _authority_context(docs)
+    return _fe_authority(doc, by_id, superseded_by)
 
 @router.post("/faqs", response_model=FEAddFaqResponse, status_code=status.HTTP_201_CREATED)
 @limiter.limit("10/minute")

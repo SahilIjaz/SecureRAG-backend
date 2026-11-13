@@ -8,6 +8,7 @@ from typing import AsyncIterator, List
 from app.core.embeddings import embed_text
 from app.core.vector_store import search_chunks
 from app.config import settings
+from app.services import conflict_detection, conflict_resolution
 from app.services.llm import router as llm_router
 
 logger = logging.getLogger(__name__)
@@ -301,18 +302,174 @@ def _build_citation_sources(chunks: list[dict], doc_names: dict | None) -> list[
     """Shape retrieved chunks into the citation payload the frontend renders —
     document identity, a short snippet, and the retrieval score as a
     grounding-confidence proxy (works unconditionally, unlike the LLM's
-    self-reported CONFIDENCE line which only exists when handoff is on)."""
+    self-reported CONFIDENCE line which only exists when handoff is on).
+    The same chunk can reach here twice when the vector and keyword rankings
+    carry different chunk ids for one row — cite it once."""
     out = []
+    seen: set = set()
     for c in chunks:
         text = c.get("text", "")
+        doc_id = str(c["document_id"]) if c.get("document_id") else None
+        key = (doc_id, text[:220])
+        if key in seen:
+            continue
+        seen.add(key)
         out.append({
-            "documentId": str(c["document_id"]) if c.get("document_id") else None,
+            "documentId": doc_id,
             "documentName": (doc_names or {}).get(str(c.get("document_id"))),
             "snippet": text[:220] + ("…" if len(text) > 220 else ""),
             "page": c.get("page"),
             "score": round(float(c.get("score", 0)), 4),
         })
     return out
+
+# ── Contradiction handling helpers ───────────────────────────────────────────
+
+async def _load_authority(tenant_id: str, conflicts: list[dict]) -> dict:
+    """Tenant-scoped authority snapshots for every document involved in a
+    detected conflict. Any failure → {} → every conflict stays unresolved,
+    which is the safe direction."""
+    from app.database import AsyncSessionLocal
+    from app.services.document_authority_service import load_authority_map
+
+    ids = {c["documentA"] for c in conflicts} | {c["documentB"] for c in conflicts}
+    try:
+        async with AsyncSessionLocal() as db:
+            return await load_authority_map(tenant_id, ids, db)
+    except Exception:
+        logger.exception("authority lookup failed for tenant %s — conflicts left unresolved", tenant_id)
+        return {}
+
+def _promote_conflicting_chunks(pool: list[dict], top_k: int, conflicts: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Context = the top-k chunks plus every pool chunk that is one side of a
+    detected conflict (in pool order). Conflict chunk indices are rewritten
+    to the new list. Pure function; `pool` is not mutated."""
+    involved = {c["chunkA"] for c in conflicts} | {c["chunkB"] for c in conflicts}
+    keep = [i for i in range(len(pool)) if i < top_k or i in involved]
+    remap = {old: new for new, old in enumerate(keep)}
+    chunks = [pool[i] for i in keep]
+    remapped = [{**c, "chunkA": remap[c["chunkA"]], "chunkB": remap[c["chunkB"]]} for c in conflicts]
+    return chunks, remapped
+
+def _drop_superseded_chunks(chunks: list[dict], conflicts: list[dict], resolutions: list[dict]) -> list[dict]:
+    """Remove the losing side of every *resolved* conflict from the context.
+    An explicitly superseded document loses all of its retrieved chunks (the
+    admin said it is replaced); for the other rules only the chunk holding
+    the contradicted statement is dropped. The winner's chunks are never
+    removed, so the context can't end up empty."""
+    drop: set = set()
+    keep: set = set()
+    for c, r in zip(conflicts, resolutions):
+        if r.get("status") != "resolved":
+            continue
+        loser, winner = r["loser"], r["winner"]
+        loser_idx = c["chunkA"] if c["documentA"] == loser else c["chunkB"]
+        winner_idx = c["chunkB"] if loser_idx == c["chunkA"] else c["chunkA"]
+        keep.add(winner_idx)
+        if r.get("rule") == "approved_supersession":
+            drop |= {i for i, ch in enumerate(chunks) if str(ch.get("document_id")) == loser}
+        else:
+            drop.add(loser_idx)
+    drop -= keep
+    if not drop:
+        return chunks
+    return [ch for i, ch in enumerate(chunks) if i not in drop]
+
+def _unresolved_conflicts(metrics: dict | None) -> list[dict]:
+    """Cross-document conflicts the resolver could not settle. Same-document
+    ones are disclosure-only and never influence the gate."""
+    return [
+        c for c in (metrics or {}).get("conflicts") or []
+        if c.get("scope") == "cross_document" and (c.get("resolution") or {}).get("status") != "resolved"
+    ]
+
+def _conflict_payload(metrics: dict | None, doc_names: dict | None, show_names: bool) -> list[dict]:
+    """Structured conflict info for API callers (no chunk text, no internal
+    indices; names only when the tenant shows sources)."""
+    names = doc_names or {}
+    out = []
+    for c in (metrics or {}).get("conflicts") or []:
+        res = c.get("resolution") or {}
+        out.append({
+            "type": c["type"],
+            "scope": c["scope"],
+            "status": res.get("status", "unresolved"),
+            "rule": res.get("rule"),
+            "documentA": names.get(c["documentA"]) if show_names else None,
+            "documentB": names.get(c["documentB"]) if show_names else None,
+            "valueA": c["valueA"] if c["type"] != "semantic" else c["statementA"],
+            "valueB": c["valueB"] if c["type"] != "semantic" else c["statementB"],
+            "winner": (names.get(res["winner"]) if show_names else None) if res.get("winner") else None,
+            "verified": c.get("verified"),
+        })
+    return out
+
+def _fmt_value(v) -> str:
+    return f"{v:g}" if isinstance(v, float) else str(v)
+
+def _value_mentioned(answer_low: str, value) -> bool:
+    text = _fmt_value(value).lower()
+    if text in answer_low:
+        return True
+    # ISO dates are usually rendered as "1 March 2026" by the model.
+    if isinstance(value, str) and len(value) == 10 and value[4] == "-" and value[7] == "-":
+        try:
+            from datetime import date as _date
+            d = _date.fromisoformat(value)
+            month = d.strftime("%B").lower()
+            return month in answer_low and str(d.day) in answer_low and str(d.year) in answer_low
+        except ValueError:
+            return False
+    return False
+
+_DISCLOSURE_MARKERS = ("disagree", "contradict", "conflict", "differ", "inconsisten", "two different", "however", "but ")
+
+def _ensure_conflict_disclosure(answer: str, unresolved: list[dict], doc_names: dict | None, show_names: bool) -> str:
+    """Code-level guarantee behind the prompt instruction: if the generated
+    answer does not already present both sides of an unresolved conflict,
+    append a deterministic disclosure. Numeric/date conflicts are checked by
+    value; semantic ones by the presence of disagreement language."""
+    low = answer.lower()
+    names = doc_names or {}
+    missing = []
+    for c in unresolved:
+        if c["type"] in ("numeric", "date"):
+            present = _value_mentioned(low, c["valueA"]) and _value_mentioned(low, c["valueB"])
+        else:
+            present = any(m in low for m in _DISCLOSURE_MARKERS)
+        if not present:
+            missing.append(c)
+    if not missing:
+        return answer
+    lines = []
+    for c in missing:
+        a = (names.get(c["documentA"]) if show_names else None) or "one of our sources"
+        b = (names.get(c["documentB"]) if show_names else None) or "another source"
+        if c["type"] in ("numeric", "date"):
+            lines.append(f"{a} says {_fmt_value(c['valueA'])}, while {b} says {_fmt_value(c['valueB'])}")
+        else:
+            lines.append(f'{a} says "{c["statementA"]}", while {b} says "{c["statementB"]}"')
+    return (
+        answer.rstrip()
+        + "\n\nNote: our sources don't agree on this point — "
+        + "; ".join(lines)
+        + ". Please confirm with our team before relying on it."
+    )
+
+def _conflict_block_result(metrics: dict, fallback: str, handoff_enabled: bool, doc_names: dict | None, show_names: bool) -> dict | None:
+    """When RAG_UNRESOLVED_CONFLICT_ACTION is handoff/refuse and an unresolved
+    cross-document conflict exists, the reply to send *instead of generating*.
+    None means "proceed to generation" (disclose mode or no conflict)."""
+    unresolved = _unresolved_conflicts(metrics)
+    action = settings.RAG_UNRESOLVED_CONFLICT_ACTION
+    if not unresolved or action not in ("handoff", "refuse"):
+        return None
+    do_handoff = action == "handoff" and handoff_enabled
+    return {
+        "answer": fallback, "sources": [], "model": None, "confidence": 0, "usage": None,
+        "handoff": do_handoff, "refused": not do_handoff, "conflict": True,
+        "conflicts": _conflict_payload(metrics, doc_names, show_names), "retrieval": metrics,
+    }
 
 async def _prepare_generation(
     tenant_id: str,
@@ -355,13 +512,20 @@ async def _prepare_generation(
         # done inside hybrid_search's vector branch.
         from app.services.hybrid_search import hybrid_search
 
-        chunks = await hybrid_search(
-            query, tenant_id, top_k=settings.RAG_SEARCH_TOP_K, document_ids=document_ids
+        # Ask for a slightly longer reranked tail than the context needs:
+        # the extra candidates are *only* scanned for contradictions with
+        # the top-k (see the conflict block below) and never reach the
+        # prompt unless they are one side of a detected conflict.
+        pool_k = max(settings.RAG_SEARCH_TOP_K, settings.RAG_CONFLICT_SCAN_POOL) \
+            if settings.RAG_CONFLICT_DETECTION_ENABLED else None
+        pool = await hybrid_search(
+            query, tenant_id, top_k=settings.RAG_SEARCH_TOP_K, document_ids=document_ids, pool_k=pool_k,
         )
+        chunks = pool[: settings.RAG_SEARCH_TOP_K]
         t_search = time.monotonic()
         logger.info(
-            "rag hybrid tenant=%s search=%.0fms chunks=%d",
-            tenant_id, (t_search - t0) * 1000, len(chunks),
+            "rag hybrid tenant=%s search=%.0fms chunks=%d pool=%d",
+            tenant_id, (t_search - t0) * 1000, len(chunks), len(pool),
         )
     else:
         # Pure-vector path: gate on the top match's cosine score so an off-topic
@@ -371,6 +535,7 @@ async def _prepare_generation(
         chunks = await search_chunks(
             query_embedding, tenant_id, top_k=settings.RAG_SEARCH_TOP_K, document_ids=document_ids
         )
+        pool = chunks
         t_search = time.monotonic()
         top_score = chunks[0]["score"] if chunks else 0.0
         logger.info(
@@ -394,8 +559,40 @@ async def _prepare_generation(
     # map mutating mid-flight). Cheap, so kept as defense-in-depth.
     if doc_names is not None:
         chunks = [c for c in chunks if str(c.get("document_id")) in doc_names]
+        pool = [c for c in pool if str(c.get("document_id")) in doc_names]
         if not chunks:
             return [], "", max_tokens, False, empty_metrics
+
+    # Contradiction detection + evidence-based resolution, BEFORE the context
+    # is assembled so a superseded document's statements never reach the
+    # model. Detection (numeric / date / semantic) needs no model call;
+    # semantic candidates may be confirmed by one cheap cached classify call
+    # each. Resolution reads only admin-verified authority metadata, scoped
+    # to this tenant — never similarity, confidence or upload time. Tenant
+    # safety is structural: retrieval is tenant-scoped, so compared chunks
+    # always share one tenant, and the authority lookup filters on tenant too.
+    #
+    # The scan covers the reranked candidate pool, not just the top-k: a
+    # chunk outside the context that contradicts one inside it is promoted
+    # into the context so the resolver can replace the loser with the winner
+    # (or, unresolved, so both positions can be disclosed).
+    conflicts: list = []
+    resolutions: list = []
+    if settings.RAG_CONFLICT_DETECTION_ENABLED:
+        conflicts = conflict_detection.detect_conflicts(pool)
+        if conflicts:
+            conflicts = await conflict_detection.verify_semantic_conflicts(conflicts)
+        if conflicts:
+            conflicts = [c for c in conflicts if c["chunkA"] < len(chunks) or c["chunkB"] < len(chunks)]
+        if conflicts:
+            chunks, conflicts = _promote_conflicting_chunks(pool, len(chunks), conflicts)
+            authority = await _load_authority(tenant_id, conflicts)
+            resolutions = [conflict_resolution.resolve_conflict(c, authority) for c in conflicts]
+            chunks = _drop_superseded_chunks(chunks, conflicts, resolutions)
+            logger.info(
+                "rag conflicts tenant=%s detected=%d resolved=%d",
+                tenant_id, len(conflicts), sum(1 for r in resolutions if r["status"] == "resolved"),
+            )
 
     # Label each chunk with its source document so the model can cite it. A
     # configured menu (e.g. a restaurant's items) is prepended as always-present
@@ -410,18 +607,15 @@ async def _prepare_generation(
         labeled.append(f"{header}{chunk['text']}")
     context = "\n\n---\n\n".join(labeled)
 
-    # Computed confidence signals (similarity / coverage / entropy) and
-    # cross-document conflict scan — all from data already in hand, so this
-    # adds no model calls. Conflicts become a STYLE-RULES disclosure
-    # instruction; tenant safety is structural (retrieval is tenant-scoped,
-    # so compared chunks always share one tenant).
+    # Computed confidence signals (similarity / coverage / entropy) from
+    # data already in hand — no model calls. Conflicts (with their
+    # resolutions) ride along in `metrics` for callers, logs and evaluation;
+    # the prompt gets them as a STYLE-RULES instruction, and answer_question
+    # additionally enforces disclosure of unresolved ones in code.
     metrics = confidence_service.compute_retrieval_metrics(chunks)
-    conflicts = (
-        confidence_service.detect_conflicts(chunks)
-        if settings.RAG_CONFLICT_DETECTION_ENABLED else []
-    )
-    metrics["conflicts"] = conflicts
-    conflict_note = confidence_service.conflict_prompt_note(conflicts, doc_names)
+    metrics["conflicts"] = [{**c, "resolution": r} for c, r in zip(conflicts, resolutions)]
+    metrics["conflictSummary"] = conflict_resolution.summarize(resolutions)
+    conflict_note = conflict_detection.conflict_prompt_note(conflicts, doc_names, resolutions)
 
     if config:
         prompt, response_max_tokens, handoff_enabled = _build_behavior_prompt(
@@ -486,6 +680,18 @@ async def answer_question(
                 "retrieval": metrics,
             }
 
+        behavior = (config or {}).get("behavior", {})
+        show_names = bool(behavior.get("showSources", True))
+        fallback = (config or {}).get("identity", {}).get("fallbackMessage") or "I'm not sure about that yet."
+
+        # Unresolved-conflict gate — decided in code before any generation,
+        # so safety-critical behaviour never depends on the model following
+        # a prompt instruction.
+        blocked = _conflict_block_result(metrics, fallback, handoff_enabled, doc_names, show_names)
+        if blocked is not None:
+            logger.info("rag tenant=%s unresolved conflict → %s", tenant_id, settings.RAG_UNRESOLVED_CONFLICT_ACTION)
+            return blocked
+
         t_prep = time.monotonic()
         result = await llm_router.generate(
             prompt,
@@ -527,17 +733,18 @@ async def answer_question(
 
         # Confidence gate (central — callers must respect these flags instead
         # of re-deriving them): answer / clarify / handoff / refuse.
-        behavior = (config or {}).get("behavior", {})
         threshold = behavior.get("confidenceThreshold", 60)
-        fallback = (config or {}).get("identity", {}).get("fallbackMessage") or "I'm not sure about that yet."
         effective = _effective_confidence(confidence, metrics) if config else confidence
         decision = _gate_decision(effective, threshold, handoff_enabled) if config else "answer"
 
+        unresolved = _unresolved_conflicts(metrics)
         base = {
             "model": result.usage.model,
             "confidence": effective,
             "usage": result.usage,
             "retrieval": metrics,
+            "conflicts": _conflict_payload(metrics, doc_names, show_names),
+            "conflict": bool(unresolved),
         }
         if decision in ("handoff", "refuse"):
             return {
@@ -555,6 +762,12 @@ async def answer_question(
                 }
             # Clarify generation failed — the confident-enough answer is
             # still better than a refusal; fall through and ship it.
+
+        # Disclose mode: the prompt asked the model to present both sides of
+        # an unresolved conflict; verify it did and append a deterministic
+        # note if not, so disclosure never rests on the prompt alone.
+        if unresolved:
+            answer = _ensure_conflict_disclosure(answer, unresolved, doc_names, show_names)
 
         return {
             **base,
@@ -762,6 +975,16 @@ async def answer_question_stream(
         }
         return
 
+    show_names = bool(behavior.get("showSources", True))
+    unresolved = _unresolved_conflicts(metrics)
+    conflict_info = {"conflicts": _conflict_payload(metrics, doc_names, show_names), "conflict": bool(unresolved)}
+    blocked = _conflict_block_result(metrics, fallback, handoff_enabled, doc_names, show_names)
+    if blocked is not None:
+        logger.info("rag tenant=%s unresolved conflict → %s (stream)", tenant_id, settings.RAG_UNRESOLVED_CONFLICT_ACTION)
+        yield {"type": "token", "text": fallback}
+        yield {"type": "final", **blocked}
+        return
+
     t_attempts_start = time.monotonic()
     try:
         stream = llm_router.generate_stream(
@@ -911,10 +1134,18 @@ async def answer_question_stream(
         }
         return
 
+    # Same code-level disclosure guarantee as answer_question(): anything the
+    # model left out is streamed as one extra token before the final event.
+    if unresolved:
+        disclosed = _ensure_conflict_disclosure(answer, unresolved, doc_names, show_names)
+        if len(disclosed) > len(answer):
+            yield {"type": "token", "text": disclosed[len(answer):]}
+            answer = disclosed
+
     yield {
         "type": "final", "answer": answer, "sources": _build_citation_sources(chunks, doc_names),
         "model": usage.model if usage else None, "confidence": confidence, "handoff": False,
-        "usage": usage, "retrieval": metrics,
+        "usage": usage, "retrieval": metrics, **conflict_info,
     }
 
 async def verify_llm_providers() -> None:

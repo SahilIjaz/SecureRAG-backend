@@ -256,12 +256,44 @@ class FETestChatRequest(BaseModel):
     # to one Conversation instead of creating a new one per message.
     conversationId: Optional[str] = None
 
+class FEConflictInfo(BaseModel):
+    """Structured view of one contradiction the pipeline found between the
+    retrieved sources (see app/services/conflict_detection.py) and what the
+    resolver decided (conflict_resolution.py). Document names are null when
+    the tenant hides sources. Mirrors Nexus-frontend `ConflictInfo`."""
+    type: str                      # numeric | date | semantic
+    scope: str                     # cross_document | intra_document
+    status: str                    # resolved | unresolved
+    rule: Optional[str] = None
+    documentA: Optional[str] = None
+    documentB: Optional[str] = None
+    valueA: Optional[str] = None
+    valueB: Optional[str] = None
+    winner: Optional[str] = None
+    verified: Optional[bool] = None
+
+def _fe_conflicts(raw: Optional[list]) -> List[FEConflictInfo]:
+    out = []
+    for c in raw or []:
+        out.append(FEConflictInfo(
+            type=c["type"], scope=c["scope"], status=c["status"], rule=c.get("rule"),
+            documentA=c.get("documentA"), documentB=c.get("documentB"),
+            valueA=None if c.get("valueA") is None else str(c["valueA"]),
+            valueB=None if c.get("valueB") is None else str(c["valueB"]),
+            winner=c.get("winner"), verified=c.get("verified"),
+        ))
+    return out
+
 class FETestChatResponse(BaseModel):
     reply: str
     sources: List[CitationSource] = []
     handoff: bool = False
     confidence: Optional[int] = None
     conversationId: Optional[str] = None
+    # Contradictions between retrieved sources, if any. `conflict` is true
+    # only when at least one cross-document conflict stayed unresolved.
+    conflicts: List[FEConflictInfo] = []
+    conflict: bool = False
 
 @router.post("/test-chat", response_model=FETestChatResponse)
 @limiter.limit("20/minute")
@@ -364,10 +396,15 @@ async def test_chat(
     # results also carry sources=[]).
     if result.get("handoff"):
         reply, sources, handoff = result["answer"], [], True
-        unresolved_reason, notif_type = "Low-confidence answer, handed off", "unresolved_conversations"
+        unresolved_reason = "Conflicting sources, handed off" if result.get("conflict") else "Low-confidence answer, handed off"
+        notif_type = "unresolved_conversations"
     elif result.get("refused"):
         reply, sources, handoff = result["answer"], [], False
-        unresolved_reason, notif_type = "Low-confidence answer refused (handoff disabled)", "unresolved_conversations"
+        unresolved_reason = (
+            "Conflicting sources, answer withheld" if result.get("conflict")
+            else "Low-confidence answer refused (handoff disabled)"
+        )
+        notif_type = "unresolved_conversations"
     elif result.get("clarify"):
         reply, sources, handoff = result["answer"], [], False
     elif not result.get("sources"):
@@ -401,6 +438,7 @@ async def test_chat(
     return FETestChatResponse(
         reply=reply, sources=sources, handoff=handoff, confidence=confidence,
         conversationId=str(convo.id) if convo is not None else None,
+        conflicts=_fe_conflicts(result.get("conflicts")), conflict=bool(result.get("conflict")),
     )
 
 def _sse(event: str, payload: dict) -> str:
@@ -493,9 +531,14 @@ async def test_chat_stream(
                     # low-confidence answer too, not just a genuine "nothing
                     # retrieved" — sources alone can't tell the two apart here.
                     if handoff:
-                        unresolved_reason, notif_type = "Low-confidence answer, handed off", "unresolved_conversations"
+                        unresolved_reason = "Conflicting sources, handed off" if ev.get("conflict") else "Low-confidence answer, handed off"
+                        notif_type = "unresolved_conversations"
                     elif ev.get("refused"):
-                        unresolved_reason, notif_type = "Low-confidence answer refused (handoff disabled)", "unresolved_conversations"
+                        unresolved_reason = (
+                            "Conflicting sources, answer withheld" if ev.get("conflict")
+                            else "Low-confidence answer refused (handoff disabled)"
+                        )
+                        notif_type = "unresolved_conversations"
                     elif ev.get("clarify"):
                         pass  # a clarifying question, not a gap
                     elif not ev["sources"]:
@@ -507,6 +550,8 @@ async def test_chat_stream(
                         "reply": ev["answer"], "sources": final_sources, "handoff": ev["handoff"],
                         "confidence": ev["confidence"],
                         "conversationId": str(conversation_id) if conversation_id else None,
+                        "conflicts": [c.model_dump() for c in _fe_conflicts(ev.get("conflicts"))],
+                        "conflict": bool(ev.get("conflict")),
                     })
                 elif ev["type"] == "error":
                     yield _sse("error", {"message": f"Chat backend error: {ev['message']}"})

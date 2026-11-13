@@ -65,12 +65,22 @@ def test_price_conflict_across_documents_detected():
     assert "premium" in c["context"] or "price" in c["context"]
 
 
-def test_same_document_never_conflicts():
+def test_same_document_not_flagged_in_cross_document_mode():
     chunks = [
         _chunk("doc-a", "The plan price is 10 dollars per month."),
         _chunk("doc-a", "The plan price is 15 dollars per month."),
     ]
-    assert detect_conflicts(chunks) == []
+    assert detect_conflicts(chunks, intra_document=False) == []
+
+
+def test_same_document_flagged_as_intra_document_scope():
+    chunks = [
+        _chunk("doc-a", "The plan price is 10 dollars per month."),
+        _chunk("doc-a", "The plan price is 15 dollars per month."),
+    ]
+    conflicts = detect_conflicts(chunks, intra_document=True)
+    assert len(conflicts) == 1
+    assert conflicts[0]["scope"] == "intra_document"
 
 
 def test_unrelated_numbers_do_not_conflict():

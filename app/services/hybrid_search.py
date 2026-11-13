@@ -155,6 +155,7 @@ async def hybrid_search(
     tenant_id: str,
     top_k: int | None = None,
     document_ids: list[str] | None = None,
+    pool_k: int | None = None,
 ) -> list[dict]:
     """Run vector and keyword search concurrently and fuse the results.
 
@@ -162,11 +163,19 @@ async def hybrid_search(
     caller's active set) — see search_chunks for why pre-filtering beats
     dropping stale chunks after retrieval.
 
+    pool_k, when given and larger than top_k, returns that many reranked
+    candidates instead of top_k — same single rerank call, just a longer
+    tail. rag_service uses the tail to scan for contradictions among
+    *relevant* evidence that didn't make the final context (two near-
+    identical policy versions typically rank next to each other, and only
+    one fits in top_k). Callers that want the usual behaviour omit it.
+
     Falls back gracefully: if one side errors or returns nothing, the other
     still produces results. Returns [] only when both find nothing relevant —
     callers treat that as "no context" and use the tenant's fallback message.
     """
     k = top_k or settings.RAG_SEARCH_TOP_K
+    want = max(k, pool_k) if pool_k else k
     # Pull a few extra from each side so fusion has room to reorder — and a
     # genuinely wide pool when the rerank stage will narrow it back down.
     per_source_k = max(k * 2, k + 3)
@@ -197,8 +206,8 @@ async def hybrid_search(
         fused = _reciprocal_rank_fusion(rankings, per_source_k)
 
     if settings.RAG_RERANK_ENABLED and len(fused) > k:
-        return await _rerank(query, fused, k)
-    return fused[:k]
+        return await _rerank(query, fused, want)
+    return fused[:want]
 
 
 async def _rerank(query: str, chunks: list[dict], top_k: int) -> list[dict]:

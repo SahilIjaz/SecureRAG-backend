@@ -382,6 +382,43 @@ class FEConversationLiveSummary(BaseModel):
 
 # ── Knowledge base ────────────────────────────────────────────────────────────
 
+FEApprovalStatus = Literal["unverified", "approved", "deprecated"]
+
+class FEDocumentAuthority(BaseModel):
+    """Admin-maintained authority metadata — the only evidence the conflict
+    resolver may use to prefer one contradicting document over another.
+    Mirrors Nexus-frontend `DocumentAuthority`."""
+    version: int
+    effectiveDate: Optional[str] = None          # ISO date (YYYY-MM-DD) or null
+    approvalStatus: FEApprovalStatus
+    supersedesDocumentId: Optional[str] = None
+    supersedesDocumentName: Optional[str] = None
+    supersededByDocumentId: Optional[str] = None  # reverse link, derived
+    supersededByDocumentName: Optional[str] = None
+    authorityRank: int
+    updatedAt: Optional[str] = None
+
+class FEUpdateDocumentAuthorityRequest(BaseModel):
+    """Partial update: only fields present in the request body change
+    (`null` clears effectiveDate / supersedesDocumentId). Validated against
+    the tenant's own documents in document_authority_service."""
+    version: Optional[int] = Field(default=None, ge=1, le=10_000)
+    effectiveDate: Optional[str] = None
+    approvalStatus: Optional[FEApprovalStatus] = None
+    supersedesDocumentId: Optional[str] = None
+    authorityRank: Optional[int] = Field(default=None, ge=0, le=100)
+
+    @field_validator("effectiveDate")
+    @classmethod
+    def _iso_date(cls, v: Optional[str]) -> Optional[str]:
+        if v is None or v == "":
+            return None
+        from datetime import date as _date
+        try:
+            return _date.fromisoformat(v).isoformat()
+        except ValueError:
+            raise ValueError("effectiveDate must be an ISO date (YYYY-MM-DD).")
+
 class FEKnowledgeDocument(BaseModel):
     id: str
     name: str
@@ -392,6 +429,7 @@ class FEKnowledgeDocument(BaseModel):
     # Why indexing failed (set only when status == "Failed") so the user can
     # tell a corrupt PDF from a transient outage instead of just "Failed".
     error: Optional[str] = None
+    authority: Optional[FEDocumentAuthority] = None
 
 class FEKnowledgeUrl(BaseModel):
     id: str
@@ -400,6 +438,7 @@ class FEKnowledgeUrl(BaseModel):
     chunks: Optional[int] = None
     addedLabel: str
     error: Optional[str] = None
+    authority: Optional[FEDocumentAuthority] = None
 
 class FEKnowledgeStats(BaseModel):
     documentsUsed: int
@@ -424,6 +463,7 @@ class FEFaqEntry(BaseModel):
     status: Literal["Indexed", "Processing", "Failed"]
     chunks: Optional[int] = None
     addedLabel: str
+    authority: Optional[FEDocumentAuthority] = None
 
 class FEAddFaqRequest(BaseModel):
     question: str = Field(..., max_length=settings.FAQ_QUESTION_MAX_LEN)

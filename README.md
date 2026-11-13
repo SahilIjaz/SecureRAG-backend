@@ -122,11 +122,45 @@ Four outcomes: **answer** (confident), **clarify** (borderline band
 question), **handoff** (below threshold, handoff enabled), **refuse** (below
 threshold, handoff disabled — a weak answer is never shipped).
 
-Retrieved chunks are also scanned for cross-document numeric contradictions
-(`detect_conflicts`); any conflict is disclosed in the answer with both
-sources named rather than silently resolved. Comparison is tenant-safe by
-construction — retrieval is namespace-scoped, so compared chunks always
-belong to one tenant.
+### Contradiction detection and evidence-based resolution
+
+Retrieved chunks are scanned for contradictions before the context is built
+(`app/services/conflict_detection.py`):
+
+| Type       | Example                                              | Method                                                   |
+|------------|------------------------------------------------------|----------------------------------------------------------|
+| `numeric`  | "refunds within 7 days" vs "… within 14 days"        | exact: same subject words, compatible unit, values differ |
+| `date`     | "effective 1 March 2026" vs "effective 2026-06-01"   | exact: same subject words, dates differ                   |
+| `semantic` | "refunds are allowed" vs "refunds are not allowed"   | heuristic (negation / antonym about a shared subject), optionally confirmed by one cached classification call (`RAG_CONFLICT_LLM_VERIFY`) |
+
+Two statements only count as contradicting when they are about the same
+subject under compatible conditions — "7 days for digital products" vs
+"30 days for physical products" is not a conflict. Near-identical statements
+inside one document are reported too (`scope: intra_document`) but are
+disclosure-only.
+
+Each cross-document conflict is then **resolved deterministically**
+(`app/services/conflict_resolution.py`) from admin-maintained authority
+metadata on `documents` — `version`, `effective_date`, `approval_status`,
+`supersedes_document_id`, `authority_rank` — set only through
+`PATCH /api/knowledge/documents/{id}/authority` (admin/owner). The rules, in
+order: an approved and currently effective document that explicitly
+supersedes the other wins; otherwise the only approved-and-effective
+document wins; between two approved documents a later effective date or a
+higher admin-assigned rank decides, and contradictory evidence stays
+unresolved. An unapproved document never wins, whatever its version, rank
+or upload time; similarity scores and model confidence are never evidence.
+Supersession cannot cross tenants (composite FK
+`fk_documents_supersedes_same_tenant`) and the authority lookup is
+tenant-scoped.
+
+Resolved conflicts drop the losing statement (or the whole superseded
+document) from the context and tell the model which source is current.
+Unresolved ones are handled according to `RAG_UNRESOLVED_CONFLICT_ACTION`:
+`disclose` (default — generate, then verify in code that both positions
+appear in the reply and append them if not), `handoff`, or `refuse`. The
+test-chat response carries `conflicts[]` / `conflict` for the dashboard.
+Tests: `tests/test_conflicts.py`.
 
 Evaluation (`scripts/evaluate_rag.py`) measures RAGAS-style faithfulness
 (LLM judge counts answer claims supported by the retrieved context) plus
