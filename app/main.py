@@ -108,6 +108,28 @@ async def ensure_frontend_schema() -> None:
         # created by Base.metadata.create_all; this only patches columns onto
         # pre-existing tables.
         "ALTER TABLE tenant_quotas ADD COLUMN IF NOT EXISTS max_storage_mb INTEGER NOT NULL DEFAULT 200",
+        # Document authority metadata for conflict resolution — see
+        # migrations/add_document_authority.sql and app/models/document.py.
+        # Columns first (all with backward-compatible defaults), then the
+        # constraints that make cross-tenant / self supersession impossible at
+        # the database level. Constraints are guarded by DO blocks because
+        # Postgres has no ADD CONSTRAINT IF NOT EXISTS.
+        "ALTER TABLE documents ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 1",
+        "ALTER TABLE documents ADD COLUMN IF NOT EXISTS effective_date DATE",
+        "ALTER TABLE documents ADD COLUMN IF NOT EXISTS approval_status VARCHAR(16) NOT NULL DEFAULT 'unverified'",
+        "ALTER TABLE documents ADD COLUMN IF NOT EXISTS supersedes_document_id UUID",
+        "ALTER TABLE documents ADD COLUMN IF NOT EXISTS authority_rank INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE documents ADD COLUMN IF NOT EXISTS authority_updated_at TIMESTAMPTZ",
+        "ALTER TABLE documents ADD COLUMN IF NOT EXISTS authority_updated_by UUID",
+        "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ux_documents_id_tenant') "
+        "THEN ALTER TABLE documents ADD CONSTRAINT ux_documents_id_tenant UNIQUE (id, tenant_id); END IF; END $$",
+        "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_documents_supersedes_same_tenant') "
+        "THEN ALTER TABLE documents ADD CONSTRAINT fk_documents_supersedes_same_tenant "
+        "FOREIGN KEY (supersedes_document_id, tenant_id) REFERENCES documents (id, tenant_id); END IF; END $$",
+        "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ck_documents_not_self_superseding') "
+        "THEN ALTER TABLE documents ADD CONSTRAINT ck_documents_not_self_superseding "
+        "CHECK (supersedes_document_id IS DISTINCT FROM id); END IF; END $$",
+        "CREATE INDEX IF NOT EXISTS ix_documents_supersedes ON documents (supersedes_document_id)",
         # Session revocation on password change (Phase 2).
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 0",
         # OTP brute-force lockout (Phase 2).

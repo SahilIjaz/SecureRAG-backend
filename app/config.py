@@ -301,6 +301,30 @@ class Settings(BaseSettings):
     # retrieval is already namespace-scoped, so chunks compared here can only
     # ever belong to one tenant.
     RAG_CONFLICT_DETECTION_ENABLED: bool = True
+    # Also compare near-identical statements *within* one document (reported
+    # with scope="intra_document"; disclosure-only, never affects the gate).
+    RAG_CONFLICT_INTRA_DOCUMENT: bool = True
+    # Confirm heuristic *semantic* (polarity/antonym) candidates with one
+    # cheap classification call per pair, cached in Redis for a week. Numeric
+    # and date conflicts are exact and never use a model. Off → candidates
+    # are disclosed as "possible" disagreements without confirmation.
+    RAG_CONFLICT_LLM_VERIFY: bool = True
+    RAG_CONFLICT_LLM_MAX_PAIRS: int = 3
+    RAG_CONFLICT_MAX_REPORTED: int = 5
+    # How many reranked candidates (≥ RAG_SEARCH_TOP_K) are scanned for
+    # contradictions with the top-k context. Two versions of one policy rank
+    # next to each other and only one fits in top-k; scanning a short tail
+    # lets the resolver swap in the current one. Same single rerank call.
+    RAG_CONFLICT_SCAN_POOL: int = 8
+    # What to do when a cross-document conflict relevant to the question
+    # cannot be resolved from admin-verified metadata
+    # (app/services/conflict_resolution.py):
+    #   disclose — generate, then guarantee (in code, not just by prompt) that
+    #              the reply presents both positions with their sources
+    #   handoff  — skip generation and hand off to a human (falls back to
+    #              refuse when the tenant has handoff disabled)
+    #   refuse   — skip generation and return the tenant's fallback message
+    RAG_UNRESOLVED_CONFLICT_ACTION: str = "disclose"
 
     # Background-job recovery: how long a document may sit in "processing"
     # before a startup sweep assumes the worker died and reschedules it.
