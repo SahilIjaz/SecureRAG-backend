@@ -1,0 +1,35 @@
+# Caddy reverse proxy for the Nexus API.
+# DOMAIN and ACME_EMAIL come from .env via docker-compose.yml.
+# Caddy obtains and renews the Let's Encrypt certificate automatically.
+
+{
+	email {$ACME_EMAIL}
+}
+
+{$DOMAIN} {
+	encode zstd gzip
+
+	# Security headers at the edge (the app sets the API-level ones too).
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	# Streaming replies (SSE) and the PTT WebSocket must not be buffered.
+	reverse_proxy api:8000 {
+		flush_interval -1
+		header_up X-Forwarded-Proto {scheme}
+		header_up X-Real-IP {remote_host}
+		transport http {
+			read_timeout 300s
+			write_timeout 300s
+		}
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

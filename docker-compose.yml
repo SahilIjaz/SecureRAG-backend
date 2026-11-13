@@ -1,0 +1,94 @@
+# Production stack for one VM (Oracle Cloud Always Free A1, DigitalOcean, …):
+#
+#   caddy  — public :80/:443, automatic Let's Encrypt HTTPS for $DOMAIN,
+#            reverse-proxies to the API (WebSockets + SSE pass through)
+#   api    — the FastAPI app (Dockerfile), one uvicorn worker
+#   redis  — shared rate limiting, embedding cache, conflict-verdict cache
+#
+# Postgres (Neon), Pinecone, Cloudinary, Gemini/Anthropic and Stripe stay
+# external — configure them in .env (start from .env.production.example).
+#
+#   docker compose up -d --build
+#   docker compose logs -f api
+#   docker compose exec api python -m pytest tests -q   (optional smoke)
+
+name: nexus
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: nexus-api:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # The compose network's Redis — overrides anything in .env.
+      REDIS_URL: redis://redis:6379/0
+      # Bind address is fixed by the Dockerfile; keep DEBUG off in prod.
+      DEBUG: "False"
+    depends_on:
+      redis:
+        condition: service_healthy
+    expose:
+      - "8000"
+    volumes:
+      # Temporary upload staging only (files are stored in Cloudinary).
+      - api_storage:/app/storage
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 90s
+      retries: 3
+    # Chromium for the scraper is the only memory-hungry part; 2 GB is
+    # comfortable on a 24 GB A1 and still protects the host from a runaway.
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3
+    environment:
+      # Public hostname the API is served on (see deploy/README.md).
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env, e.g. api.example.com}
+      ACME_EMAIL: ${ACME_EMAIL:-}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+volumes:
+  api_storage:
+  redis_data:
+  caddy_data:
+  caddy_config:
