@@ -202,7 +202,8 @@ async def public_chat(
     # Source-name map so answers can cite documents.
     docs_result = await db.execute(
         select(Document.id, Document.original_filename).where(
-            Document.tenant_id == tenant.id, Document.is_active == True
+            Document.tenant_id == tenant.id, Document.is_active == True,
+            Document.approval_status != "deprecated",  # outdated, kept for history
         )
     )
     doc_names = {str(doc_id): name for doc_id, name in docs_result.all()}

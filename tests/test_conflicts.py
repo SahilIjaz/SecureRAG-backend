@@ -558,3 +558,88 @@ def test_pool_only_conflicts_are_ignored():
     top_k = 1
     relevant = [c for c in conflicts if c["chunkA"] < top_k or c["chunkB"] < top_k]
     assert conflicts and relevant == []
+
+
+# ── Review follow-ups (2026-11-13) ───────────────────────────────────────────
+
+@pytest.mark.parametrize("a,b", [
+    ("The Basic plan costs 10 dollars per month.", "The Pro plan costs 20 dollars per month."),
+    ("Standard shipping takes 5 business days.", "Express shipping takes 2 business days."),
+    ("Refunds are processed within 7 days of purchase.", "Exchanges are processed within 14 days of purchase."),
+    ("Our summer sale starts on 1 June 2026.", "Our winter sale starts on 1 December 2026."),
+    ("The Basic plan includes phone support.", "The Pro plan does not include phone support."),
+])
+def test_sibling_facts_are_not_contradictions(a, b):
+    assert detect_conflicts([_chunk("a", a), _chunk("b", b)]) == []
+
+
+def test_intra_document_price_list_is_not_a_conflict():
+    assert detect_conflicts([_chunk("a", "Pricing\n- Basic plan: 10 dollars per month\n- Pro plan: 20 dollars per month")]) == []
+
+
+def test_one_sided_qualifier_and_rewording_still_detected():
+    # "full refunds" vs "refunds": a general rule and a specific one can clash.
+    assert len(detect_conflicts([
+        _chunk("p", "Refund policy: full refunds within 30 days of purchase, no questions asked."),
+        _chunk("f", "Refunds are processed within 7 days of purchase."),
+    ])) == 1
+    assert len(detect_conflicts([
+        _chunk("a", "Customers may request a refund within 30 days of purchase."),
+        _chunk("b", "A refund can be requested within 14 days of purchase."),
+    ])) == 1
+
+
+def test_intra_document_conflicts_are_left_out_of_the_prompt_note():
+    c = detect_conflicts([
+        _chunk("a", "The plan price is 10 dollars per month."),
+        _chunk("a", "The plan price is 15 dollars per month."),
+    ])
+    assert c and c[0]["scope"] == "intra_document"
+    assert conflict_prompt_note(c, {"a": "Pricing.pdf"}) == ""
+
+
+def test_context_size_filters_tail_only_conflicts_before_the_cap():
+    pool = [
+        _chunk("p", "Our office is open Monday to Friday."),
+        _chunk("old", "Refunds are processed within 30 days of purchase."),
+        _chunk("new", "Refunds are processed within 7 days of purchase."),
+    ]
+    assert detect_conflicts(pool) != []
+    assert detect_conflicts(pool, context_size=1) == []
+    assert len(detect_conflicts(pool, context_size=2)) == 1
+
+
+def test_value_mentioned_uses_digit_boundaries():
+    assert rag_service._value_mentioned("the warranty lasts 1 year (see section 12).", 1.0)
+    # "12" must not satisfy 1 or 2; a bare "2" elsewhere in the text would,
+    # which is the accepted limit of a value-presence check.
+    assert not rag_service._value_mentioned("the warranty lasts 1 year (see section 12).", 2.0)
+    assert not rag_service._value_mentioned("the warranty lasts 12 months.", 1.0)
+    assert not rag_service._value_mentioned("founded in 2017.", 7.0)
+    assert rag_service._value_mentioned("it takes 7 days.", 7.0)
+    assert rag_service._value_mentioned("effective 1 march 2026.", "2026-03-01")
+
+
+def test_heuristic_semantic_candidates_never_block(monkeypatch):
+    c = detect_conflicts([
+        _chunk("a", "Refunds are allowed on all subscription plans."),
+        _chunk("b", "Refunds are not allowed on any subscription plan."),
+    ])[0]
+    assert c["verified"] is None
+    metrics = _metrics_with(c, {"status": "unresolved", "rule": "no_approved_source"})
+    monkeypatch.setattr(settings, "RAG_UNRESOLVED_CONFLICT_ACTION", "refuse")
+    assert rag_service._conflict_block_result(metrics, "fb", True, {}, True) is None
+    confirmed = _metrics_with({**c, "verified": True}, {"status": "unresolved", "rule": "no_approved_source"})
+    blocked = rag_service._conflict_block_result(confirmed, "fb", True, {}, True)
+    assert blocked is not None and blocked["conflict_blocked"] is True
+
+
+def test_deprecated_superseder_falls_through_to_approval_rules():
+    c = _numeric_conflict("old", "new")
+    auth = {
+        "old": _auth("old", approved=True),
+        "new": DocumentAuthority(document_id="new", tenant_id=TENANT, version=2, effective_date=None,
+                                 approval_status="deprecated", supersedes_document_id="old", authority_rank=0, is_active=True),
+    }
+    r = resolve_conflict(c, auth, TODAY)
+    assert r["status"] == "resolved" and r["winner"] == "old" and r["rule"] == "only_approved_source"

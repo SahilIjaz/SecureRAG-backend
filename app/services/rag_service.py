@@ -1,5 +1,6 @@
 """RAG (Retrieval-Augmented Generation) service."""
 
+import asyncio
 import logging
 import time
 import uuid
@@ -408,8 +409,12 @@ def _fmt_value(v) -> str:
     return f"{v:g}" if isinstance(v, float) else str(v)
 
 def _value_mentioned(answer_low: str, value) -> bool:
+    import re as _re
+
     text = _fmt_value(value).lower()
-    if text in answer_low:
+    # Whole-number match only: "1" must not be satisfied by "section 2" or
+    # "2017", and "7" not by "2017".
+    if _re.search(rf"(?<![\d.]){_re.escape(text)}(?![\d.])", answer_low):
         return True
     # ISO dates are usually rendered as "1 March 2026" by the model.
     if isinstance(value, str) and len(value) == 10 and value[4] == "-" and value[7] == "-":
@@ -422,7 +427,7 @@ def _value_mentioned(answer_low: str, value) -> bool:
             return False
     return False
 
-_DISCLOSURE_MARKERS = ("disagree", "contradict", "conflict", "differ", "inconsisten", "two different", "however", "but ")
+_DISCLOSURE_MARKERS = ("disagree", "contradict", "conflict", "differ", "inconsisten", "two different", "not consistent")
 
 def _ensure_conflict_disclosure(answer: str, unresolved: list[dict], doc_names: dict | None, show_names: bool) -> str:
     """Code-level guarantee behind the prompt instruction: if the generated
@@ -460,14 +465,23 @@ def _conflict_block_result(metrics: dict, fallback: str, handoff_enabled: bool, 
     """When RAG_UNRESOLVED_CONFLICT_ACTION is handoff/refuse and an unresolved
     cross-document conflict exists, the reply to send *instead of generating*.
     None means "proceed to generation" (disclose mode or no conflict)."""
-    unresolved = _unresolved_conflicts(metrics)
+    # Only *certain* contradictions may withhold an answer: numeric/date
+    # (exact) or semantic ones the classifier confirmed. A heuristic-only
+    # semantic candidate is still disclosed, never used to block.
+    unresolved = [
+        c for c in _unresolved_conflicts(metrics)
+        if c.get("type") in ("numeric", "date") or c.get("verified") is True
+    ]
     action = settings.RAG_UNRESOLVED_CONFLICT_ACTION
     if not unresolved or action not in ("handoff", "refuse"):
         return None
     do_handoff = action == "handoff" and handoff_enabled
     return {
         "answer": fallback, "sources": [], "model": None, "confidence": 0, "usage": None,
-        "handoff": do_handoff, "refused": not do_handoff, "conflict": True,
+        "handoff": do_handoff, "refused": not do_handoff,
+        # `conflict` = an unresolved conflict exists (also true on ordinary
+        # answers); `conflict_blocked` = THIS reply was withheld because of it.
+        "conflict": True, "conflict_blocked": True,
         "conflicts": _conflict_payload(metrics, doc_names, show_names), "retrieval": metrics,
     }
 
@@ -579,11 +593,14 @@ async def _prepare_generation(
     conflicts: list = []
     resolutions: list = []
     if settings.RAG_CONFLICT_DETECTION_ENABLED:
-        conflicts = conflict_detection.detect_conflicts(pool)
+        # Pure CPU (O(statements²)) — off the event loop so one long pool
+        # can't stall every concurrent chat. context_size keeps tail-vs-tail
+        # pairs from consuming the report cap or the verification budget.
+        conflicts = await asyncio.to_thread(
+            conflict_detection.detect_conflicts, pool, None, len(chunks),
+        )
         if conflicts:
             conflicts = await conflict_detection.verify_semantic_conflicts(conflicts)
-        if conflicts:
-            conflicts = [c for c in conflicts if c["chunkA"] < len(chunks) or c["chunkB"] < len(chunks)]
         if conflicts:
             chunks, conflicts = _promote_conflicting_chunks(pool, len(chunks), conflicts)
             authority = await _load_authority(tenant_id, conflicts)
@@ -613,7 +630,11 @@ async def _prepare_generation(
     # the prompt gets them as a STYLE-RULES instruction, and answer_question
     # additionally enforces disclosure of unresolved ones in code.
     metrics = confidence_service.compute_retrieval_metrics(chunks)
-    metrics["conflicts"] = [{**c, "resolution": r} for c, r in zip(conflicts, resolutions)]
+    # chunkA/chunkB indexed the pre-drop list — meaningless to callers.
+    metrics["conflicts"] = [
+        {**{k: v for k, v in c.items() if k not in ("chunkA", "chunkB")}, "resolution": r}
+        for c, r in zip(conflicts, resolutions)
+    ]
     metrics["conflictSummary"] = conflict_resolution.summarize(resolutions)
     conflict_note = conflict_detection.conflict_prompt_note(conflicts, doc_names, resolutions)
 
@@ -1041,7 +1062,7 @@ async def answer_question_stream(
                     "type": "final", "answer": fallback, "sources": [],
                     "model": usage.model if usage else None, "confidence": confidence,
                     "handoff": decision == "handoff", "refused": decision == "refuse",
-                    "usage": usage, "retrieval": metrics,
+                    "usage": usage, "retrieval": metrics, **conflict_info,
                 }
                 return
             if decision == "clarify":
@@ -1052,7 +1073,7 @@ async def answer_question_stream(
                     yield {
                         "type": "final", "answer": question, "sources": [],
                         "model": usage.model if usage else None, "confidence": confidence,
-                        "handoff": False, "clarify": True, "usage": usage, "retrieval": metrics,
+                        "handoff": False, "clarify": True, "usage": usage, "retrieval": metrics, **conflict_info,
                     }
                     return
                 # Clarify generation failed — stream the confident-enough
@@ -1077,7 +1098,7 @@ async def answer_question_stream(
                     "type": "final", "answer": fallback, "sources": [],
                     "model": usage.model if usage else None, "confidence": confidence,
                     "handoff": decision == "handoff", "refused": decision == "refuse",
-                    "usage": usage, "retrieval": metrics,
+                    "usage": usage, "retrieval": metrics, **conflict_info,
                 }
                 return
             if decision == "clarify":
@@ -1087,7 +1108,7 @@ async def answer_question_stream(
                     yield {
                         "type": "final", "answer": question, "sources": [],
                         "model": usage.model if usage else None, "confidence": confidence,
-                        "handoff": False, "clarify": True, "usage": usage, "retrieval": metrics,
+                        "handoff": False, "clarify": True, "usage": usage, "retrieval": metrics, **conflict_info,
                     }
                     return
             if text:
@@ -1130,7 +1151,7 @@ async def answer_question_stream(
         yield {
             "type": "final", "answer": fallback, "sources": [],
             "model": usage.model if usage else None, "confidence": 0,
-            "handoff": handoff_enabled, "usage": usage, "retrieval": metrics,
+            "handoff": handoff_enabled, "usage": usage, "retrieval": metrics, **conflict_info,
         }
         return
 

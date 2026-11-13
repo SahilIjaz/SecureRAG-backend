@@ -109,9 +109,11 @@ async def load_authority_map(
 
     out: dict[str, DocumentAuthority] = {}
     pending = set(ids)
-    for _ in range(2):  # the requested docs, then whatever they supersede
-        if not pending:
-            break
+    hops = 0
+    # The requested docs, then whatever they supersede, transitively — so
+    # new→m1→m2→old resolves even when only `new` and `old` were retrieved.
+    while pending and hops < MAX_SUPERSESSION_DEPTH:
+        hops += 1
         rows = (await db.execute(
             select(Document).where(Document.tenant_id == tid, Document.id.in_(pending))
         )).scalars().all()
@@ -136,12 +138,17 @@ def superseded_by_map(docs: Iterable[Document]) -> dict[str, Document]:
 
 # ── Writes ────────────────────────────────────────────────────────────────────
 
-async def _get_own_active_document(doc_id: uuid.UUID, tenant_id: uuid.UUID, db: AsyncSession) -> Document:
-    doc = (await db.execute(
-        select(Document).where(
-            Document.id == doc_id, Document.tenant_id == tenant_id, Document.is_active == True,
-        )
-    )).scalar_one_or_none()
+async def _get_own_active_document(
+    doc_id: uuid.UUID, tenant_id: uuid.UUID, db: AsyncSession, *, for_update: bool = False
+) -> Document:
+    stmt = select(Document).where(
+        Document.id == doc_id, Document.tenant_id == tenant_id, Document.is_active == True,
+    )
+    if for_update:
+        # Serialises concurrent authority edits on the same row so two
+        # PATCHes (A→B and B→A) can't both pass the cycle check.
+        stmt = stmt.with_for_update()
+    doc = (await db.execute(stmt)).scalar_one_or_none()
     if doc is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
     return doc
@@ -193,7 +200,7 @@ async def update_authority(
     The caller is responsible for the role check (admin+); this function
     is responsible for every data-integrity rule.
     """
-    doc = await _get_own_active_document(document_id, tenant_id, db)
+    doc = await _get_own_active_document(document_id, tenant_id, db, for_update=True)
 
     if "version" in fields_set and version is not None:
         doc.version = int(version)
@@ -224,7 +231,8 @@ async def update_authority(
                 )
             # Same-tenant + active check at the application layer; the
             # composite FK repeats the tenant check at the database layer.
-            await _get_own_active_document(target_id, tenant_id, db)
+            # Locking the target too makes the A→B / B→A race serialise.
+            await _get_own_active_document(target_id, tenant_id, db, for_update=True)
             await _assert_no_cycle(doc, target_id, tenant_id, db)
             doc.supersedes_document_id = target_id
 

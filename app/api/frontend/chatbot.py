@@ -272,14 +272,17 @@ class FEConflictInfo(BaseModel):
     winner: Optional[str] = None
     verified: Optional[bool] = None
 
+def _fmt_conflict_value(v) -> str:
+    return f"{v:g}" if isinstance(v, float) else str(v)  # 7.0 → "7", matches the reply text
+
 def _fe_conflicts(raw: Optional[list]) -> List[FEConflictInfo]:
     out = []
     for c in raw or []:
         out.append(FEConflictInfo(
             type=c["type"], scope=c["scope"], status=c["status"], rule=c.get("rule"),
             documentA=c.get("documentA"), documentB=c.get("documentB"),
-            valueA=None if c.get("valueA") is None else str(c["valueA"]),
-            valueB=None if c.get("valueB") is None else str(c["valueB"]),
+            valueA=None if c.get("valueA") is None else _fmt_conflict_value(c["valueA"]),
+            valueB=None if c.get("valueB") is None else _fmt_conflict_value(c["valueB"]),
             winner=c.get("winner"), verified=c.get("verified"),
         ))
     return out
@@ -352,7 +355,8 @@ async def test_chat(
 
     docs_result = await db.execute(
         select(Document.id, Document.original_filename).where(
-            Document.tenant_id == current_user.tenant_id, Document.is_active == True
+            Document.tenant_id == current_user.tenant_id, Document.is_active == True,
+            Document.approval_status != "deprecated",  # outdated, kept for history
         )
     )
     doc_names = {str(doc_id): name for doc_id, name in docs_result.all()}
@@ -396,12 +400,12 @@ async def test_chat(
     # results also carry sources=[]).
     if result.get("handoff"):
         reply, sources, handoff = result["answer"], [], True
-        unresolved_reason = "Conflicting sources, handed off" if result.get("conflict") else "Low-confidence answer, handed off"
+        unresolved_reason = "Conflicting sources, handed off" if result.get("conflict_blocked") else "Low-confidence answer, handed off"
         notif_type = "unresolved_conversations"
     elif result.get("refused"):
         reply, sources, handoff = result["answer"], [], False
         unresolved_reason = (
-            "Conflicting sources, answer withheld" if result.get("conflict")
+            "Conflicting sources, answer withheld" if result.get("conflict_blocked")
             else "Low-confidence answer refused (handoff disabled)"
         )
         notif_type = "unresolved_conversations"
@@ -487,7 +491,8 @@ async def test_chat_stream(
 
     docs_result = await db.execute(
         select(Document.id, Document.original_filename).where(
-            Document.tenant_id == current_user.tenant_id, Document.is_active == True
+            Document.tenant_id == current_user.tenant_id, Document.is_active == True,
+            Document.approval_status != "deprecated",  # outdated, kept for history
         )
     )
     doc_names = {str(doc_id): name for doc_id, name in docs_result.all()}
@@ -531,11 +536,11 @@ async def test_chat_stream(
                     # low-confidence answer too, not just a genuine "nothing
                     # retrieved" — sources alone can't tell the two apart here.
                     if handoff:
-                        unresolved_reason = "Conflicting sources, handed off" if ev.get("conflict") else "Low-confidence answer, handed off"
+                        unresolved_reason = "Conflicting sources, handed off" if ev.get("conflict_blocked") else "Low-confidence answer, handed off"
                         notif_type = "unresolved_conversations"
                     elif ev.get("refused"):
                         unresolved_reason = (
-                            "Conflicting sources, answer withheld" if ev.get("conflict")
+                            "Conflicting sources, answer withheld" if ev.get("conflict_blocked")
                             else "Low-confidence answer refused (handoff disabled)"
                         )
                         notif_type = "unresolved_conversations"
