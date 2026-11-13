@@ -61,3 +61,6 @@ migrations/__pycache__/
 *.md
 *.txt
 !README.md
+
+# Dependency manifests must be tracked despite the *.txt rule above
+!requirements*.txt

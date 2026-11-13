@@ -1,0 +1,7 @@
+# Installed AFTER requirements.txt with `pip install --no-deps -r requirements-post.txt`.
+# Packages here deliberately exceed a transitive dependency's declared range for
+# security reasons; each entry must say why and how it was verified.
+
+# crawl4ai 0.4.243 declares pillow~=10.4; Pillow 13 fixes 11 CVEs and the scraper
+# was verified working on it with a live scrape (2026-11-03).
+pillow>=13.0.0
