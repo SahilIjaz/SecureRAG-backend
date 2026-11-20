@@ -58,6 +58,13 @@ async def ensure_frontend_schema() -> None:
 
     alter_statements = [
         "ALTER TABLE documents ADD COLUMN IF NOT EXISTS chunk_count INTEGER",
+        # Knowledge-size metric (word count of the extracted text) — see
+        # app/core/entitlements.py Entitlements.max_words.
+        "ALTER TABLE documents ADD COLUMN IF NOT EXISTS word_count INTEGER",
+        # Scraped-URL refresh tracking — see app/models/document.py.
+        "ALTER TABLE documents ADD COLUMN IF NOT EXISTS etag VARCHAR(255)",
+        "ALTER TABLE documents ADD COLUMN IF NOT EXISTS last_modified_header VARCHAR(255)",
+        "ALTER TABLE documents ADD COLUMN IF NOT EXISTS last_checked_at TIMESTAMPTZ",
         "ALTER TABLE documents ADD COLUMN IF NOT EXISTS question TEXT",
         "ALTER TABLE documents ADD COLUMN IF NOT EXISTS answer TEXT",
         "ALTER TABLE documents ADD COLUMN IF NOT EXISTS content_hash VARCHAR(64)",
@@ -247,8 +254,9 @@ async def lifespan(app: FastAPI):
 
     import asyncio
 
-    from app.services.indexing_service import stale_document_sweep_loop
+    from app.services.indexing_service import stale_document_sweep_loop, scrape_refresh_sweep_loop
     asyncio.create_task(stale_document_sweep_loop())
+    app.state.scrape_refresh_task = asyncio.create_task(scrape_refresh_sweep_loop())
 
     from app.services.notification_service import weekly_summary_loop
     from app.services.conversation_service import (
@@ -274,6 +282,18 @@ async def lifespan(app: FastAPI):
     from app.core.redis_client import init_redis, close_redis
     await init_redis()
 
+    # One shared headless-browser instance for URL scraping, reused across
+    # every scrape instead of launching a fresh Chromium per call (see
+    # app.core.scraper's "Shared browser lifecycle" section). Scraping still
+    # works without this (lazily self-starts) — skipped entirely when
+    # Chromium isn't installed in this deployment image.
+    from app.core.scraper import init_shared_browser, close_shared_browser
+    if settings.CRAWL4AI_ENABLED:
+        try:
+            await init_shared_browser()
+        except Exception as e:
+            logger.error("Could not start the shared scraping browser: %s", e)
+
     logger.info(
         "%s API is running (debug=%s)",
         settings.APP_NAME,
@@ -281,6 +301,7 @@ async def lifespan(app: FastAPI):
     )
     yield
 
+    await close_shared_browser()
     await close_redis()
 
 app = FastAPI(

@@ -1,33 +1,42 @@
 """
-Web scraping service: turns a URL into a PDF for the knowledge base.
+Web scraping service: turns a URL into clean Markdown (or raw PDF bytes, if
+the URL points straight at a PDF file) for the knowledge base.
 
-Pipeline for one URL (entry point: scrape_website_to_pdf):
+Pipeline for one URL (entry point: scrape_website):
 
   1. SSRF pre-check on the URL the tenant typed (DNS off the event loop).
   2. Resolve the URL with a plain HTTP client, following redirects one hop
-     at a time and SSRF-checking EVERY hop before it is requested. This is
-     the only reliable place to do it: Crawl4AI's result.url is the URL we
-     asked for, never the one the browser actually landed on, so a
-     post-crawl re-check (what the previous version did) never fired.
-     Resolving here also tells us the final content type.
+     at a time and SSRF-checking (and IP-pinning — see _pin) EVERY hop
+     before it is requested. This is the only reliable place to do it:
+     Crawl4AI's result.url is the URL we asked for, never the one the
+     browser actually landed on, so a post-crawl re-check (what the
+     previous version did) never fired. Resolving here also tells us the
+     final content type.
   3. If the final URL is a PDF, keep the bytes as-is — no browser needed.
   4. Otherwise render the page in Crawl4AI's headless Chromium with page
-     chrome (nav/header/footer/aside/forms) excluded and the disk cache
-     bypassed, convert the markdown to clean prose, and reject bot-challenge
-     pages ("Just a moment...") so they never get indexed as content.
+     chrome (nav/header/footer/aside/forms) excluded, the disk cache
+     bypassed, and a page.route SSRF guard on every sub-request the
+     rendered page itself makes (see _install_ssrf_guard); convert the
+     markdown to clean text that still keeps headings and table rows (see
+     _markdown_to_text), and reject bot-challenge pages ("Just a
+     moment...") so they never get indexed as content.
   5. If the browser path fails for any reason, fall back to a plain HTTP
      fetch + BeautifulSoup text extraction of the same final URL.
   6. When the caller enables OCR, download the page's most relevant images
-     (SSRF-checked, size/dimension filtered, capped per page) and read the
-     text inside them with Gemini vision (app/core/ocr.py). Image alt text
-     is kept as well. This is what makes a menu photo or a flyer searchable.
-  7. Write the prose (+ image text) to a PDF with ReportLab.
+     (SSRF-checked + IP-pinned, size/dimension filtered, capped per page)
+     and read the text inside them with Gemini vision (app/core/ocr.py).
+     Image alt text is kept as well. This is what makes a menu photo or a
+     flyer searchable.
+  7. Return the cleaned text (+ image text) as UTF-8 Markdown bytes — no
+     PDF round-trip. indexing_service reads .md content as plain text
+     directly (see _extract_text), the same path a user's own uploaded
+     .md file already takes.
 
 Text quality matters more here than anywhere else in the app: whatever
 comes out of this module is chunked, embedded and handed to the LLM as
-context. Raw markdown (link targets, tooltips, menu lists) used to go
-straight into the PDF and therefore into every chunk; _markdown_to_text
-strips all of that down to the words a reader would actually see.
+context. Raw markdown (link targets, tooltips, menu lists) would otherwise
+go straight into every chunk; _markdown_to_text strips exactly that kind
+of noise while deliberately keeping headings and table structure.
 """
 
 from __future__ import annotations
@@ -38,6 +47,8 @@ import io
 import logging
 import os
 import re
+import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Optional, Tuple
 from urllib.parse import unquote, urljoin, urlparse
@@ -69,11 +80,21 @@ class _PageContent:
 _MAX_REDIRECT_HOPS = 5
 
 # Header sets for the resolve/fallback requests (the headless crawl uses
-# Chromium's own). Tried in order: a full browser-like set first, then a
-# bare UA. Neither wins everywhere — confirmed live that Cloudflare on
-# w3.org challenges the *full* Chrome-like set (403) while the bare
-# "Mozilla/5.0" sails through, whereas other hosts 403 a bare client.
+# Chromium's own). Tried in order:
+#   1. Identify honestly (name + contact URL) — the polite, standard-crawler
+#      norm, and the only profile robots.txt rules can actually be written
+#      against by name.
+#   2/3. A full browser-like set, then a bare UA, for sites that block any
+#      self-identified bot outright regardless of robots.txt. Confirmed live
+#      that Cloudflare on w3.org challenges the *full* Chrome-like set (403)
+#      while the bare "Mozilla/5.0" sails through, whereas other hosts 403 a
+#      bare client — neither wins everywhere, hence both stay as fallbacks.
 _HEADER_PROFILES = (
+    {
+        "User-Agent": settings.SCRAPE_BOT_USER_AGENT,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/pdf;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    },
     {
         "User-Agent": (
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -85,6 +106,11 @@ _HEADER_PROFILES = (
     {"User-Agent": "Mozilla/5.0"},
 )
 _RETRY_STATUSES = (403, 429, 503)
+# 429 (rate limited) and 503 (often "overloaded, back off") get a real wait
+# + retry on the SAME header profile before falling through to switching
+# profiles — switching identity does nothing for a server that's just asking
+# for a slower pace. 403 skips straight to a profile switch (see below).
+_BACKOFF_STATUSES = (429, 503)
 
 # Page furniture that is never knowledge-base content. Dropped both in the
 # browser crawl (Crawl4AI excluded_tags) and in the BeautifulSoup fallback.
@@ -119,19 +145,179 @@ _MIN_TEXT_CHARS = 40
 
 _HTML_CONTENT_TYPES = ("text/html", "application/xhtml+xml", "text/plain", "application/xml", "text/xml")
 
+# Markers found in the raw HTML of a challenge/interstitial page even when
+# its <title> doesn't say so (a differently-worded or non-English title) —
+# vendor class/script names for the common anti-bot and CAPTCHA providers.
+_BOT_CHALLENGE_BODY_MARKERS = (
+    "cf-chl", "challenge-platform", "cf-turnstile", "g-recaptcha",
+    "hcaptcha", "cf-browser-verification", "jschl-answer", "ddos-guard",
+    "px-captcha", "perimeterx",
+)
+# A real article/doc page is mostly text; a challenge page is almost all
+# markup/script around a few words ("Checking your browser..."). Below this
+# text-to-HTML ratio AND a non-trivial amount of raw HTML, treat it as a
+# likely challenge even with no title/body marker match.
+_MIN_TEXT_TO_HTML_RATIO = 0.01
+_MIN_HTML_LEN_FOR_RATIO_CHECK = 5000
+
+
+def _looks_like_bot_challenge_body(html: Optional[str], text_len: int, status_code: Optional[int] = None) -> bool:
+    """Body-level bot-challenge signal, in addition to the title check
+    (_looks_like_bot_challenge): known vendor markers anywhere in the raw
+    HTML, or a status code commonly used for bot-blocking (403/429/503)
+    paired with a suspiciously low text-to-markup ratio."""
+    if not html:
+        return False
+    low = html.lower()
+    if any(marker in low for marker in _BOT_CHALLENGE_BODY_MARKERS):
+        return True
+    html_len = len(html)
+    if (
+        html_len >= _MIN_HTML_LEN_FOR_RATIO_CHECK
+        and (text_len / html_len) < _MIN_TEXT_TO_HTML_RATIO
+        and status_code in (403, 429, 503)
+    ):
+        return True
+    return False
+
+
+# ── Politeness: per-domain pacing, Retry-After backoff, robots.txt ──────────
+
+_last_request_at: dict[str, float] = {}
+_pacing_lock = asyncio.Lock()
+
+
+async def _pace(host: str) -> None:
+    """Keep at least SCRAPE_MIN_REQUEST_INTERVAL_SECONDS between two requests
+    to the same domain. Process-local (this app runs a single worker — see
+    deploy notes — so there is nothing to share across processes); good
+    enough for the one-URL-at-a-time, occasionally-a-few-from-one-site
+    volume this app actually sees."""
+    interval = settings.SCRAPE_MIN_REQUEST_INTERVAL_SECONDS
+    if interval <= 0 or not host:
+        return
+    async with _pacing_lock:
+        last = _last_request_at.get(host)
+        now = time.monotonic()
+        if last is not None:
+            wait = interval - (now - last)
+            if wait > 0:
+                await asyncio.sleep(wait)
+        _last_request_at[host] = time.monotonic()
+
+
+def _parse_retry_after(value: Optional[str]) -> Optional[float]:
+    """RFC 7231 Retry-After: either a delay in seconds, or an HTTP-date."""
+    if not value:
+        return None
+    value = value.strip()
+    if value.isdigit():
+        return float(value)
+    try:
+        from datetime import datetime, timezone
+        from email.utils import parsedate_to_datetime
+
+        dt = parsedate_to_datetime(value)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return max(0.0, (dt - datetime.now(timezone.utc)).total_seconds())
+    except Exception:
+        return None
+
+
+_ROBOTS_CACHE_MAX = 256
+# host -> (expires_at monotonic, RobotFileParser | None). None means "no
+# usable robots.txt" (missing, unreachable, or unparseable) — fail open.
+_robots_cache: "OrderedDict[str, tuple[float, object]]" = OrderedDict()
+
+
+async def _fetch_robots_rules(host: str, scheme: str):
+    from urllib.robotparser import RobotFileParser
+
+    robots_url = f"{scheme}://{host}/robots.txt"
+    try:
+        pinned_url, pin_host = await _pin(robots_url)
+        headers = {**_HEADER_PROFILES[0], "Host": pin_host}
+        async with httpx.AsyncClient(timeout=10, follow_redirects=False) as client:
+            resp = await client.get(
+                pinned_url, headers=headers, extensions={"sni_hostname": pin_host}
+            )
+        # A redirect target would need its own pin+SSRF check; robots.txt is
+        # low-stakes enough that treating a redirect as "unavailable" (fail
+        # open) is the right tradeoff against that extra complexity.
+        if resp.status_code >= 400 or resp.is_redirect:
+            return None
+        rules = RobotFileParser()
+        rules.parse(resp.text.splitlines())
+        return rules
+    except Exception:
+        return None
+
+
+async def _robots_allowed(url: str) -> bool:
+    """
+    True if `url` may be fetched per its domain's robots.txt, checked
+    against SCRAPE_BOT_USER_AGENT (RobotFileParser falls back to the "*"
+    group itself if there's no entry naming us specifically). Cached
+    per-domain in-process for SCRAPE_ROBOTS_TXT_CACHE_SECONDS. Fails OPEN on
+    any fetch/parse problem — no reachable or parseable robots.txt imposes
+    no restriction, matching standard crawler behavior.
+    """
+    if not settings.SCRAPE_ROBOTS_TXT_ENABLED:
+        return True
+    parsed = urlparse(url)
+    host = parsed.hostname or ""
+    if not host:
+        return True
+
+    cache_key = f"{parsed.scheme}://{host}"
+    now = time.monotonic()
+    cached = _robots_cache.get(cache_key)
+    if cached is not None and cached[0] > now:
+        _robots_cache.move_to_end(cache_key)
+        rules = cached[1]
+    else:
+        rules = await _fetch_robots_rules(host, parsed.scheme)
+        _robots_cache[cache_key] = (now + settings.SCRAPE_ROBOTS_TXT_CACHE_SECONDS, rules)
+        _robots_cache.move_to_end(cache_key)
+        if len(_robots_cache) > _ROBOTS_CACHE_MAX:
+            _robots_cache.popitem(last=False)
+
+    if rules is None:
+        return True
+    try:
+        return bool(rules.can_fetch(settings.SCRAPE_BOT_USER_AGENT, url))
+    except Exception:
+        return True
+
 
 # ── Public entry point ───────────────────────────────────────────────────────
 
-async def scrape_website_to_pdf(
+async def scrape_website(
     url: str,
     timeout: int = 30,
     *,
     ocr: bool = False,
     ocr_usages: Optional[list] = None,
-) -> Tuple[bytes, str]:
+) -> Tuple[bytes, str, str, Optional[str], Optional[str]]:
     """
-    Scrape `url` and return (pdf_bytes, page_title). `timeout` is the
-    per-request ceiling in seconds and is enforced on every network step.
+    Scrape `url` and return (content_bytes, page_title, mime_type, etag,
+    last_modified). `timeout` is the per-request ceiling in seconds,
+    enforced on every network step.
+
+    mime_type is "application/pdf" only when the URL pointed straight at a
+    PDF file (fetched as-is, no rendering). Everything else — a rendered
+    page or the plain-HTTP fallback — comes back as "text/markdown": the
+    cleaned text is written directly as the document's content instead of
+    round-tripped through a generated PDF, which used to flatten headings
+    and tables down to undifferentiated prose before indexing ever saw
+    them. The indexer already reads .md content as plain UTF-8 text (see
+    indexing_service._extract_text), so this needs no new ingestion path.
+
+    etag/last_modified are whatever the page's own HTTP response sent
+    (None if neither) — stored by the caller as the baseline for the
+    weekly refresh sweep's cheap conditional-GET change check (see
+    indexing_service._scrape_url_into_document / scrape_refresh_sweep_loop).
 
     ocr:        also read text inside the page's images with Gemini vision.
                 The caller decides this (feature flag + the tenant's
@@ -148,12 +334,18 @@ async def scrape_website_to_pdf(
 
     await _validate_safe(url)
 
-    final_url, content_type, pdf_bytes = await _resolve_url(url, timeout)
+    final_url, content_type, pdf_bytes, etag, last_modified = await _resolve_url(url, timeout)
+
+    # Checked against the URL we actually ended up at (post-redirect), not
+    # just the one the tenant typed — a redirect can land on a different
+    # domain with its own robots.txt.
+    if not await _robots_allowed(final_url):
+        raise ValueError(f"Blocked by {urlparse(final_url).hostname}'s robots.txt")
 
     if pdf_bytes is not None:
         title = _title_from_url(final_url)
         logger.info("Fetched PDF directly from %s (%d bytes)", final_url, len(pdf_bytes))
-        return pdf_bytes, title
+        return pdf_bytes, title, "application/pdf", etag, last_modified
 
     page: _PageContent
     try:
@@ -188,8 +380,8 @@ async def scrape_website_to_pdf(
         final_url, title, len(text), len(page.images), ocr,
     )
 
-    pdf = await asyncio.to_thread(_text_to_pdf_blocking, text, title, final_url)
-    return pdf, title
+    content = f"# {title}\n\nSource: {final_url}\n\n{text}".encode("utf-8")
+    return content, title, "text/markdown", etag, last_modified
 
 
 # ── Step 1/2: safety + redirect resolution ───────────────────────────────────
@@ -200,18 +392,70 @@ async def _validate_safe(url: str) -> None:
     await asyncio.to_thread(validate_url_safe, url)
 
 
+async def _pin(url: str) -> Tuple[str, str]:
+    """
+    Resolve `url`'s hostname to one validated-safe IP (off the event loop)
+    and return (pinned_url, original_host) — pinned_url has the hostname
+    replaced by that literal IP, so the caller's HTTP client connects to the
+    exact address just validated instead of re-resolving the hostname a
+    moment later itself. Without this, a validated-safe lookup and the
+    client's own connect-time lookup are two separate DNS queries; an
+    attacker-controlled DNS server can legitimately answer "safe" on the
+    first and "unsafe" (a private/internal IP) on the second — classic DNS
+    rebinding. Pinning closes that gap by making there be only one lookup.
+
+    Callers MUST send the returned original_host as both the `Host` header
+    and the `sni_hostname` extension on every request made with pinned_url,
+    so virtual hosting and TLS SNI still resolve to the real site rather
+    than whatever default the bare IP would otherwise present.
+    """
+    from app.core.ip_validator import resolve_safe_ip
+
+    parsed = urlparse(url)
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("Invalid URL: no hostname")
+
+    ip = await asyncio.to_thread(resolve_safe_ip, hostname)
+    netloc = f"[{ip}]" if ":" in ip else ip  # IPv6 literal needs brackets in a URL authority
+    if parsed.port:
+        netloc = f"{netloc}:{parsed.port}"
+    pinned = parsed._replace(netloc=netloc).geturl()
+    return pinned, hostname
+
+
+def _pinned_request_kwargs(host: str, headers: dict) -> dict:
+    """Headers + extensions for a request already sent to a pinned IP (see
+    _pin) — restores the Host header and TLS SNI the IP-literal URL on its
+    own would otherwise lose or get wrong."""
+    return {
+        "headers": {**headers, "Host": host},
+        "extensions": {"sni_hostname": host},
+    }
+
+
 def _size_cap_bytes() -> int:
     return int(settings.CRAWL4AI_MAX_CONTENT_SIZE_MB * 1024 * 1024)
 
 
-async def _resolve_url(url: str, timeout: int) -> Tuple[str, Optional[str], Optional[bytes]]:
+async def _resolve_url(
+    url: str, timeout: int
+) -> Tuple[str, Optional[str], Optional[bytes], Optional[str], Optional[str]]:
     """
     Follow redirects manually, SSRF-checking each hop *before* it is
-    requested. Returns (final_url, content_type, pdf_bytes).
+    requested. Returns (final_url, content_type, pdf_bytes, etag,
+    last_modified).
 
     pdf_bytes is only set when the final resource is a PDF (by Content-Type
     or magic bytes) — in that case the body has been read here, size-capped,
     and the caller skips the browser entirely.
+
+    etag/last_modified are whatever the final (non-redirect) response sent,
+    regardless of content type — the weekly refresh sweep's baseline for a
+    cheap conditional GET later (see indexing_service.
+    _scrape_url_into_document / scrape_refresh_sweep_loop). None when the
+    server sent neither, or when this step never got a final response at
+    all (left to the browser crawl instead).
 
     Non-SSRF HTTP problems (a 403 for non-browser clients, a flaky server)
     are logged and the caller proceeds to the browser crawl with the last
@@ -219,16 +463,37 @@ async def _resolve_url(url: str, timeout: int) -> Tuple[str, Optional[str], Opti
     """
     current_url = url
     profile = 0
+    rate_limit_retries = 0
     async with httpx.AsyncClient(follow_redirects=False, timeout=timeout) as client:
-        for _ in range(_MAX_REDIRECT_HOPS + 1 + len(_HEADER_PROFILES)):
-            await _validate_safe(current_url)
+        for _ in range(_MAX_REDIRECT_HOPS + 1 + len(_HEADER_PROFILES) + settings.SCRAPE_MAX_RATE_LIMIT_RETRIES):
+            pinned_url, host = await _pin(current_url)
+            await _pace(host)
             try:
-                async with client.stream("GET", current_url, headers=_HEADER_PROFILES[profile]) as resp:
+                async with client.stream(
+                    "GET", pinned_url, **_pinned_request_kwargs(host, _HEADER_PROFILES[profile])
+                ) as resp:
                     if resp.is_redirect:
                         location = resp.headers.get("location")
                         if not location:
-                            return current_url, None, None
+                            return current_url, None, None, None, None
                         current_url = str(httpx.URL(current_url).join(location))
+                        continue
+
+                    if (
+                        resp.status_code in _BACKOFF_STATUSES
+                        and rate_limit_retries < settings.SCRAPE_MAX_RATE_LIMIT_RETRIES
+                    ):
+                        rate_limit_retries += 1
+                        wait = min(
+                            _parse_retry_after(resp.headers.get("retry-after")) or 2.0,
+                            settings.SCRAPE_RATE_LIMIT_MAX_WAIT_SECONDS,
+                        )
+                        logger.info(
+                            "rate-limited (%d) fetching %s — waiting %.1fs (retry %d/%d)",
+                            resp.status_code, current_url, wait, rate_limit_retries,
+                            settings.SCRAPE_MAX_RATE_LIMIT_RETRIES,
+                        )
+                        await asyncio.sleep(wait)
                         continue
 
                     if resp.status_code in _RETRY_STATUSES and profile + 1 < len(_HEADER_PROFILES):
@@ -236,6 +501,8 @@ async def _resolve_url(url: str, timeout: int) -> Tuple[str, Optional[str], Opti
                         continue
 
                     content_type = (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
+                    etag = resp.headers.get("etag")
+                    last_modified = resp.headers.get("last-modified")
                     declared_len = resp.headers.get("content-length")
                     if declared_len and declared_len.isdigit() and int(declared_len) > _size_cap_bytes():
                         raise ValueError(
@@ -250,7 +517,7 @@ async def _resolve_url(url: str, timeout: int) -> Tuple[str, Optional[str], Opti
 
                     is_pdf = content_type == "application/pdf" or head.startswith(b"%PDF-")
                     if not is_pdf:
-                        return current_url, content_type or None, None
+                        return current_url, content_type or None, None, etag, last_modified
 
                     if resp.status_code >= 400:
                         raise ValueError(f"HTTP {resp.status_code} fetching {current_url}")
@@ -261,21 +528,168 @@ async def _resolve_url(url: str, timeout: int) -> Tuple[str, Optional[str], Opti
                             raise ValueError(
                                 f"PDF is larger than the {settings.CRAWL4AI_MAX_CONTENT_SIZE_MB}MB limit"
                             )
-                    return current_url, "application/pdf", bytes(body)
+                    return current_url, "application/pdf", bytes(body), etag, last_modified
             except ValueError:
                 raise
             except httpx.HTTPError as e:
                 logger.info("Resolve step could not fetch %s (%s); leaving it to the browser", current_url, e)
-                return current_url, None, None
+                return current_url, None, None, None, None
         raise ValueError(f"Too many redirects while fetching {url}")
 
 
 # ── Step 4: headless browser crawl ───────────────────────────────────────────
 
+async def _sub_request_allowed(url: str, cache: dict[str, bool]) -> bool:
+    """
+    The SSRF policy a rendered page's own sub-requests must pass: http(s)
+    scheme only, and the hostname must resolve to a safe address. Split out
+    from _install_ssrf_guard as a plain function (no Playwright Route/
+    Request objects involved) so it's unit-testable on its own. `cache` is
+    the caller's per-page-load hostname→verdict cache — one DNS check per
+    hostname, not per sub-request.
+    """
+    from app.core.ip_validator import resolve_safe_ip
+
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return False
+    host = parsed.hostname or ""
+    cached = cache.get(host)
+    if cached is not None:
+        return cached
+    try:
+        await asyncio.to_thread(resolve_safe_ip, host)
+        cache[host] = True
+    except Exception:
+        cache[host] = False
+    return cache[host]
+
+
+def _install_ssrf_guard(strategy) -> None:
+    """
+    Registers a Playwright-level page.route guard on Crawl4AI's
+    `on_page_context_created` hook: every sub-request the *rendered* page
+    makes (images, scripts, XHR/fetch, fonts, CSS @import, ...) is
+    SSRF-checked the same way the top-level URL already is (see
+    _sub_request_allowed), and any non-http(s) scheme is rejected. Without
+    this, a page's own JavaScript or markup could point a request at an
+    internal address and the browser would simply go there — the manual-
+    redirect checks in _resolve_url/_fetch_plain only ever see requests
+    this module issues itself, never ones the rendered page's own code
+    makes.
+    """
+    cache: dict[str, bool] = {}
+
+    async def _on_context(page, context=None, **kwargs) -> None:
+        async def _guard(route) -> None:
+            request = route.request
+            if await _sub_request_allowed(request.url, cache):
+                await route.continue_()
+            else:
+                logger.warning("Blocked unsafe sub-request from rendered page: %s", request.url)
+                await route.abort()
+
+        await page.route("**/*", _guard)
+
+    strategy.set_hook("on_page_context_created", _on_context)
+
+
+# ── Shared browser lifecycle ─────────────────────────────────────────────────
+#
+# One AsyncWebCrawler instance for the whole process instead of launching a
+# fresh headless Chromium per scrape — a new browser per call is slow and
+# memory-heavy on a single worker. init_shared_browser()/close_shared_browser()
+# are called from app.main's lifespan; _get_browser() lazily starts one itself
+# (locked, so concurrent first-callers can't start two) if that never ran,
+# e.g. in a script or test that imports this module directly.
+
+_shared_crawler = None  # type: ignore  # AsyncWebCrawler | None, lazily typed to avoid a hard import at module load
+_browser_lock = asyncio.Lock()
+_browser_semaphore: Optional[asyncio.Semaphore] = None
+
+# Substrings of exceptions that mean the browser process itself is gone, not
+# just that this one page failed — worth restarting the shared instance for,
+# rather than leaving every future scrape to fail against a dead browser.
+_BROWSER_DEAD_MARKERS = (
+    "has been closed", "connection closed", "target closed",
+    "browser has disconnected", "websocket connection error",
+)
+
+
+def _new_crawler():
+    from crawl4ai import AsyncWebCrawler, BrowserConfig
+
+    crawler = AsyncWebCrawler(config=BrowserConfig(headless=True, verbose=False))
+    _install_ssrf_guard(crawler.crawler_strategy)
+    return crawler
+
+
+async def init_shared_browser() -> None:
+    """Start the one shared browser instance. Call once from the app
+    lifespan at startup; safe to call again (a no-op if already running)."""
+    global _shared_crawler, _browser_semaphore
+    if _browser_semaphore is None:
+        _browser_semaphore = asyncio.Semaphore(max(1, settings.SCRAPE_MAX_CONCURRENT_PAGES))
+    async with _browser_lock:
+        if _shared_crawler is not None:
+            return
+        crawler = _new_crawler()
+        await crawler.start()
+        _shared_crawler = crawler
+        logger.info("Shared scraping browser started (max %d concurrent pages)", settings.SCRAPE_MAX_CONCURRENT_PAGES)
+
+
+async def close_shared_browser() -> None:
+    """Stop the shared browser. Call once from the app lifespan at shutdown."""
+    global _shared_crawler
+    async with _browser_lock:
+        if _shared_crawler is None:
+            return
+        try:
+            await _shared_crawler.close()
+        except Exception:
+            logger.exception("Error closing shared scraping browser")
+        _shared_crawler = None
+
+
+async def _get_browser():
+    """
+    The shared crawler, starting it lazily (locked) if the app lifespan
+    never did — keeps this module self-sufficient outside the FastAPI app
+    (scripts, tests).
+
+    Raises plainly when CRAWL4AI_ENABLED is off (Chromium isn't installed in
+    this deployment, e.g. a memory-constrained free-tier image) instead of
+    attempting a doomed browser launch — the caller (scrape_website) treats
+    any exception here as "fall back to the plain-HTTP fetcher", but now
+    with an honest reason in the log instead of a generic launch failure.
+    """
+    if not settings.CRAWL4AI_ENABLED:
+        raise RuntimeError("CRAWL4AI_ENABLED is off — no headless browser in this deployment")
+    global _shared_crawler, _browser_semaphore
+    if _shared_crawler is None:
+        await init_shared_browser()
+    return _shared_crawler
+
+
+async def _restart_shared_browser() -> None:
+    global _shared_crawler
+    async with _browser_lock:
+        if _shared_crawler is not None:
+            try:
+                await _shared_crawler.close()
+            except Exception:
+                pass
+            _shared_crawler = None
+    await init_shared_browser()
+    logger.warning("Shared scraping browser restarted after a crash")
+
+
 async def _crawl_with_browser(url: str, timeout: int) -> _PageContent:
-    """Render with Crawl4AI and return the page's prose, title and image
-    references. Raises on any failure so the caller can fall back."""
-    from crawl4ai import AsyncWebCrawler, BrowserConfig, CacheMode, CrawlerRunConfig
+    """Render with Crawl4AI (the one shared browser instance, concurrency-
+    capped) and return the page's prose, title and image references. Raises
+    on any failure so the caller can fall back."""
+    from crawl4ai import CacheMode, CrawlerRunConfig
 
     run_config = CrawlerRunConfig(
         # Always fetch fresh. The default (ENABLED) serves a disk cache, so a
@@ -294,13 +708,20 @@ async def _crawl_with_browser(url: str, timeout: int) -> _PageContent:
         word_count_threshold=1,
         verbose=False,
     )
-    browser_config = BrowserConfig(headless=True, verbose=False)
 
-    async with AsyncWebCrawler(config=browser_config) as crawler:
-        # page_timeout only bounds navigation; post-processing can still
-        # drag on a huge page. Hard ceiling at 2x so a scrape can't hang the
-        # indexing task indefinitely.
-        result = await asyncio.wait_for(crawler.arun(url, config=run_config), timeout=timeout * 2)
+    await _pace(urlparse(url).hostname or "")
+    crawler = await _get_browser()
+    async with _browser_semaphore:
+        try:
+            # page_timeout only bounds navigation; post-processing can still
+            # drag on a huge page. Hard ceiling at 2x so a scrape can't hang
+            # the indexing task indefinitely.
+            result = await asyncio.wait_for(crawler.arun(url, config=run_config), timeout=timeout * 2)
+        except Exception as e:
+            if any(m in str(e).lower() for m in _BROWSER_DEAD_MARKERS):
+                logger.warning("Shared browser looks dead (%s) — restarting it", e)
+                await _restart_shared_browser()
+            raise
 
     if not result.success:
         raise ValueError(f"crawl failed: {result.error_message or 'unknown error'}")
@@ -322,6 +743,8 @@ async def _crawl_with_browser(url: str, timeout: int) -> _PageContent:
     images = _images_from_crawl_result(result, url)
     if len(text) < _MIN_TEXT_CHARS and not images:
         raise ValueError("page rendered but no readable text was extracted")
+    if _looks_like_bot_challenge_body(getattr(result, "html", None), len(text), status):
+        raise ValueError("bot-protection page returned (detected by body markers)")
     return _PageContent(text=text, title=title, images=images)
 
 
@@ -359,20 +782,42 @@ async def _fetch_plain(url: str, timeout: int) -> _PageContent:
 
     current_url = url
     profile = 0
+    rate_limit_retries = 0
+    status_code = None
     async with httpx.AsyncClient(follow_redirects=False, timeout=timeout) as client:
-        for _ in range(_MAX_REDIRECT_HOPS + 1 + len(_HEADER_PROFILES)):
-            await _validate_safe(current_url)
-            async with client.stream("GET", current_url, headers=_HEADER_PROFILES[profile]) as resp:
+        for _ in range(_MAX_REDIRECT_HOPS + 1 + len(_HEADER_PROFILES) + settings.SCRAPE_MAX_RATE_LIMIT_RETRIES):
+            pinned_url, host = await _pin(current_url)
+            await _pace(host)
+            async with client.stream(
+                "GET", pinned_url, **_pinned_request_kwargs(host, _HEADER_PROFILES[profile])
+            ) as resp:
                 if resp.is_redirect:
                     location = resp.headers.get("location")
                     if not location:
                         raise ValueError("redirect without a Location header")
                     current_url = str(httpx.URL(current_url).join(location))
                     continue
+                if (
+                    resp.status_code in _BACKOFF_STATUSES
+                    and rate_limit_retries < settings.SCRAPE_MAX_RATE_LIMIT_RETRIES
+                ):
+                    rate_limit_retries += 1
+                    wait = min(
+                        _parse_retry_after(resp.headers.get("retry-after")) or 2.0,
+                        settings.SCRAPE_RATE_LIMIT_MAX_WAIT_SECONDS,
+                    )
+                    logger.info(
+                        "rate-limited (%d) fetching %s — waiting %.1fs (retry %d/%d)",
+                        resp.status_code, current_url, wait, rate_limit_retries,
+                        settings.SCRAPE_MAX_RATE_LIMIT_RETRIES,
+                    )
+                    await asyncio.sleep(wait)
+                    continue
                 if resp.status_code in _RETRY_STATUSES and profile + 1 < len(_HEADER_PROFILES):
                     profile += 1
                     continue
                 resp.raise_for_status()
+                status_code = resp.status_code
                 content_type = (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
                 if content_type and not any(content_type.startswith(t) for t in _HTML_CONTENT_TYPES):
                     raise ValueError(f"unsupported content type {content_type!r}")
@@ -420,7 +865,191 @@ async def _fetch_plain(url: str, timeout: int) -> _PageContent:
     text = _tidy_lines(lines)
     if len(text) < _MIN_TEXT_CHARS and not images:
         raise ValueError("no readable text in the HTML")
+    if _looks_like_bot_challenge_body(html, len(text), status_code):
+        raise ValueError("bot-protection page returned (detected by body markers)")
     return _PageContent(text=text, title=title, images=images)
+
+
+# ── Whole-site URL discovery ──────────────────────────────────────────────────
+#
+# Finds the pages of a site worth adding, without fetching or indexing any of
+# them — that's still done one URL at a time by the existing single-page
+# pipeline (schedule_url_scrape -> _scrape_url_into_document -> scrape_website
+# above), so every discovered page automatically gets the exact same SSRF
+# checks, robots.txt compliance, bot-challenge/CAPTCHA detection, and
+# image OCR as a page added by hand — none of that is reimplemented here.
+
+_SITEMAP_FETCH_TIMEOUT = 15
+_MAX_NESTED_SITEMAPS = 5  # <sitemap> index entries to follow, at most
+_MAX_BFS_FRONTIER = 500  # safety cap on how many links we'll ever remember, even past max_pages
+
+
+def _same_site(url: str, host: str) -> bool:
+    parsed = urlparse(url)
+    return parsed.scheme in ("http", "https") and (parsed.hostname or "").lower() == host.lower()
+
+
+async def _discovery_get(url: str) -> Optional[str]:
+    """One pinned, SSRF-safe, paced, robots.txt-respecting GET, body text
+    only. None on any failure, a redirect, or a non-text response —
+    discovery is best-effort throughout; a page that can't be read simply
+    contributes no further links."""
+    if not await _robots_allowed(url):
+        return None
+    try:
+        pinned_url, host = await _pin(url)
+        await _pace(host)
+        async with httpx.AsyncClient(timeout=_SITEMAP_FETCH_TIMEOUT, follow_redirects=False) as client:
+            resp = await client.get(pinned_url, **_pinned_request_kwargs(host, dict(_HEADER_PROFILES[0])))
+        if resp.status_code >= 400 or resp.is_redirect:
+            return None
+        content_type = (resp.headers.get("content-type") or "").lower()
+        if not any(t in content_type for t in ("xml", "html", "text")) and content_type:
+            return None
+        return resp.text
+    except Exception:
+        return None
+
+
+async def _urls_from_sitemap(sitemap_url: str, host: str, _depth: int = 0) -> list[str]:
+    """<loc> entries from a sitemap, same-domain only. A <sitemapindex>
+    (a sitemap of sitemaps) is followed one level deep, capped at
+    _MAX_NESTED_SITEMAPS child sitemaps."""
+    from xml.etree import ElementTree
+
+    body = await _discovery_get(sitemap_url)
+    if not body:
+        return []
+    try:
+        root = ElementTree.fromstring(body)
+    except ElementTree.ParseError:
+        return []
+
+    locs = [el.text.strip() for el in root.iter() if el.tag.lower().endswith("loc") and el.text]
+    if _depth == 0 and root.tag.lower().endswith("sitemapindex"):
+        urls: list[str] = []
+        for loc in locs[:_MAX_NESTED_SITEMAPS]:
+            if _same_site(loc, host):
+                urls.extend(await _urls_from_sitemap(loc, host, _depth=1))
+        return urls
+    return [loc for loc in locs if _same_site(loc, host)]
+
+
+async def _bfs_discover(start_url: str, host: str, max_pages: int, max_depth: int) -> list[str]:
+    """Breadth-first, same-domain link-following from `start_url`, used only
+    when the site has no usable sitemap. Stops once `max_pages` pages have
+    been successfully read or the frontier is exhausted."""
+    from bs4 import BeautifulSoup
+
+    seen = {start_url}
+    queue: list[tuple[str, int]] = [(start_url, 0)]
+    found: list[str] = []
+    while queue and len(found) < max_pages:
+        url, depth = queue.pop(0)
+        body = await _discovery_get(url)
+        if body is None:
+            continue
+        found.append(url)
+        if depth >= max_depth:
+            continue
+        soup = BeautifulSoup(body, "html.parser")
+        for a in soup.find_all("a", href=True):
+            link = urljoin(url, a["href"]).split("#")[0]
+            if link not in seen and _same_site(link, host) and len(seen) < _MAX_BFS_FRONTIER:
+                seen.add(link)
+                queue.append((link, depth + 1))
+    return found
+
+
+async def discover_site_urls(start_url: str, max_pages: int, max_depth: int) -> list[str]:
+    """
+    URLs worth adding from the same site as `start_url` — the start URL
+    itself, plus up to `max_pages` - 1 more same-domain pages, each already
+    confirmed SSRF-safe and robots.txt-allowed. Tries /sitemap.xml (and the
+    common /sitemap_index.xml alias) first; falls back to same-domain
+    link-following up to `max_depth` only if no usable sitemap was found.
+
+    Best-effort and tolerant throughout: an unreachable sitemap, a page that
+    fails to fetch, or a disallowed URL is simply skipped rather than
+    aborting the whole discovery.
+    """
+    parsed = urlparse(start_url)
+    host = parsed.hostname or ""
+    if not host:
+        return [start_url]
+
+    urls: list[str] = []
+    for sitemap_path in ("/sitemap.xml", "/sitemap_index.xml"):
+        urls = await _urls_from_sitemap(f"{parsed.scheme}://{host}{sitemap_path}", host)
+        if urls:
+            logger.info("Site crawl: found %d URL(s) via %s%s", len(urls), host, sitemap_path)
+            break
+
+    if not urls:
+        logger.info("Site crawl: no usable sitemap for %s — falling back to link-following", host)
+        urls = await _bfs_discover(start_url, host, max_pages, max_depth)
+
+    # Final pass: always lead with the URL the tenant actually typed, dedupe,
+    # cap at max_pages, and robots.txt-check every candidate individually
+    # (the sitemap path never checked per-URL; cheap to redo for BFS results
+    # since _robots_allowed is cached per domain).
+    ordered = [start_url] + [u for u in urls if u != start_url]
+    allowed: list[str] = []
+    for url in ordered:
+        if len(allowed) >= max_pages:
+            break
+        if await _robots_allowed(url):
+            allowed.append(url)
+    return allowed
+
+
+# ── Weekly refresh: cheap "did this page change?" probe ─────────────────────
+
+async def check_for_update(
+    url: str, etag: Optional[str], last_modified: Optional[str], timeout: int = 15
+) -> Optional[dict]:
+    """
+    A conditional, lightweight probe for the weekly refresh sweep — NOT a
+    full scrape (no browser render, no OCR, no markdown cleanup). Sends
+    If-None-Match/If-Modified-Since when a prior value is known; a 304
+    response is the cheapest possible "unchanged" and reads no body at all.
+
+    Returns None on any failure, a now-disallowed robots.txt, or a redirect
+    (the sweep leaves the document alone and tries again next cycle — a
+    transient refresh-check problem must never flip a working document to
+    failed; only an actual re-scrape attempt does that). Otherwise returns
+    {"not_modified": bool, "etag": str|None, "last_modified": str|None,
+    "content_hash": str|None}. content_hash is only set on a 200 (the body
+    was actually read) — the caller compares it against the document's
+    stored hash as the fallback check for sites that ignore conditional
+    headers entirely and just always return 200.
+    """
+    import hashlib
+
+    if not await _robots_allowed(url):
+        return None
+    try:
+        pinned_url, host = await _pin(url)
+        await _pace(host)
+        headers = dict(_HEADER_PROFILES[0])
+        if etag:
+            headers["If-None-Match"] = etag
+        if last_modified:
+            headers["If-Modified-Since"] = last_modified
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+            resp = await client.get(pinned_url, **_pinned_request_kwargs(host, headers))
+        if resp.status_code == 304:
+            return {"not_modified": True, "etag": etag, "last_modified": last_modified, "content_hash": None}
+        if resp.status_code >= 400 or resp.is_redirect:
+            return None
+        return {
+            "not_modified": False,
+            "etag": resp.headers.get("etag"),
+            "last_modified": resp.headers.get("last-modified"),
+            "content_hash": hashlib.sha256(resp.content).hexdigest(),
+        }
+    except Exception:
+        return None
 
 
 # ── Images: alt text + OCR ───────────────────────────────────────────────────
@@ -505,16 +1134,15 @@ async def _ocr_images(
 async def _download_image(url: str, page_url: str, timeout: int) -> Tuple[Optional[bytes], str]:
     """Fetch one image with the same SSRF/size discipline as pages. Returns
     (None, '') for anything not worth OCR-ing (too small, not an image)."""
-    await _validate_safe(url)
     cap = int(settings.SCRAPE_OCR_MAX_IMAGE_MB * 1024 * 1024)
     headers = dict(_HEADER_PROFILES[0])
     headers["Accept"] = "image/*,*/*;q=0.5"
     headers["Referer"] = page_url
-    async with httpx.AsyncClient(follow_redirects=False, timeout=timeout, headers=headers) as client:
+    async with httpx.AsyncClient(follow_redirects=False, timeout=timeout) as client:
         current = url
         for _ in range(_MAX_REDIRECT_HOPS + 1):
-            await _validate_safe(current)
-            async with client.stream("GET", current) as resp:
+            pinned_url, host = await _pin(current)
+            async with client.stream("GET", pinned_url, **_pinned_request_kwargs(host, headers)) as resp:
                 if resp.is_redirect and resp.headers.get("location"):
                     current = str(httpx.URL(current).join(resp.headers["location"]))
                     continue
@@ -581,7 +1209,6 @@ _RE_FOOTNOTE = re.compile(r"\[(?:\d{1,4}|[a-z]|citation needed|clarification nee
 _RE_REF_LINK = re.compile(r"\[([^\[\]]+)\]\[[^\]]*\]")
 _RE_AUTOLINK = re.compile(r"<(https?://[^>\s]+)>")
 _RE_HTML_TAG = re.compile(r"<[^>]+>")
-_RE_HEADING = re.compile(r"^\s{0,3}#{1,6}\s*", re.MULTILINE)
 _RE_BLOCKQUOTE = re.compile(r"^\s{0,3}>\s?", re.MULTILINE)
 _RE_BULLET = re.compile(r"^\s*[-*+]\s+", re.MULTILINE)
 _RE_HR = re.compile(r"^\s*([-*_]\s*){3,}$", re.MULTILINE)
@@ -598,9 +1225,16 @@ _RE_WS = re.compile(r"[ \t ]+")
 
 
 def _markdown_to_text(markdown: str) -> str:
-    """Reduce Crawl4AI markdown to the words a reader sees. Link *text* is
-    kept, link *targets*, tooltips, images, heading markers, emphasis
-    markers, table rules and bare URLs are dropped."""
+    """
+    Reduce Crawl4AI markdown to clean, structured prose — not plain text.
+    Link *text* is kept, link *targets*/tooltips/images/emphasis markers/
+    footnote markers/bare URLs are dropped, but `#` heading markers and
+    table rows (pipes) are deliberately KEPT: flattening them to plain
+    prose loses exactly the structure (what's a heading vs. body text,
+    what's a row vs. a column) that makes a chunk answerable later. Only
+    the separator row of a table ("---|---") is removed — it carries no
+    content, just alignment syntax.
+    """
     text = markdown or ""
     text = _RE_CODE_FENCE.sub("", text)
 
@@ -623,7 +1257,6 @@ def _markdown_to_text(markdown: str) -> str:
     text = _RE_HTML_TAG.sub("", text)
     text = _RE_TABLE_SEP.sub("", text)
     text = _RE_HR.sub("", text)
-    text = _RE_HEADING.sub("", text)
     text = _RE_BLOCKQUOTE.sub("", text)
     text = _RE_BULLET.sub("", text)
     text = _RE_STRONG.sub(r"\1", text)
@@ -631,7 +1264,6 @@ def _markdown_to_text(markdown: str) -> str:
     text = _RE_EMPH.sub(r"\1", text)
     text = _RE_EMPH_US.sub(r"\1", text)
     text = _RE_FOOTNOTE.sub("", text)
-    text = text.replace("|", " ")
     text = html_lib.unescape(text)
     text = _RE_STASH.sub(lambda m: stashed[int(m.group(1))], text)
     return _tidy_lines(text.splitlines())
@@ -692,75 +1324,3 @@ def _cap_text(text: str, url: str) -> str:
         logger.warning("Truncating scraped text for %s to %dMB", url, settings.CRAWL4AI_MAX_CONTENT_SIZE_MB)
         return text.encode("utf-8", errors="ignore")[:cap].decode("utf-8", errors="ignore")
     return text
-
-
-# ── Step 6: PDF generation ───────────────────────────────────────────────────
-
-_MAX_PARAGRAPH_CHARS = 3000  # ReportLab lays out one Paragraph at a time; keep them bounded
-
-
-def _text_to_pdf_blocking(content: str, title: str, url: str) -> bytes:
-    """
-    Synchronous PDF generation (run via asyncio.to_thread).
-
-    ReportLab's Paragraph parses its input as a small XML-ish markup, so
-    every piece of untrusted text is html-escaped here, centrally. Callers
-    must NOT pre-escape or the output is double-escaped ("&amp;amp;").
-    """
-    from reportlab.lib.pagesizes import letter
-    from reportlab.lib.styles import getSampleStyleSheet
-    from reportlab.lib.units import inch
-    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
-
-    pdf_buffer = io.BytesIO()
-    doc = SimpleDocTemplate(
-        pdf_buffer, pagesize=letter,
-        rightMargin=72, leftMargin=72, topMargin=72, bottomMargin=18,
-    )
-    styles = getSampleStyleSheet()
-    story = []
-
-    try:
-        story.append(Paragraph(f"<b>{html_lib.escape(title)}</b>", styles["Heading1"]))
-        story.append(Spacer(1, 0.3 * inch))
-    except Exception as e:
-        logger.warning("Failed to add title paragraph: %s", e)
-
-    try:
-        story.append(Paragraph(f"<i>Source: {html_lib.escape(url)}</i>", styles["Normal"]))
-        story.append(Spacer(1, 0.2 * inch))
-    except Exception as e:
-        logger.warning("Failed to add source-url paragraph: %s", e)
-
-    for para in content.split("\n\n"):
-        para = para.strip()
-        if not para:
-            continue
-        for piece in _split_long(para, _MAX_PARAGRAPH_CHARS):
-            try:
-                # Single newlines inside a paragraph become line breaks so
-                # list-like content keeps one item per line in the PDF.
-                story.append(Paragraph(html_lib.escape(piece).replace("\n", "<br/>"), styles["Normal"]))
-                story.append(Spacer(1, 0.1 * inch))
-            except Exception as e:
-                logger.warning("Failed to add paragraph: %s", e)
-
-    doc.build(story)
-    return pdf_buffer.getvalue()
-
-
-def _split_long(text: str, limit: int) -> list[str]:
-    if len(text) <= limit:
-        return [text]
-    pieces, current = [], ""
-    for line in text.split("\n"):
-        if current and len(current) + len(line) + 1 > limit:
-            pieces.append(current)
-            current = ""
-        while len(line) > limit:  # a single enormous line
-            pieces.append(line[:limit])
-            line = line[limit:]
-        current = f"{current}\n{line}" if current else line
-    if current:
-        pieces.append(current)
-    return pieces

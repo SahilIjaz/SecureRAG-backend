@@ -7,6 +7,9 @@ Frontend-compat knowledge-base endpoints (/api/knowledge/...).
   - DELETE /api/knowledge/documents/{id}  -> (soft delete)
   - GET    /api/knowledge/urls            -> KnowledgeUrl[]
   - POST   /api/knowledge/urls {url}      -> {url: KnowledgeUrl}
+  - POST   /api/knowledge/urls/crawl {url} -> {queued, skipped, urls: KnowledgeUrl[]}
+                      (discovers and queues up to SCRAPE_SITE_CRAWL_MAX_PAGES
+                      same-domain pages — see core.scraper.discover_site_urls)
   - POST   /api/knowledge/reindex         -> {success}
 
 Uploaded/sample documents appear in the Documents tab; scraped websites
@@ -33,6 +36,8 @@ from app.schemas.frontend import (
     FEAddFaqResponse,
     FEAddUrlRequest,
     FEAddUrlResponse,
+    FECrawlSiteRequest,
+    FECrawlSiteResponse,
     FEDocumentAuthority,
     FEFaqEntry,
     FEKnowledgeDocument,
@@ -145,6 +150,10 @@ async def get_stats(
     if quota and quota.max_documents != -1:
         docs_limit = quota.max_documents
 
+    # Already have the full active-document list in hand (for file/url/faq
+    # splitting above) — sum it directly rather than a second DB round trip.
+    # Live, so these can never drift the way an incrementally-maintained
+    # counter can.
     return FEKnowledgeStats(
         # FAQ entries share the same document quota as files, so they count
         # toward this total too.
@@ -154,6 +163,11 @@ async def get_stats(
         urlsLimit=display["urls"],
         totalChunks=sum(d.chunk_count or 0 for d in docs),
         chunksLimit=display["chunks"],
+        storageUsedMb=round(sum(d.file_size_mb or 0.0 for d in docs), 2),
+        storageLimitMb=float(quota.max_storage_mb) if quota else 0.0,
+        wordsUsed=sum(d.word_count or 0 for d in docs),
+        wordsLimit=display["words"],
+        maxFileSizeMb=quota.max_file_size_mb if quota else settings.MAX_UPLOAD_SIZE_MB,
     )
 
 @router.get("/documents", response_model=List[FEKnowledgeDocument])
@@ -349,7 +363,11 @@ async def add_url(
         tenant_id=current_user.tenant_id,
         original_filename=url,
         file_size_mb=0.0,
-        mime_type="application/pdf",
+        # Placeholder until the background scrape sets the real value
+        # (text/markdown for a rendered page, application/pdf only if the
+        # URL turns out to point straight at a PDF — see
+        # indexing_service._scrape_url_into_document).
+        mime_type="text/markdown",
         source=DocumentSource.scraped,
         source_url=url,
         status=DocumentStatus.pending,
@@ -370,6 +388,133 @@ async def add_url(
 
     schedule_url_scrape([doc.id])
     return FEAddUrlResponse(url=_fe_url(doc))
+
+@router.post("/urls/crawl", response_model=FECrawlSiteResponse, status_code=status.HTTP_201_CREATED)
+@limiter.limit("2/minute")
+async def crawl_site(
+    request: Request,
+    body: FECrawlSiteRequest,
+    current_user: User = Depends(require_active_subscription),
+    db: AsyncSession = Depends(get_db),
+) -> FECrawlSiteResponse:
+    """
+    Discovers up to SCRAPE_SITE_CRAWL_MAX_PAGES same-domain pages of the
+    given site (sitemap first, politely-paced same-domain link-following
+    otherwise — see core.scraper.discover_site_urls) and queues each one
+    exactly like a single POST /urls call would: same SSRF pre-check, same
+    duplicate-URL check, same quota enforcement, same background scrape via
+    schedule_url_scrape. A page that's already in the knowledge base or
+    would exceed the plan's remaining document/URL quota is skipped rather
+    than failing the whole batch.
+
+    Discovery itself runs synchronously here (not backgrounded like the
+    actual scrape) — politely paced against the target site, so this
+    request can take a while for a site with no sitemap on a full-size
+    crawl; SCRAPE_SITE_CRAWL_MAX_PAGES bounds the worst case.
+    """
+    if not settings.SCRAPE_SITE_CRAWL_ENABLED:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Whole-site crawling is not enabled.")
+
+    url = body.url.strip()
+    if not url:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="url is required.")
+    if not url.startswith(("http://", "https://")):
+        url = f"https://{url}"
+
+    import asyncio as _asyncio
+    from app.core.ip_validator import validate_url_safe
+    from app.core.scraper import discover_site_urls
+
+    try:
+        await _asyncio.get_event_loop().run_in_executor(None, validate_url_safe, url)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"This URL can't be added: {e}",
+        )
+
+    quota = await document_service.lock_quota_row(current_user.tenant_id, db)
+    ent = await document_service._tenant_entitlements(current_user.tenant_id, db)
+
+    doc_count_result = await db.execute(
+        select(func.count()).select_from(Document).where(
+            Document.tenant_id == current_user.tenant_id, Document.is_active == True,
+        )
+    )
+    existing_doc_count = doc_count_result.scalar_one()
+    url_count_result = await db.execute(
+        select(func.count()).select_from(Document).where(
+            Document.tenant_id == current_user.tenant_id, Document.is_active == True,
+            Document.source == DocumentSource.scraped,
+        )
+    )
+    existing_url_count = url_count_result.scalar_one()
+
+    limits = [settings.SCRAPE_SITE_CRAWL_MAX_PAGES]
+    if quota and quota.max_documents != -1:
+        limits.append(max(0, quota.max_documents - existing_doc_count))
+    if ent.max_urls != -1:
+        limits.append(max(0, ent.max_urls - existing_url_count))
+    remaining = min(limits)
+    if remaining <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You're already at your plan's document/URL limit.",
+        )
+
+    discovered = await discover_site_urls(
+        url, max_pages=remaining, max_depth=settings.SCRAPE_SITE_CRAWL_MAX_DEPTH,
+    )
+    if not discovered:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Could not discover any pages for this site.",
+        )
+
+    existing_urls_result = await db.execute(
+        select(Document.source_url).where(
+            Document.tenant_id == current_user.tenant_id, Document.is_active == True,
+            Document.source == DocumentSource.scraped,
+        )
+    )
+    existing_urls = {u for (u,) in existing_urls_result.all() if u}
+
+    created_docs: list[Document] = []
+    skipped = 0
+    for page_url in discovered:
+        if page_url in existing_urls or len(created_docs) >= remaining:
+            skipped += 1
+            continue
+        doc = Document(
+            tenant_id=current_user.tenant_id,
+            original_filename=page_url,
+            file_size_mb=0.0,
+            mime_type="text/markdown",
+            source=DocumentSource.scraped,
+            source_url=page_url,
+            status=DocumentStatus.pending,
+        )
+        db.add(doc)
+        created_docs.append(doc)
+        existing_urls.add(page_url)
+
+    usage = await helpers.get_current_usage(current_user.tenant_id, db)
+    if usage is not None and created_docs:
+        usage.documents_count = (usage.documents_count or 0) + len(created_docs)
+
+    await db.commit()
+    for doc in created_docs:
+        await db.refresh(doc)
+
+    schedule_url_scrape([doc.id for doc in created_docs])
+    logger.info(
+        "Site crawl for tenant %s: discovered=%d queued=%d skipped=%d",
+        current_user.tenant_id, len(discovered), len(created_docs), skipped,
+    )
+    return FECrawlSiteResponse(
+        queued=len(created_docs), skipped=skipped,
+        urls=[_fe_url(doc) for doc in created_docs],
+    )
 
 @router.get("/faqs", response_model=List[FEFaqEntry])
 async def list_faqs(

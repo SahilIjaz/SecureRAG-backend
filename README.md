@@ -28,9 +28,11 @@ conversations, billing) from a dashboard.
 - **Google Gemini** (`gemini-flash-latest`, with a fallback chain) for answer generation
 - **Stripe** for billing — trial subscriptions, plan changes, webhooks
 - **Cloudinary** for uploaded-file storage, **Crawl4AI** for URL scraping
-  (`app/core/scraper.py`: SSRF-checked redirects, direct PDF links, clean
-  text, and Gemini-vision OCR of page images and scanned PDFs via
-  `app/core/ocr.py`)
+  (`app/core/scraper.py`: DNS-pinned + SSRF-checked redirects (and the
+  rendered page's own sub-requests), robots.txt compliance, direct PDF
+  links, clean Markdown output that keeps headings/tables, one shared
+  headless browser for the process, and Gemini-vision OCR of page images
+  and scanned PDFs via `app/core/ocr.py`)
 - JWT auth (access tokens with revocation support), OTP email verification
 - No Alembic — schema changes ship as idempotent `ALTER TABLE ... IF NOT EXISTS`
   statements run at startup (see `app/main.py`)
@@ -39,21 +41,34 @@ conversations, billing) from a dashboard.
 
 ```
 app/
+  main.py             # FastAPI app, middleware, startup DDL (see "No Alembic" above)
+  config.py           # Settings (env-driven)
+  database.py         # async SQLAlchemy engine/session
   api/
-    frontend/        # /api/* routes matching the dashboard 1:1 (auth, onboarding,
-                      # chatbot, conversations, knowledge, settings, notifications)
+    frontend/         # /api/* routes matching the dashboard 1:1 (auth, onboarding,
+                      # chatbot, conversations, knowledge, settings, team, audit,
+                      # notifications, presence, ...)
     public/           # /api/public/widget/* — the embeddable chat widget's own API,
                       # separate auth model (widget API key, not JWT)
     billing_webhook.py  # POST /api/billing/webhook — Stripe webhook, signature-verified
-  core/               # security (JWT/OTP), email sending, rate limiting, background jobs
+    ptt_ws.py           # push-to-talk WebSocket
+  core/               # security (JWT/OTP), RBAC, entitlements, email, rate limiting,
+                      # scraping/OCR, embeddings, vector store, post-quantum crypto
   models/             # SQLAlchemy models (Tenant, User, Subscription, TenantQuota,
-                      # Document, Conversation, Notification, ...)
+                      # Document, Conversation, Notification, AuditLog, ...)
   schemas/            # Pydantic wire-format schemas for the frontend-compat API
-  services/           # business logic — auth, RAG (retrieval + generation), document
-                      # indexing, Stripe billing, notifications, conversation lifecycle
-  config.py           # Settings (env-driven), database.py, main.py (app + startup)
-scripts/              # one-off maintenance scripts, e.g. setup_stripe_products.py
-migrations/           # reference SQL (init.sql) — not applied automatically
+  services/           # business logic — auth, RAG (retrieval + generation), hybrid
+                      # search, conflict detection/resolution, confidence, indexing,
+                      # Stripe billing, wallet, audit/tracing, notifications
+    llm/              # provider abstraction (Anthropic, Gemini), routing, pricing
+migrations/           # reference SQL — startup DDL in app/main.py is what actually runs
+scripts/              # one-off maintenance/eval scripts (setup_stripe_products.py,
+                      # evaluate_rag.py, generate_pq_keys.py, ...); eval_results/
+tests/                # pytest suite
+deploy/               # Oracle (Caddy + compose), Hugging Face Spaces, Render runbooks
+Dockerfile, docker-compose.yml, render.yaml   # container / platform configs
+requirements.txt      # runtime deps; requirements-post.txt = --no-deps security pins;
+                      # requirements-dev.txt = test deps
 ```
 
 ## Getting started

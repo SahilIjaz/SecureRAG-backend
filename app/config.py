@@ -98,6 +98,42 @@ class Settings(BaseSettings):
     CRAWL4AI_ENABLED: bool = True
     CRAWL4AI_TIMEOUT: int = 30
     CRAWL4AI_MAX_CONTENT_SIZE_MB: int = 50
+    # One browser instance started at app startup and reused for every
+    # scrape, instead of launching a fresh headless Chromium per URL — a new
+    # browser per scrape is slow and memory-heavy on a single worker. Capped
+    # concurrency so N simultaneous scrapes can't open N browser pages at once.
+    SCRAPE_MAX_CONCURRENT_PAGES: int = 3
+    # Identify honestly first (name + contact URL, per crawler convention)
+    # before falling back to a browser-like UA for sites that block any
+    # recognizable bot outright — see app/core/scraper.py's _HEADER_PROFILES.
+    SCRAPE_BOT_USER_AGENT: str = "NexusBot/1.0 (+https://nexus.app/bot)"
+    SCRAPE_ROBOTS_TXT_ENABLED: bool = True
+    # How long a domain's robots.txt is trusted before re-fetching.
+    SCRAPE_ROBOTS_TXT_CACHE_SECONDS: int = 86400
+    # Minimum gap between two requests to the same domain — polite pacing,
+    # independent of (and in addition to) the per-request retry backoff below.
+    SCRAPE_MIN_REQUEST_INTERVAL_SECONDS: float = 1.0
+    # On a 429/503, wait out the Retry-After header (capped at this many
+    # seconds) and retry, up to this many times, before giving up on that
+    # header profile.
+    SCRAPE_MAX_RATE_LIMIT_RETRIES: int = 2
+    SCRAPE_RATE_LIMIT_MAX_WAIT_SECONDS: float = 30.0
+
+    # ── Whole-site crawl (app/core/site_crawler.py) ──────────────────────────
+    SCRAPE_SITE_CRAWL_ENABLED: bool = True
+    # Hard cap per crawl request, independent of the plan's own max_urls —
+    # one click must never be able to queue thousands of pages. Discovery
+    # runs synchronously in the request (politely paced against the target
+    # site), so this also bounds how long that request can take in the
+    # worst case (no sitemap, falling back to paced link-following) —
+    # kept modest rather than the full plan's own URL quota for that reason.
+    SCRAPE_SITE_CRAWL_MAX_PAGES: int = 20
+    # Same-domain link-following depth when no sitemap is found.
+    SCRAPE_SITE_CRAWL_MAX_DEPTH: int = 2
+
+    # ── Scraped-URL weekly refresh (indexing_service.scrape_refresh_sweep_loop)
+    SCRAPE_REFRESH_ENABLED: bool = True
+    SCRAPE_REFRESH_INTERVAL_DAYS: int = 7
 
     # ── OCR for scraped images and scanned PDFs (app/core/ocr.py) ─────────
     # Text that only exists as pixels (a menu photo, a flyer, a scanned
@@ -325,6 +361,21 @@ class Settings(BaseSettings):
     #              refuse when the tenant has handoff disabled)
     #   refuse   — skip generation and return the tenant's fallback message
     RAG_UNRESOLVED_CONFLICT_ACTION: str = "disclose"
+
+    # ── Small-talk gate (see app/services/small_talk_gate.py) ───────────────
+    # A plain greeting/pleasantry ("hi", "thanks") needs no knowledge-base
+    # lookup, but without this it still pays the full retrieval cost —
+    # embedding, Pinecone, Postgres hybrid search, rerank, and conflict
+    # detection — before the model ever sees it. When this gate matches,
+    # all of that is skipped and the model is asked directly, with no
+    # CONTEXT block. Conservative by construction: anything not an
+    # unambiguous greeting/pleasantry falls through to the normal pipeline
+    # — a missed real question is worse than an occasional wasted retrieval.
+    RAG_SMALL_TALK_GATE_ENABLED: bool = True
+    # For a short message the free regex pass doesn't catch, confirm with
+    # one cheap classification call (same lite model as sentiment tagging)
+    # before skipping retrieval. Off → only the free regex pass runs.
+    RAG_SMALL_TALK_LLM_CHECK: bool = True
 
     # ── Audit trail & response traceability (see app/services/audit_service.py,
     # app/services/trace_service.py, app/core/audit_middleware.py) ──────────

@@ -16,6 +16,7 @@ statuses still update so the dashboard works end-to-end.
 """
 
 import asyncio
+import hashlib
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -74,7 +75,7 @@ async def _scrape_url_into_document(document_id: uuid.UUID) -> bool:
     """Scrapes doc.source_url to a PDF, uploads it to Cloudinary, and fills
     in file_url/file_path/file_size_mb. Returns False (document left as-is)
     if the document has vanished or has no source_url to scrape."""
-    from app.core.scraper import scrape_website_to_pdf
+    from app.core.scraper import scrape_website
     from app.core.storage import upload_file_to_cloudinary
     from app.core.validation import safe_filename
 
@@ -112,11 +113,11 @@ async def _scrape_url_into_document(document_id: uuid.UUID) -> bool:
     # feature is on and the tenant's trial/wallet would allow an LLM call.
     ocr_allowed = await _ocr_allowed(tenant_id)
     ocr_usages: list = []
-    pdf_content, page_title = await scrape_website_to_pdf(
+    scraped_content, page_title, mime_type, etag, last_modified = await scrape_website(
         url, timeout=settings.CRAWL4AI_TIMEOUT, ocr=ocr_allowed, ocr_usages=ocr_usages,
     )
     await _record_ocr_usages(tenant_id, ocr_usages)
-    file_size_mb = len(pdf_content) / (1024 * 1024)
+    file_size_mb = len(scraped_content) / (1024 * 1024)
     # -1 means unlimited (see TenantQuota docstring)
     if max_mb != -1 and file_size_mb > max_mb:
         raise ValueError(f"content exceeds the {max_mb}MB per-file limit after scraping")
@@ -127,11 +128,12 @@ async def _scrape_url_into_document(document_id: uuid.UUID) -> bool:
         )
 
     page_title = safe_filename(page_title)
+    extension = ".pdf" if mime_type == "application/pdf" else ".md"
     public_id, secure_url = await upload_file_to_cloudinary(
-        file_content=pdf_content,
+        file_content=scraped_content,
         tenant_id=tenant_id,
-        original_filename=f"{page_title}.pdf",
-        content_type="application/pdf",
+        original_filename=f"{page_title}{extension}",
+        content_type=mime_type,
     )
 
     async with AsyncSessionLocal() as db:
@@ -145,6 +147,14 @@ async def _scrape_url_into_document(document_id: uuid.UUID) -> bool:
         doc.file_path = public_id
         doc.file_url = secure_url
         doc.file_size_mb = round(file_size_mb, 4)
+        doc.mime_type = mime_type
+        # Refresh-sweep baseline (see scrape_refresh_sweep_loop) — whatever
+        # the page's own response sent, plus a content hash as the fallback
+        # "did it actually change" check for sites with neither header.
+        doc.etag = etag
+        doc.last_modified_header = last_modified
+        doc.content_hash = hashlib.sha256(scraped_content).hexdigest()
+        doc.last_checked_at = datetime.now(timezone.utc)
 
         # Book the scraped size against the tenant's storage usage (delta, so
         # a re-scrape doesn't double-count). Uploads/FAQs/samples all update
@@ -262,6 +272,88 @@ async def recover_stuck_documents() -> None:
     logger.warning("Recovered %d document(s) stuck in processing; rescheduling", len(stuck_ids))
     schedule_document_processing(stuck_ids)
 
+# How often the loop wakes up to look for due documents — independent of
+# SCRAPE_REFRESH_INTERVAL_DAYS (the per-document interval), same idea as
+# stale_document_sweep_loop checking far more often than any one document
+# actually needs it, so a freshly-due document doesn't wait a whole cycle.
+_REFRESH_SWEEP_CHECK_INTERVAL_SECONDS = 6 * 3600
+
+async def scrape_refresh_sweep_loop() -> None:
+    """
+    Recurring background sweep, started once from the app lifespan. Keeps
+    already-indexed scraped URLs current without the tenant having to
+    manually re-add them — see app/core/scraper.check_for_update for the
+    actual conditional-GET probe.
+    """
+    while True:
+        try:
+            await refresh_due_scraped_documents()
+        except Exception:
+            logger.exception("Scrape-refresh sweep iteration failed")
+        await asyncio.sleep(_REFRESH_SWEEP_CHECK_INTERVAL_SECONDS)
+
+async def refresh_due_scraped_documents() -> None:
+    """
+    One sweep pass: every active, successfully-indexed scraped document not
+    checked in the last SCRAPE_REFRESH_INTERVAL_DAYS gets a cheap conditional
+    probe. Unchanged (a 304, or a 200 whose body hash matches what's already
+    indexed) just bumps last_checked_at. Changed — or the probe itself
+    failed/was blocked — is handled without ever marking a working document
+    failed: a changed page is rescheduled through the exact same pipeline a
+    brand-new URL goes through (full re-scrape, re-chunk, re-embed); a probe
+    that couldn't complete (network hiccup, now-disallowed robots.txt, site
+    down) just tries again next cycle, since nothing here is evidence the
+    existing indexed content has gone stale.
+    """
+    if not settings.SCRAPE_REFRESH_ENABLED:
+        return
+    from app.core.scraper import check_for_update
+
+    threshold = datetime.now(timezone.utc) - timedelta(days=settings.SCRAPE_REFRESH_INTERVAL_DAYS)
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(Document).where(
+                Document.source == DocumentSource.scraped,
+                Document.is_active == True,
+                Document.status == DocumentStatus.ready,
+                Document.source_url.isnot(None),
+                (Document.last_checked_at.is_(None)) | (Document.last_checked_at < threshold),
+            )
+        )
+        due = list(result.scalars().all())
+
+    if not due:
+        return
+    logger.info("Scrape-refresh sweep: checking %d due document(s)", len(due))
+
+    changed_ids: list[uuid.UUID] = []
+    for doc in due:
+        probe = await check_for_update(doc.source_url, doc.etag, doc.last_modified_header)
+        async with AsyncSessionLocal() as db:
+            row = (await db.execute(select(Document).where(Document.id == doc.id))).scalar_one_or_none()
+            if row is None or row.status != DocumentStatus.ready:
+                continue  # vanished, or a scrape/edit raced ahead of this sweep
+            if probe is None:
+                # Couldn't check this cycle — leave content alone, but don't
+                # retry every single sweep tick either; try again next interval.
+                row.last_checked_at = datetime.now(timezone.utc)
+                await db.commit()
+                continue
+            if probe["not_modified"] or probe["content_hash"] == row.content_hash:
+                row.etag = probe["etag"] or row.etag
+                row.last_modified_header = probe["last_modified"] or row.last_modified_header
+                row.last_checked_at = datetime.now(timezone.utc)
+                await db.commit()
+                continue
+            # Genuinely changed — the actual re-scrape (scheduled below,
+            # outside this session) will overwrite etag/last_modified/
+            # content_hash/last_checked_at itself once it succeeds.
+            changed_ids.append(row.id)
+
+    if changed_ids:
+        logger.info("Scrape-refresh sweep: %d document(s) changed, re-indexing", len(changed_ids))
+        schedule_url_scrape(changed_ids)
+
 def _failure_reason(exc: BaseException) -> str:
     """Short, user-readable reason stored on the document (see
     Document.error_message). Maps the common parser errors to plain words;
@@ -376,6 +468,14 @@ async def _process_document(document_id: uuid.UUID) -> None:
     if not chunks:
         raise ValueError("No chunks generated")
 
+    # Word count on the full extracted text, not summed per chunk — chunk
+    # overlap would otherwise double-count the overlapping words. This is
+    # the plan's "knowledge size" meter (file-size-independent; a scanned
+    # PDF can hold little text while a small text file holds a lot) — see
+    # Entitlements.max_words.
+    word_count = len(text.split())
+    await _enforce_knowledge_limits(tenant_id, document_id, word_count, len(chunks))
+
     if settings.PINECONE_API_KEY:
         from app.core.embeddings import embed_chunks
         from app.core.vector_store import delete_document_chunks, upsert_chunks
@@ -416,10 +516,58 @@ async def _process_document(document_id: uuid.UUID) -> None:
         # re-index doesn't leave stale chunks behind.
         await _write_keyword_chunks(str(doc.tenant_id), document_id, chunks, db)
         doc.chunk_count = len(chunks)
+        doc.word_count = word_count
         doc.status = DocumentStatus.ready
         await db.commit()
 
-    logger.info("Indexed document %s: %d chunks", document_id, len(chunks))
+    logger.info("Indexed document %s: %d chunks, %d words", document_id, len(chunks), word_count)
+
+async def _enforce_knowledge_limits(
+    tenant_id: str, document_id: uuid.UUID, new_words: int, new_chunks: int
+) -> None:
+    """
+    Raises ValueError (→ status=failed, same as any other indexing failure)
+    if indexing this document would push the tenant over its plan's word or
+    chunk ceiling. Checked here, after chunking but before the Pinecone
+    embed/upsert call, so an over-limit document never pays for or reaches
+    the vector store. Both totals are summed live across the tenant's other
+    active documents (excluding this one, which has no word/chunk_count yet)
+    rather than an incremental counter, so there's nothing to drift.
+    """
+    from sqlalchemy import func
+
+    from app.core.entitlements import get_entitlements
+    from app.models.subscription import Subscription
+
+    async with AsyncSessionLocal() as db:
+        subscription = (
+            await db.execute(select(Subscription).where(Subscription.tenant_id == tenant_id))
+        ).scalar_one_or_none()
+        ent = get_entitlements(subscription)
+
+        existing_words, existing_chunks = (
+            await db.execute(
+                select(
+                    func.coalesce(func.sum(Document.word_count), 0),
+                    func.coalesce(func.sum(Document.chunk_count), 0),
+                ).where(
+                    Document.tenant_id == tenant_id,
+                    Document.is_active == True,
+                    Document.id != document_id,
+                )
+            )
+        ).one()
+
+    if ent.max_words != -1 and existing_words + new_words > ent.max_words:
+        raise ValueError(
+            f"Adding this document would exceed your plan's {ent.max_words:,}-word "
+            f"knowledge limit ({existing_words:,} words already used)."
+        )
+    if ent.max_chunks != -1 and existing_chunks + new_chunks > ent.max_chunks:
+        raise ValueError(
+            f"Adding this document would exceed your plan's {ent.max_chunks:,}-chunk "
+            f"limit ({existing_chunks:,} chunks already used)."
+        )
 
 async def _write_keyword_chunks(tenant_id: str, document_id, chunks: list[dict], db) -> None:
     """Replace the Postgres keyword-search rows for a document with the current

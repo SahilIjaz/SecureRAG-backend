@@ -297,7 +297,9 @@ async def _create_pending_url_documents(
             tenant_id=user.tenant_id,
             original_filename=url,
             file_size_mb=0.0,
-            mime_type="application/pdf",
+            # Placeholder until the background scrape sets the real value —
+            # see indexing_service._scrape_url_into_document.
+            mime_type="text/markdown",
             source=DocumentSource.scraped,
             source_url=url,
             status=DocumentStatus.pending,

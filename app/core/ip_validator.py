@@ -22,6 +22,35 @@ def _is_unsafe_ip(ip) -> bool:
         or ip.is_unspecified
     )
 
+class DnsResolutionError(ValueError):
+    """The hostname itself could not be resolved — a dead/typo'd domain,
+    not a security rejection. Kept as a ValueError subclass so existing
+    `except ValueError` call sites still catch it, while callers that want
+    to show a more accurate message than "blocked" can catch this specifically."""
+
+
+def _resolve(hostname: str) -> list[tuple[int, str]]:
+    """(family, ip-string) for every address `hostname` resolves to. Raises
+    DnsResolutionError — not the generic "blocked" ValueError — when the name
+    simply doesn't resolve (NXDOMAIN, typo, dead domain), so that failure
+    isn't misreported as a security rejection."""
+    try:
+        addrinfo = socket.getaddrinfo(
+            hostname, None, family=socket.AF_UNSPEC, type=socket.SOCK_STREAM
+        )
+    except socket.gaierror as e:
+        raise DnsResolutionError(f"Could not resolve hostname: {hostname}") from e
+    if not addrinfo:
+        raise DnsResolutionError(f"Could not resolve hostname: {hostname}")
+
+    resolved: list[tuple[int, str]] = []
+    for family, _type, _proto, _canonname, sockaddr in addrinfo:
+        try:
+            resolved.append((family, str(ip_address(sockaddr[0]))))
+        except ValueError:
+            raise ValueError(f"URL resolves to an unparseable address: {hostname}")
+    return resolved
+
 def is_ip_blocked(hostname: str) -> bool:
     """
     Check if hostname resolves to a blocked IP address — IPv4 or IPv6, and
@@ -34,27 +63,44 @@ def is_ip_blocked(hostname: str) -> bool:
         hostname: Domain name or IP address
 
     Returns:
-        True if IP is blocked, False if safe
+        True if IP is blocked (including an unresolvable hostname — callers
+        that need to tell "blocked" apart from "doesn't exist" should use
+        resolve_safe_ip instead, which raises DnsResolutionError for the
+        latter), False if safe.
     """
     try:
-        addrinfo = socket.getaddrinfo(
-            hostname, None, family=socket.AF_UNSPEC, type=socket.SOCK_STREAM
-        )
-    except socket.gaierror:
+        resolved = _resolve(hostname)
+    except DnsResolutionError:
         return True
 
-    if not addrinfo:
-        return True
+    return any(_is_unsafe_ip(ip_address(ip)) for _family, ip in resolved)
 
-    for _family, _type, _proto, _canonname, sockaddr in addrinfo:
-        try:
-            ip = ip_address(sockaddr[0])
-        except ValueError:
-            return True
-        if _is_unsafe_ip(ip):
-            return True
+def resolve_safe_ip(hostname: str) -> str:
+    """
+    Resolve `hostname` and return ONE validated-safe literal IP address
+    (IPv4 preferred for broadest compatibility), or raise.
 
-    return False
+    Same "block if ANY resolved address is unsafe" policy as is_ip_blocked
+    (a hostname that resolves to a mix of public and private addresses is
+    itself suspicious — don't let a later, different lookup pick the bad
+    one). The difference is this hands back the address it validated, so
+    the caller can connect to that exact IP instead of trusting the HTTP
+    client to re-resolve the hostname a moment later — closing the DNS-
+    rebinding gap where a second lookup could legitimately return a
+    different, unsafe address than the first one just checked.
+
+    Raises:
+        DnsResolutionError: the hostname doesn't resolve at all.
+        ValueError: it resolves, but to a blocked/private/unparseable address.
+    """
+    resolved = _resolve(hostname)  # raises DnsResolutionError if unresolvable
+    for _family, ip in resolved:
+        if _is_unsafe_ip(ip_address(ip)):
+            raise ValueError(
+                f"URL resolves to blocked/private IP. Cannot scrape internal services: {hostname}"
+            )
+    resolved.sort(key=lambda t: 0 if t[0] == socket.AF_INET else 1)
+    return resolved[0][1]
 
 def validate_url_safe(url: str) -> None:
     """
@@ -69,7 +115,10 @@ def validate_url_safe(url: str) -> None:
         url: URL to validate
 
     Raises:
-        ValueError: If URL is unsafe
+        ValueError: If the URL is unsafe, or its hostname doesn't resolve
+            (DnsResolutionError, a ValueError subclass, with an accurate
+            "could not resolve" message rather than a misleading "blocked"
+            one — see _resolve).
     """
     try:
         parsed = urlparse(url)
@@ -78,11 +127,7 @@ def validate_url_safe(url: str) -> None:
         if not hostname:
             raise ValueError("Invalid URL: no hostname")
 
-        if is_ip_blocked(hostname):
-            raise ValueError(
-                f"URL resolves to blocked/private IP. "
-                f"Cannot scrape internal services: {hostname}"
-            )
+        resolve_safe_ip(hostname)  # raises with the accurate DNS-vs-blocked message
 
     except ValueError:
         raise

@@ -1,11 +1,12 @@
 """
-Document Service — handles document uploads, web scraping, community sample retrieval, and sample selection.
+Document Service — handles document uploads, community sample retrieval, and sample selection.
 Files are stored on Cloudinary. Only the public_id and secure_url are saved in the DB.
 
 Community samples: documents uploaded by any user are available as samples to other users
 in the same business category.
 
-Web scraping: URLs are scraped using Crawl4AI and converted to PDF before storage.
+URL scraping itself lives in app.core.scraper + the background
+app.services.indexing_service._scrape_url_into_document — not here.
 """
 
 import hashlib
@@ -19,7 +20,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core import perf_timing, vector_store
-from app.core.scraper import scrape_website_to_pdf
 from app.core.storage import delete_file_from_cloudinary, upload_file_to_cloudinary
 from app.core.validation import resolve_upload_mime, safe_filename, sniff_mime_or_raise
 from app.models.document import Document, DocumentSource, DocumentStatus
@@ -448,132 +448,6 @@ async def select_platform_sample_documents(
 
     return saved_documents
 
-async def scrape_and_add_documents(
-    user: User, urls: List[str], db: AsyncSession
-) -> List[Document]:
-    """
-    Scrapes websites using Crawl4AI and adds them as PDF documents.
-    Validates quotas before scraping.
-
-    Args:
-        user: Current user
-        urls: List of website URLs to scrape
-        db: Database session
-
-    Returns:
-        List of created Document records
-    """
-    if not settings.CRAWL4AI_ENABLED:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Web scraping is not enabled.",
-        )
-
-    if not urls:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No URLs provided.",
-        )
-
-    for url in urls:
-        if not url.startswith(("http://", "https://")):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid URL: {url}. Must start with http:// or https://",
-            )
-
-    quota = await lock_quota_row(user.tenant_id, db)
-
-    result = await db.execute(
-        select(UsageCount).where(UsageCount.tenant_id == user.tenant_id)
-        .order_by(UsageCount.period_month.desc())
-    )
-    usage = result.scalar_one_or_none()
-
-    result = await db.execute(
-        select(Document).where(
-            Document.tenant_id == user.tenant_id,
-            Document.is_active == True,
-        )
-    )
-    existing_docs = result.scalars().all()
-    existing_count = len(existing_docs)
-
-    if quota and quota.max_documents != -1:
-        if (existing_count + len(urls)) > quota.max_documents:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Document quota exceeded. Your plan allows {quota.max_documents} documents.",
-            )
-
-    max_mb = quota.max_file_size_mb if quota else settings.MAX_UPLOAD_SIZE_MB
-
-    saved_documents: List[Document] = []
-
-    for url in urls:
-        # Tolerant like onboarding._scrape_urls_tolerant: one bad URL
-        # shouldn't abort the rest of the batch — record it as `failed`
-        # instead, so the dashboard still shows it and the good ones succeed.
-        doc = Document(
-            tenant_id=user.tenant_id,
-            original_filename=url,
-            file_size_mb=0.0,
-            mime_type="application/pdf",
-            source=DocumentSource.scraped,
-            source_url=url,
-            status=DocumentStatus.pending,
-        )
-        try:
-            pdf_content, page_title = await scrape_website_to_pdf(
-                url, timeout=settings.CRAWL4AI_TIMEOUT
-            )
-
-            file_size_mb = len(pdf_content) / (1024 * 1024)
-
-            # -1 means unlimited (see TenantQuota docstring)
-            if max_mb != -1 and file_size_mb > max_mb:
-                raise ValueError(f"content exceeds the {max_mb}MB per-file limit after scraping")
-
-            page_title = safe_filename(page_title)
-            public_id, secure_url = await upload_file_to_cloudinary(
-                file_content=pdf_content,
-                tenant_id=user.tenant_id,
-                original_filename=f"{page_title}.pdf",
-                content_type="application/pdf",
-            )
-
-            doc.original_filename = page_title
-            doc.file_path = public_id
-            doc.file_url = secure_url
-            doc.file_size_mb = round(file_size_mb, 4)
-
-            logger.info(f"Scraped and added document from {url} for tenant {user.tenant_id}")
-        except Exception as e:
-            logger.error(f"Failed to scrape {url}: {str(e)}")
-            doc.status = DocumentStatus.failed
-
-        db.add(doc)
-        saved_documents.append(doc)
-
-    await db.flush()
-
-    ready_documents = [d for d in saved_documents if d.status != DocumentStatus.failed]
-    if usage and ready_documents:
-        total_storage = sum(d.file_size_mb for d in ready_documents)
-        usage.documents_count = (usage.documents_count or 0) + len(ready_documents)
-        usage.storage_used_mb = round((usage.storage_used_mb or 0.0) + total_storage, 4)
-
-    await db.commit()
-
-    for doc in saved_documents:
-        await db.refresh(doc)
-
-    logger.info(
-        "Scraped %d/%d website(s) for tenant %s",
-        len(ready_documents), len(urls), user.tenant_id,
-    )
-    return saved_documents
-
 async def add_faq_entries(
     user: User, entries: List[tuple[str, str]], db: AsyncSession
 ) -> List[Document]:
@@ -627,6 +501,22 @@ async def add_faq_entries(
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"FAQ limit exceeded. Your plan allows {ent.max_faqs} FAQs.",
+            )
+
+    # Aggregate storage cap — negligible per entry, but FAQs previously
+    # skipped this check entirely while uploads enforced it; a large enough
+    # batch could still push a tenant over the limit unnoticed.
+    max_storage = getattr(quota, "max_storage_mb", -1) if quota else -1
+    if max_storage != -1:
+        total_new_mb = sum(len((q + a).encode("utf-8")) for q, a in entries) / (1024 * 1024)
+        used = (usage.storage_used_mb if usage else 0.0) or 0.0
+        if used + total_new_mb > max_storage:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    f"Storage limit exceeded. Your plan allows {max_storage}MB "
+                    f"and you've used {used:.1f}MB."
+                ),
             )
 
     saved_documents: List[Document] = []

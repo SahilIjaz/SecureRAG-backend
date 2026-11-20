@@ -113,14 +113,34 @@ class Document(Base):
     question: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     answer: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     chunk_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Word count of the extracted text (before chunking, so overlap between
+    # chunks doesn't double-count) — the "knowledge size" metric, set once
+    # indexing succeeds. See app/core/entitlements.py Entitlements.max_words.
+    word_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     # Last indexing/scrape failure reason (truncated), surfaced in the
     # Knowledge page so "Failed" isn't a dead end. Cleared when re-queued.
     error_message: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     # SHA-256 hex digest of the raw file bytes — lets upload_documents() detect
     # a byte-identical re-upload before it burns a Cloudinary + Pinecone cost.
-    # Only populated for source == uploaded (see document_service.upload_documents).
+    # Populated for source == uploaded (document_service.upload_documents) and
+    # source == scraped (indexing_service._scrape_url_into_document), where
+    # the weekly refresh sweep uses it to tell "page actually changed" apart
+    # from "page re-fetched byte-identical" when neither caching header below
+    # is present.
     content_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    # ── Scraped-URL refresh tracking (source == scraped only) ───────────────
+    # ETag/Last-Modified from the last successful scrape, so the weekly
+    # refresh sweep (indexing_service.scrape_refresh_sweep_loop) can ask the
+    # site "did this change?" with a conditional GET instead of always
+    # re-downloading and re-diffing the full page.
+    etag: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    last_modified_header: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    # When the sweep last checked this URL, whether or not it had changed —
+    # distinct from updated_at, which also moves on unrelated edits (authority
+    # metadata, re-saving a FAQ, etc).
+    last_checked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # ── Authority metadata (admin-maintained; see document_authority_service) ──
     # Used by conflict *resolution* only: when two retrieved documents
