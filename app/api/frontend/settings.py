@@ -36,7 +36,7 @@ from app.models.tenant_settings import ApiKey, NotificationSetting, PaymentMetho
 from app.models.tenant_user import TenantRole, TenantUser
 from app.models.user import User
 from app.services import team_service
-from app.services.auth_service import invalidate_user_cache
+from app.services.auth_service import invalidate_user_cache, revoke_all_refresh_tokens
 from app.schemas.frontend import (
     FEApiKey,
     FEBillingInfo,
@@ -586,6 +586,7 @@ async def remove_member(
         # Kill their sessions immediately and free any chats they were handling.
         member_user.token_version = (member_user.token_version or 0) + 1
         member_user.is_active = False
+        await revoke_all_refresh_tokens(member_user.id, db)
         invalidate_user_cache(member_user.id)
     await db.execute(
         _sa_update(Conversation)

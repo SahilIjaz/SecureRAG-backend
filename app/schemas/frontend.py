@@ -117,6 +117,10 @@ class FEResetPasswordRequest(BaseModel):
 class FESuccessResponse(BaseModel):
     success: bool = True
 
+class FERefreshResponse(BaseModel):
+    success: bool = True
+    token: str
+
 class FEChangePasswordRequest(BaseModel):
     currentPassword: str = Field(..., max_length=128)
     newPassword: str = Field(..., min_length=8, max_length=128)
@@ -239,6 +243,10 @@ class FEPlanUsage(BaseModel):
     # Aggregate storage (MB). storageTotalMb is -1 when the plan is unlimited.
     storageUsedMb: float = 0.0
     storageTotalMb: float = 0.0
+    # Knowledge size (words of extracted text) — file-size-independent, see
+    # Entitlements.max_words. wordsTotal is -1 when the plan is unlimited.
+    wordsUsed: int = 0
+    wordsTotal: int = 0
     resetsOn: str
 
 # ── Chatbot config ────────────────────────────────────────────────────────────
@@ -449,6 +457,11 @@ class FEKnowledgeStats(BaseModel):
     urlsLimit: int
     totalChunks: int
     chunksLimit: int
+    storageUsedMb: float = 0.0
+    storageLimitMb: float = 0.0
+    wordsUsed: int = 0
+    wordsLimit: int = 0
+    maxFileSizeMb: int = 0
 
 class FEAddUrlRequest(BaseModel):
     # source_url column is String(2048); cap here so an over-long URL is a 422
@@ -457,6 +470,14 @@ class FEAddUrlRequest(BaseModel):
 
 class FEAddUrlResponse(BaseModel):
     url: FEKnowledgeUrl
+
+class FECrawlSiteRequest(BaseModel):
+    url: str = Field(..., min_length=1, max_length=2048)
+
+class FECrawlSiteResponse(BaseModel):
+    queued: int
+    skipped: int
+    urls: List[FEKnowledgeUrl]
 
 class FEFaqEntry(BaseModel):
     id: str

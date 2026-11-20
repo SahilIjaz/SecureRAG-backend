@@ -42,7 +42,7 @@ def create_access_token(
     to_encode.update({"exp": expire, "type": "access", "jti": uuid.uuid4().hex})
     return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
-def create_refresh_token(data: Dict[str, Any]) -> str:
+def create_refresh_token(data: Dict[str, Any]) -> tuple[str, str, datetime]:
     """
     Create a signed JWT refresh token with a longer lifetime.
 
@@ -50,12 +50,17 @@ def create_refresh_token(data: Dict[str, Any]) -> str:
         data: Payload claims to embed (must include a ``sub`` field).
 
     Returns:
-        Encoded JWT string.
+        (encoded JWT string, its jti claim, its expiry) — the jti/expiry are
+        handed back so the caller can persist a revocation/rotation record
+        (see app.models.refresh_token.RefreshToken) instead of trusting an
+        unrevokable signed token for its full multi-day lifetime.
     """
     to_encode = data.copy()
+    jti = uuid.uuid4().hex
     expire = datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
-    to_encode.update({"exp": expire, "type": "refresh"})
-    return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    to_encode.update({"exp": expire, "type": "refresh", "jti": jti})
+    token = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    return token, jti, expire
 
 def decode_token(token: str) -> Dict[str, Any]:
     """

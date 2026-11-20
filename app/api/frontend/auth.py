@@ -23,19 +23,21 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token as google_id_token
-from sqlalchemy import select
+from jose import JWTError
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.frontend import helpers
 from app.config import settings
 from app.core import perf_timing
 from app.core.rate_limit import limiter
-from app.core.security import create_access_token, hash_password, verify_otp, verify_password
+from app.core.security import create_access_token, decode_token, hash_password, verify_otp, verify_password
 from app.database import get_db
 from app.models.email_verification import EmailVerification, OTPPurpose
+from app.models.refresh_token import RefreshToken
 from app.models.tenant import Tenant
 from app.models.user import AuthProvider, User
 from app.schemas.frontend import (
@@ -46,6 +48,7 @@ from app.schemas.frontend import (
     FELoginResponse,
     FEOtpVerifyRequest,
     FEOtpVerifyResponse,
+    FERefreshResponse,
     FEResendOtpRequest,
     FEResetPasswordRequest,
     FESignupRequest,
@@ -56,6 +59,10 @@ from app.schemas.frontend import (
 from app.services import auth_service
 
 router = APIRouter(prefix="/auth", tags=["Frontend — Auth"])
+
+_set_refresh_cookie = auth_service.set_refresh_cookie
+_clear_refresh_cookie = auth_service.clear_refresh_cookie
+REFRESH_COOKIE_NAME = auth_service.REFRESH_COOKIE_NAME
 
 # A fixed bcrypt hash (of a random unknowable string) used to spend the same
 # CPU verifying a password when the email doesn't exist, so login timing can't
@@ -109,6 +116,7 @@ async def _audit_auth(request: Request, action: str, outcome: str, email, user, 
 @limiter.limit("5/minute")
 async def login(
     request: Request,
+    response: Response,
     body: FELoginRequest,
     db: AsyncSession = Depends(get_db),
 ) -> FELoginResponse:
@@ -145,6 +153,8 @@ async def login(
 
     with perf_timing.timed("create_access_token"):
         token = create_access_token({"sub": str(user.id), "tenant_id": str(user.tenant_id), "tv": user.token_version})
+    refresh_token, refresh_expires_at = await auth_service.issue_refresh_token(user, db)
+    _set_refresh_cookie(response, refresh_token, refresh_expires_at)
     await _audit_auth(request, "auth.login", "success", body.email, user)
     with perf_timing.timed("build_fe_user"):
         fe_user = await _fe_user(user, db)
@@ -154,6 +164,7 @@ async def login(
 @limiter.limit("10/minute")
 async def google_login(
     request: Request,
+    response: Response,
     body: FEGoogleLoginRequest,
     db: AsyncSession = Depends(get_db),
 ) -> FELoginResponse:
@@ -223,6 +234,8 @@ async def google_login(
         await db.flush()
 
     token = create_access_token({"sub": str(user.id), "tenant_id": str(user.tenant_id), "tv": user.token_version})
+    refresh_token, refresh_expires_at = await auth_service.issue_refresh_token(user, db)
+    _set_refresh_cookie(response, refresh_token, refresh_expires_at)
     await _audit_auth(request, "auth.login", "success", user.email, user, provider="google")
     return FELoginResponse(success=True, token=token, user=await _fe_user(user, db))
 
@@ -269,6 +282,7 @@ async def _latest_valid_otp(
 @limiter.limit("5/minute")
 async def verify_otp_endpoint(
     request: Request,
+    response: Response,
     body: FEOtpVerifyRequest,
     db: AsyncSession = Depends(get_db),
 ) -> FEOtpVerifyResponse:
@@ -302,6 +316,8 @@ async def verify_otp_endpoint(
             await db.flush()
 
         token = create_access_token({"sub": str(user.id), "tenant_id": str(user.tenant_id), "tv": user.token_version})
+        refresh_token, refresh_expires_at = await auth_service.issue_refresh_token(user, db)
+        _set_refresh_cookie(response, refresh_token, refresh_expires_at)
         with perf_timing.timed("build_fe_user"):
             fe_user = await _fe_user(user, db)
         await _audit_auth(request, "auth.email_verified", "success", user.email, user)
@@ -347,16 +363,56 @@ async def forgot_password(
 @router.post("/logout", response_model=FESuccessResponse)
 async def logout(
     request: Request,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
     _revoked: None = Depends(auth_service.revoke_current_token),
 ) -> FESuccessResponse:
     """
     Revokes the caller's current access token (see revoke_current_token) so it
     stops working immediately instead of remaining valid until it naturally
-    expires. Always returns success — see revoke_current_token's docstring
-    for why an already-invalid token isn't an error here.
+    expires, and does the same for the refresh-token cookie (if any) so a
+    silent /auth/refresh can't resurrect this session afterward. Always
+    returns success — see revoke_current_token's docstring for why an
+    already-invalid token isn't an error here.
     """
+    raw_refresh = request.cookies.get(REFRESH_COOKIE_NAME)
+    if raw_refresh:
+        try:
+            payload = decode_token(raw_refresh)
+            jti = payload.get("jti")
+            if payload.get("type") == "refresh" and jti:
+                await db.execute(
+                    update(RefreshToken)
+                    .where(RefreshToken.jti == jti)
+                    .values(revoked_at=datetime.now(timezone.utc))
+                )
+        except JWTError:
+            pass
+    _clear_refresh_cookie(response)
     await _audit_auth(request, "auth.logout", "success", None, None)
     return FESuccessResponse()
+
+@router.post("/refresh", response_model=FERefreshResponse)
+@limiter.limit("30/minute")
+async def refresh_token_endpoint(
+    request: Request,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+) -> FERefreshResponse:
+    """
+    Silently renews a session: exchanges the httpOnly refresh cookie for a
+    new access token and a rotated refresh cookie, without requiring the
+    user to log in again. The frontend calls this itself when a request
+    comes back 401 instead of logging the user out immediately — see
+    src/lib/http-client.ts.
+    """
+    raw_refresh = request.cookies.get(REFRESH_COOKIE_NAME)
+    if not raw_refresh:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="No active session.")
+
+    access_token, new_refresh_token, new_expires_at = await auth_service.refresh_access_token(raw_refresh, db)
+    _set_refresh_cookie(response, new_refresh_token, new_expires_at)
+    return FERefreshResponse(success=True, token=access_token)
 
 @router.post("/reset-password", response_model=FESuccessResponse)
 @limiter.limit("5/minute")
@@ -381,8 +437,11 @@ async def reset_password(
     otp_record.is_used = True
     loop = asyncio.get_event_loop()
     user.password_hash = await loop.run_in_executor(None, hash_password, body.newPassword)
-    # Password reset must also invalidate existing sessions.
+    # Password reset must also invalidate existing sessions — both the
+    # access-token side (token_version) and any refresh token that could
+    # otherwise silently mint new access tokens after this.
     user.token_version = (user.token_version or 0) + 1
+    await auth_service.revoke_all_refresh_tokens(user.id, db)
     await db.flush()
     auth_service.invalidate_user_cache(user.id)
     await _audit_auth(request, "auth.password_reset", "success", body.email, user)
@@ -392,6 +451,7 @@ async def reset_password(
 @limiter.limit("5/minute")
 async def accept_invite(
     request: Request,
+    response: Response,
     body: FEAcceptInviteRequest,
     db: AsyncSession = Depends(get_db),
 ) -> FELoginResponse:
@@ -403,6 +463,9 @@ async def accept_invite(
     user = await team_service.accept_invite(body.token, body.name, body.password, db)
     await db.commit()
     token = create_access_token({"sub": str(user.id), "tenant_id": str(user.tenant_id), "tv": user.token_version})
+    refresh_token, refresh_expires_at = await auth_service.issue_refresh_token(user, db)
+    _set_refresh_cookie(response, refresh_token, refresh_expires_at)
+    await db.commit()
     fe_user = await _fe_user(user, db)
     await _audit_auth(request, "team.invite.accepted", "success", user.email, user)
     return FELoginResponse(success=True, token=token, user=fe_user)

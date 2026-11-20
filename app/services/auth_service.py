@@ -17,10 +17,10 @@ import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import make_transient_to_detached
 
@@ -30,6 +30,7 @@ from app.core import perf_timing
 from app.core.entitlements import PLAN_ENTITLEMENTS
 from app.core.security import (
     create_access_token,
+    create_refresh_token,
     decode_token,
     generate_otp,
     hash_otp,
@@ -42,6 +43,7 @@ from app.models.subscription import PlanName
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.models.revoked_token import RevokedToken
+from app.models.refresh_token import RefreshToken
 
 logger = logging.getLogger(__name__)
 
@@ -292,6 +294,115 @@ async def revoke_current_token(
     # scheduled job — access tokens are short-lived (30 min by default), so
     # any row here is safe to drop once its own token would've expired anyway.
     await db.execute(delete(RevokedToken).where(RevokedToken.expires_at < datetime.now(timezone.utc)))
+
+# Scoped to /api/auth so the browser only ever attaches this cookie to the
+# handful of routes that actually need it (refresh, logout) — never sent to
+# every other API call the way a path="/" cookie would be.
+REFRESH_COOKIE_NAME = "nexus_refresh_token"
+REFRESH_COOKIE_PATH = "/api/auth"
+
+def _refresh_cookie_kwargs() -> dict:
+    # Cross-site cookies (frontend and backend on different domains, e.g.
+    # Vercel + Render) require SameSite=None + Secure, which in turn requires
+    # HTTPS — browsers reject SameSite=None without Secure outright. Local
+    # dev serves both sides over plain http on different ports of the same
+    # host, which is same-site (not cross-site), so Lax without Secure works
+    # there instead.
+    return (
+        {"secure": False, "samesite": "lax"}
+        if settings.DEBUG
+        else {"secure": True, "samesite": "none"}
+    )
+
+def set_refresh_cookie(response: Response, token: str, expires_at: datetime) -> None:
+    max_age = max(0, int((expires_at - datetime.now(timezone.utc)).total_seconds()))
+    response.set_cookie(
+        key=REFRESH_COOKIE_NAME, value=token, max_age=max_age,
+        httponly=True, path=REFRESH_COOKIE_PATH, **_refresh_cookie_kwargs(),
+    )
+
+def clear_refresh_cookie(response: Response) -> None:
+    response.delete_cookie(key=REFRESH_COOKIE_NAME, path=REFRESH_COOKIE_PATH, **_refresh_cookie_kwargs())
+
+async def issue_refresh_token(user: User, db: AsyncSession) -> tuple[str, datetime]:
+    """
+    Create and persist a new refresh token for *user*.
+
+    Called at login (every path: password, Google, OTP-verify, invite-accept)
+    alongside the access token — the caller sets the returned raw JWT as an
+    httpOnly cookie, never in the JSON body (see api/frontend/auth.py).
+
+    Returns (raw_jwt, expires_at).
+    """
+    token, jti, expires_at = create_refresh_token({"sub": str(user.id)})
+    db.add(RefreshToken(jti=jti, user_id=user.id, expires_at=expires_at))
+    return token, expires_at
+
+async def revoke_all_refresh_tokens(user_id, db: AsyncSession) -> None:
+    """
+    Revoke every still-valid refresh token for *user_id*. Call this wherever
+    an access token's token_version is already being bumped to kill existing
+    sessions (password change/reset, removing a team member) — otherwise a
+    previously-issued refresh token would keep silently renewing access
+    tokens long after the session it belonged to was supposed to be dead.
+    """
+    await db.execute(
+        update(RefreshToken)
+        .where(RefreshToken.user_id == user_id, RefreshToken.revoked_at.is_(None))
+        .values(revoked_at=datetime.now(timezone.utc))
+    )
+
+async def refresh_access_token(raw_token: str, db: AsyncSession) -> tuple[str, str, datetime]:
+    """
+    Validate a presented refresh-token cookie and rotate it: the presented
+    token is revoked and a new refresh token is issued alongside a fresh
+    access token. Raises HTTPException(401) for anything invalid, expired,
+    or already-revoked.
+
+    Reuse of an already-revoked jti (someone replaying a stolen token, or a
+    token that was already rotated) is treated as a sign of compromise: every
+    refresh token for that user is revoked, forcing a real re-login
+    everywhere rather than silently issuing yet another token to whoever
+    presented it.
+
+    Returns (new_access_token, new_refresh_token, new_refresh_expires_at).
+    """
+    invalid = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Session expired. Please log in again.",
+    )
+    try:
+        payload = decode_token(raw_token)
+    except JWTError:
+        raise invalid
+    if payload.get("type") != "refresh":
+        raise invalid
+
+    jti = payload.get("jti")
+    user_id: Optional[str] = payload.get("sub")
+    if not jti or not user_id:
+        raise invalid
+
+    result = await db.execute(select(RefreshToken).where(RefreshToken.jti == jti))
+    stored = result.scalar_one_or_none()
+    if stored is None:
+        raise invalid
+    if stored.revoked_at is not None:
+        await revoke_all_refresh_tokens(user_id, db)
+        raise invalid
+    if stored.expires_at <= datetime.now(timezone.utc):
+        raise invalid
+
+    user = await _load_user(user_id, db)
+    if user is None or not user.is_active:
+        raise invalid
+
+    stored.revoked_at = datetime.now(timezone.utc)
+    new_refresh_token, new_expires_at = await issue_refresh_token(user, db)
+    new_access_token = create_access_token(
+        {"sub": str(user.id), "tenant_id": str(user.tenant_id), "tv": user.token_version}
+    )
+    return new_access_token, new_refresh_token, new_expires_at
 
 async def get_onboarding_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer_scheme),

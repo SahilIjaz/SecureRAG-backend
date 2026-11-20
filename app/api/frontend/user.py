@@ -10,7 +10,7 @@ Frontend-compat user endpoints (/api/user/...).
 import asyncio
 import logging
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile, status
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,7 +20,12 @@ from app.core.rate_limit import limiter
 from app.core.security import create_access_token, hash_password, verify_password
 from app.database import get_db
 from app.models.user import User
-from app.services.auth_service import invalidate_user_cache
+from app.services.auth_service import (
+    invalidate_user_cache,
+    issue_refresh_token,
+    revoke_all_refresh_tokens,
+    set_refresh_cookie,
+)
 from app.schemas.frontend import (
     FEChangePasswordRequest,
     FEChangePasswordResponse,
@@ -122,6 +127,7 @@ async def _audit_password(request: Request, user: User, outcome: str, **details)
 @limiter.limit("5/minute")
 async def change_password(
     request: Request,
+    response: Response,
     body: FEChangePasswordRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -149,14 +155,19 @@ async def change_password(
     # Invalidate every existing session for this user — a password change must
     # log out other devices...
     current_user.token_version = (current_user.token_version or 0) + 1
+    await revoke_all_refresh_tokens(current_user.id, db)
     await db.flush()
     invalidate_user_cache(current_user.id)
-    # ...but not THIS one: hand back a token minted under the new version so
-    # the device that changed the password stays signed in (previously its
-    # next request 401'd and the app hard-redirected to "/").
+    # ...but not THIS one: hand back a token minted under the new version, and
+    # a freshly-issued refresh token, so the device that changed the password
+    # stays signed in (previously its next request 401'd and the app
+    # hard-redirected to "/") instead of also losing its silent-renewal
+    # ability the moment its current access token expires.
     token = create_access_token(
         {"sub": str(current_user.id), "tenant_id": str(current_user.tenant_id), "tv": current_user.token_version}
     )
+    new_refresh_token, new_refresh_expires_at = await issue_refresh_token(current_user, db)
+    set_refresh_cookie(response, new_refresh_token, new_refresh_expires_at)
     return FEChangePasswordResponse(success=True, token=token)
 
 @router.get("/profile", response_model=FEUserProfile)
