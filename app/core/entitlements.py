@@ -33,6 +33,11 @@ class Entitlements:
     max_faqs: int
     max_chunks: int
     max_storage_mb: int
+    # Total words of extracted text across all active documents — the
+    # "knowledge size" meter (file-size-independent; a scanned PDF can hold
+    # little text while a small text file holds a lot). Not persisted to
+    # TenantQuota: resolved live from here, same as max_faqs/max_urls.
+    max_words: int
     # Max human support agents the owner can invite (excludes the owner).
     max_agents: int
     # Feature flags
@@ -64,6 +69,7 @@ PLAN_ENTITLEMENTS: dict[PlanName, Entitlements] = {
         max_faqs=50,
         max_chunks=2000,
         max_storage_mb=200,
+        max_words=700_000,
         max_agents=0,
         live_handoff=False,
         remove_branding=False,
@@ -79,6 +85,7 @@ PLAN_ENTITLEMENTS: dict[PlanName, Entitlements] = {
         max_faqs=300,
         max_chunks=12000,
         max_storage_mb=1024,
+        max_words=4_000_000,
         max_agents=2,
         live_handoff=True,
         remove_branding=False,
@@ -94,6 +101,7 @@ PLAN_ENTITLEMENTS: dict[PlanName, Entitlements] = {
         max_faqs=2000,
         max_chunks=80000,
         max_storage_mb=5120,
+        max_words=27_000_000,
         max_agents=5,
         live_handoff=True,
         remove_branding=True,

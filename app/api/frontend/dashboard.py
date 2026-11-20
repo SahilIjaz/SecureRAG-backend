@@ -369,6 +369,9 @@ async def get_usage(
         count for source, count in doc_counts.items()
         if source not in (DocumentSource.scraped, DocumentSource.faq)
     )
+    storage_used_mb, words_used, _chunks = await helpers.get_active_document_totals(
+        current_user.tenant_id, db
+    )
 
     fe_plan = helpers.fe_plan_for_subscription(subscription)
     display = helpers.PLAN_DISPLAY_LIMITS[fe_plan]
@@ -390,7 +393,13 @@ async def get_usage(
         docsTotal=docs_total,
         urlsUsed=url_count,
         urlsTotal=display["urls"],
-        storageUsedMb=round((usage.storage_used_mb if usage else 0.0) or 0.0, 2),
+        # Live sum across active documents, not the incrementally-maintained
+        # UsageCount.storage_used_mb counter — that counter is only the fast
+        # gate upload/FAQ/URL-scrape check against, and can drift after a
+        # failed write; this number is always "what's actually there".
+        storageUsedMb=round(storage_used_mb, 2),
         storageTotalMb=float(quota.max_storage_mb) if quota else 0.0,
+        wordsUsed=words_used,
+        wordsTotal=display["words"],
         resetsOn=helpers.format_date(helpers.first_of_next_month()),
     )

@@ -60,6 +60,7 @@ PLAN_DISPLAY_LIMITS: dict[str, dict[str, int]] = {
         "docs": ent.max_documents,
         "urls": ent.max_urls,
         "chunks": ent.max_chunks,
+        "words": ent.max_words,
     }
     for plan, ent in PLAN_ENTITLEMENTS.items()
 }
@@ -303,6 +304,28 @@ async def get_active_document_counts(
         .group_by(Document.source)
     )
     return dict(result.all())
+
+async def get_active_document_totals(tenant_id: uuid.UUID, db: AsyncSession) -> tuple[float, int, int]:
+    """
+    (storage_used_mb, word_count, chunk_count) summed live across active
+    documents — a single SUM aggregate, not a full-row fetch. Used for the
+    usage meters shown to the tenant so they can never drift the way an
+    incrementally-maintained counter can (a failed upload, a crashed index
+    job, a bug in one +=/-= site): the answer is always "what's actually
+    there right now". The per-upload *gate* checks (upload_documents,
+    add_faq_entries, the URL scrape path) still use the cheaper running
+    UsageCount.storage_used_mb counter — only the number shown to the user
+    needs to be exact on every read.
+    """
+    result = await db.execute(
+        select(
+            func.coalesce(func.sum(Document.file_size_mb), 0.0),
+            func.coalesce(func.sum(Document.word_count), 0),
+            func.coalesce(func.sum(Document.chunk_count), 0),
+        ).where(Document.tenant_id == tenant_id, Document.is_active == True)
+    )
+    storage_mb, words, chunks = result.one()
+    return float(storage_mb), int(words), int(chunks)
 
 def split_docs_and_urls(
     docs: list[Document],
