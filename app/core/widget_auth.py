@@ -129,7 +129,7 @@ def is_origin_allowed(origin_header: Optional[str], allowed_domains_csv: str) ->
     }
     return host in allowed
 
-def create_widget_session_token(tenant_id: str, conversation_id: str) -> str:
+def create_widget_session_token(tenant_id: str, conversation_id: str, pq_enabled: bool = False) -> str:
     expire = datetime.now(timezone.utc) + timedelta(hours=WIDGET_SESSION_TOKEN_TTL_HOURS)
     payload = {
         "tenant_id": tenant_id,
@@ -143,7 +143,7 @@ def create_widget_session_token(tenant_id: str, conversation_id: str) -> str:
     # layers to pass, so a quantum adversary who could forge one still fails.
     from app.core import pq_crypto
 
-    if pq_crypto.token_signing_ready():
+    if pq_crypto.token_signing_ready(pq_enabled):
         token = pq_crypto.sign_token(token)
     return token
 

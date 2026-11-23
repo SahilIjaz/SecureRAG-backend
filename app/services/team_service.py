@@ -35,10 +35,12 @@ INVITE_TTL_HOURS = 48
 
 
 async def count_active_agents(tenant_id, db: AsyncSession) -> int:
+    """Seats in use = every non-owner member (admins and agents share the
+    plan's team-seat cap, so promoting someone can't bypass it)."""
     result = await db.execute(
         select(func.count()).select_from(TenantUser).where(
             TenantUser.tenant_id == tenant_id,
-            TenantUser.role == TenantRole.agent,
+            TenantUser.role != TenantRole.owner,
         )
     )
     return result.scalar_one()
@@ -63,12 +65,20 @@ async def _entitlements_for_tenant(tenant_id, db: AsyncSession):
 
 
 async def create_invite(
-    tenant_id, email: str, created_by_user_id, db: AsyncSession
+    tenant_id, email: str, created_by_user_id, db: AsyncSession,
+    role: TenantRole = TenantRole.agent,
 ) -> str:
     """Create a pending agent invite and email the link. Returns the raw token
     (also embedded in the emailed link). Enforces the plan's agent cap counting
     active agents + still-pending invites."""
     email = email.lower().strip()
+    # Defence in depth: the endpoint's schema already restricts this, but the
+    # service must never mint an owner invite regardless of caller.
+    if role not in (TenantRole.admin, TenantRole.agent):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invites can only grant the admin or agent role.",
+        )
 
     ent = await _entitlements_for_tenant(tenant_id, db)
     if ent.max_agents <= 0:
@@ -108,7 +118,7 @@ async def create_invite(
     invite = Invite(
         tenant_id=tenant_id,
         email=email,
-        role=TenantRole.agent,
+        role=role,
         token_hash=hash_password(raw_token),
         expires_at=datetime.now(timezone.utc) + timedelta(hours=INVITE_TTL_HOURS),
         created_by_user_id=created_by_user_id,
@@ -122,7 +132,7 @@ async def create_invite(
             recipient_email=email,
             subject="You've been invited to join a Nexus workspace",
             html_content=(
-                f"<p>You've been invited to join a workspace on Nexus as a support agent.</p>"
+                f"<p>You've been invited to join a workspace on Nexus as {'an admin' if role == TenantRole.admin else 'a support agent'}.</p>"
                 f'<p><a href="{link}">Accept the invitation</a> (link expires in {INVITE_TTL_HOURS} hours).</p>'
             ),
             text_content=f"You've been invited to join a Nexus workspace. Accept here: {link}",
@@ -185,3 +195,45 @@ async def accept_invite(
     invite.accepted_at = now
     await db.flush()
     return user
+
+
+async def change_member_role(
+    tenant_id, actor_user_id, target_user_id, new_role: TenantRole, db: AsyncSession
+) -> TenantUser:
+    """Owner-only (enforced by the endpoint). Switch a non-owner member between
+    admin and agent. The owner's role is immutable here, nobody can change
+    their own role, and ownership can never be granted."""
+    from app.services.auth_service import invalidate_user_cache
+
+    if new_role not in (TenantRole.admin, TenantRole.agent):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Members can only be set to admin or agent.",
+        )
+    if target_user_id == actor_user_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You can't change your own role.",
+        )
+    result = await db.execute(
+        select(TenantUser).where(
+            TenantUser.tenant_id == tenant_id, TenantUser.user_id == target_user_id
+        ).with_for_update()
+    )
+    tu = result.scalar_one_or_none()
+    if tu is None or tu.role == TenantRole.owner:
+        # Not a member of this workspace, or the owner — indistinguishable on purpose.
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Member not found.")
+    if tu.role == new_role:
+        return tu
+
+    tu.role = new_role
+    user = (await db.execute(select(User).where(User.id == target_user_id))).scalar_one_or_none()
+    if user is not None:
+        # Role is resolved per request so the change is already live; bumping
+        # token_version also ends their current sessions, so a demoted admin
+        # can't keep a cached admin UI open and the client re-reads its role.
+        user.token_version = (user.token_version or 0) + 1
+        invalidate_user_cache(user.id)
+    await db.flush()
+    return tu

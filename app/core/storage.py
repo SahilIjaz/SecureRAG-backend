@@ -13,7 +13,7 @@ The public_id is also returned so files can be deleted later.
 import asyncio
 import logging
 import uuid
-from typing import Tuple
+from typing import Optional, Tuple
 
 import cloudinary
 import cloudinary.uploader
@@ -68,6 +68,7 @@ async def upload_file_to_cloudinary(
     tenant_id: uuid.UUID,
     original_filename: str,
     content_type: str,
+    pq_enabled: Optional[bool] = None,
 ) -> Tuple[str, str]:
     """
     Uploads a file to Cloudinary with encryption at rest.
@@ -84,7 +85,11 @@ async def upload_file_to_cloudinary(
     """
     from app.core import pq_crypto
 
-    if pq_crypto.file_encryption_ready():
+    if pq_enabled is None:
+        # Per-tenant opt-in (Settings -> Security); None = look it up.
+        pq_enabled = await pq_crypto.tenant_pq_enabled(tenant_id)
+
+    if pq_crypto.file_encryption_ready(pq_enabled):
         # Pure-Python Kyber is CPU-bound — keep it off the event loop.
         encrypted_content = await asyncio.to_thread(pq_crypto.hybrid_encrypt, file_content)
     else:

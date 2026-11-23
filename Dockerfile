@@ -34,6 +34,8 @@ RUN apt-get update \
 WORKDIR /app
 
 # Dependencies first so code changes don't invalidate this (slow) layer.
+RUN apt-get update && apt-get install -y libatomic1 \
+    && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt requirements-post.txt ./
 RUN pip install --upgrade pip \
  && pip install -r requirements.txt \

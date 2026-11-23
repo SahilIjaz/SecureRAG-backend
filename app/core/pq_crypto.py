@@ -87,20 +87,45 @@ def generate_sig_keypair() -> Tuple[str, str]:
 
 # ── Readiness checks (config flag AND keys present) ─────────────────────────
 
-def file_encryption_ready() -> bool:
-    return bool(
-        settings.PQ_FILE_ENCRYPTION_ENABLED
-        and settings.PQ_KEM_PUBLIC_KEY
-        and settings.PQ_KEM_PRIVATE_KEY
+def file_encryption_available() -> bool:
+    """Platform has the ML-KEM keys provisioned (a tenant may opt in)."""
+    return bool(settings.PQ_KEM_PUBLIC_KEY and settings.PQ_KEM_PRIVATE_KEY)
+
+
+def token_signing_available() -> bool:
+    """Platform has the ML-DSA keys provisioned (a tenant may opt in)."""
+    return bool(settings.PQ_SIG_PUBLIC_KEY and settings.PQ_SIG_PRIVATE_KEY)
+
+
+def file_encryption_ready(tenant_enabled: bool = False) -> bool:
+    """PQ file encryption applies when the keys exist AND either the tenant
+    opted in or the platform forces it on for everyone (legacy global flag)."""
+    return file_encryption_available() and bool(
+        tenant_enabled or settings.PQ_FILE_ENCRYPTION_ENABLED
     )
 
 
-def token_signing_ready() -> bool:
-    return bool(
-        settings.PQ_WIDGET_TOKEN_SIGNING_ENABLED
-        and settings.PQ_SIG_PUBLIC_KEY
-        and settings.PQ_SIG_PRIVATE_KEY
+def token_signing_ready(tenant_enabled: bool = False) -> bool:
+    return token_signing_available() and bool(
+        tenant_enabled or settings.PQ_WIDGET_TOKEN_SIGNING_ENABLED
     )
+
+
+async def tenant_pq_enabled(tenant_id) -> bool:
+    """Whether this tenant opted in. Skips the DB entirely when the platform
+    has no PQ keys (the common case), so non-PQ deployments pay nothing."""
+    if not (file_encryption_available() or token_signing_available()):
+        return False
+    from sqlalchemy import select
+
+    from app.database import AsyncSessionLocal
+    from app.models.tenant import Tenant
+
+    async with AsyncSessionLocal() as db:
+        flag = (
+            await db.execute(select(Tenant.pq_encryption_enabled).where(Tenant.id == tenant_id))
+        ).scalar_one_or_none()
+    return bool(flag)
 
 
 # ── Hybrid file encryption (ML-KEM-768 envelope around per-file Fernet) ─────

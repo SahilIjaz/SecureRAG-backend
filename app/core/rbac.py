@@ -17,28 +17,43 @@ from __future__ import annotations
 from typing import Iterable
 
 from fastapi import Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models.tenant_user import TenantRole, TenantUser
 from app.models.user import User
-from app.services.auth_service import get_current_user
+from app.services.auth_service import get_any_valid_user, get_current_user
+
+
+async def resolve_role(user: User, db: AsyncSession) -> TenantRole:
+    """The user's role in their tenant, resolved from tenant_users.
+
+    A missing membership row is only treated as `owner` for the historical
+    single-user case — i.e. when the tenant has NO membership rows at all.
+    If the tenant already has members and this user isn't one of them, they
+    get the least-privileged role instead of silently becoming an owner
+    (fail closed)."""
+    result = await db.execute(
+        select(TenantUser.role).where(
+            TenantUser.tenant_id == user.tenant_id,
+            TenantUser.user_id == user.id,
+        )
+    )
+    role = result.scalar_one_or_none()
+    if role is not None:
+        return role
+    rows = await db.execute(
+        select(func.count()).select_from(TenantUser).where(TenantUser.tenant_id == user.tenant_id)
+    )
+    return TenantRole.owner if rows.scalar_one() == 0 else TenantRole.agent
 
 
 async def get_current_role(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> TenantRole:
-    result = await db.execute(
-        select(TenantUser.role).where(
-            TenantUser.tenant_id == current_user.tenant_id,
-            TenantUser.user_id == current_user.id,
-        )
-    )
-    role = result.scalar_one_or_none()
-    # No membership row → the sole user of a single-user tenant → owner.
-    return role or TenantRole.owner
+    return await resolve_role(current_user, db)
 
 
 def require_role(*allowed: TenantRole):
@@ -63,3 +78,18 @@ def require_role(*allowed: TenantRole):
 # Common gates, named for readability at call sites.
 require_owner = require_role(TenantRole.owner)
 require_admin = require_role(TenantRole.owner, TenantRole.admin)
+
+
+async def require_owner_any_valid(
+    current_user: User = Depends(get_any_valid_user),
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    """Owner gate for endpoints that must also work with an onboarding token
+    (the onboarding wizard). Only the workspace owner may configure the
+    workspace — an invited admin/agent can never drive these endpoints."""
+    if await resolve_role(current_user, db) != TenantRole.owner:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the workspace owner can do this.",
+        )
+    return current_user

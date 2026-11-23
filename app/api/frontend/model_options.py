@@ -20,7 +20,7 @@ from app.api.frontend import helpers
 from app.config import settings as app_settings
 from app.database import get_db
 from app.models.user import User
-from app.core.rbac import require_owner
+from app.core.rbac import require_admin, require_owner
 from app.services.auth_service import get_current_user
 from app.services.llm import pricing
 from app.services.llm.provider_catalog import get_catalog_entry
@@ -54,7 +54,7 @@ class FEModelPreference(BaseModel):
 
 @router.get("/model-options", response_model=FEModelOptionsResponse)
 async def get_model_options(
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> FEModelOptionsResponse:
     tenant = await helpers.get_tenant(current_user, db)
@@ -101,7 +101,7 @@ async def get_model_options(
 
 @router.get("/settings/model", response_model=FEModelPreference)
 async def get_model_preference(
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> FEModelPreference:
     tenant = await helpers.get_tenant(current_user, db)

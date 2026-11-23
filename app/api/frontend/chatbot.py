@@ -36,7 +36,7 @@ from app.schemas.frontend import (
 )
 from app.services.auth_service import get_current_user
 from app.core.subscription_guard import require_active_subscription
-from app.core.rbac import require_admin
+from app.core.rbac import require_admin, require_owner
 from app.services.notification_service import notify_tenant
 
 logger = logging.getLogger(__name__)
@@ -668,7 +668,7 @@ async def test_chat_stream(
 
 @router.post("/api-key/regenerate", response_model=FERegenerateApiKeyResponse)
 async def regenerate_api_key(
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_owner),
     db: AsyncSession = Depends(get_db),
 ) -> FERegenerateApiKeyResponse:
     record = await _get_or_create_config(current_user, db)
