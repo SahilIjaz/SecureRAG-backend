@@ -5,8 +5,10 @@ Notification service — the single place that decides "did this happen" vs
 notify_tenant() is the one entry point callers should use: it always writes
 an in-app Notification row (the dashboard bell — unconditional, see
 models/notification.py), then additionally emails the tenant's account
-owner if their NotificationSetting has that type enabled. Callers never
-touch NotificationSetting or the email layer directly.
+owner if their NotificationSetting has that type enabled, and pushes the
+same notification over /ws/notifications to any dashboard tab that has it
+open (see app/core/ws_notifications.py). Callers never touch
+NotificationSetting, the email layer, or the websocket layer directly.
 
 weekly_summary_loop() is the one recurring background job — started once
 from the app lifespan, same fire-and-forget pattern as
@@ -25,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.core.background import fire_and_forget
 from app.core.email import send_email
+from app.core.ws_notifications import manager as ws_notifications_manager
 from app.database import AsyncSessionLocal
 from app.models.conversation import Conversation
 from app.models.notification import Notification
@@ -78,7 +81,9 @@ async def notify_tenant(
         if existing.scalar_one_or_none() is not None:
             return
 
-    db.add(Notification(tenant_id=tenant_id, type=notif_type, title=title, body=body, link=link))
+    notification = Notification(tenant_id=tenant_id, type=notif_type, title=title, body=body, link=link)
+    db.add(notification)
+    _push_notification(tenant_id, notification)
 
     result = await db.execute(
         select(NotificationSetting).where(NotificationSetting.tenant_id == tenant_id)
@@ -118,6 +123,34 @@ async def notify_tenant(
             logger.exception("Failed to send notification email (type=%s) for tenant %s", notif_type, tenant_id)
 
     fire_and_forget(_send())
+
+def _push_notification(tenant_id: uuid.UUID, notification: Notification) -> None:
+    """Best-effort websocket push for the row just staged above — fired
+    before this transaction necessarily commits, same pre-commit race the
+    email send below already accepts (see this module's docstring). The
+    client treats this as a cue to re-fetch, not as authoritative data, so
+    the race is harmless in practice.
+
+    createdAt/timeAgo are computed here from wall-clock time rather than
+    read off `notification`: created_at is a server_default, not populated
+    until the row is flushed/refreshed, and flushing early just to read it
+    back would add a round trip this push doesn't need.
+    """
+    now = datetime.now(timezone.utc)
+    payload = {
+        "type": "notification",
+        "notification": {
+            "id": str(notification.id),
+            "type": notification.type,
+            "title": notification.title,
+            "body": notification.body,
+            "link": notification.link,
+            "isRead": False,
+            "createdAt": now.isoformat(),
+            "timeAgo": "just now",
+        },
+    }
+    fire_and_forget(ws_notifications_manager.broadcast(str(tenant_id), payload))
 
 async def notify_visitor_of_reply(
     visitor_email: str,

@@ -18,6 +18,7 @@ from app.api.ptt_ws import router as ptt_ws_router
 from app.config import settings
 from app.core import perf_timing
 from app.core.rate_limit import limiter
+from app.core.ws_notifications import router as notifications_ws_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -463,6 +464,10 @@ app.mount("/api/public/widget", widget_app)
 # Push-to-talk WebSocket signaling (agent <-> visitor live voice). Native
 # FastAPI WebSocket at /ws/ptt — see app/api/ptt_ws.py.
 app.include_router(ptt_ws_router)
+
+# Real-time push for the dashboard notification bell. Native FastAPI
+# WebSocket at /ws/notifications — see app/core/ws_notifications.py.
+app.include_router(notifications_ws_router)
 
 @app.get("/health", tags=["health"], summary="Health check")
 async def health_check() -> dict:
