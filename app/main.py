@@ -146,6 +146,12 @@ async def ensure_frontend_schema() -> None:
         # migrations/init.sql names it explicitly, so drop that spelling too —
         # without this, invited agents fail with a UniqueViolation on insert.
         "ALTER TABLE users DROP CONSTRAINT IF EXISTS uq_users_tenant_id",
+        # create_all (older model: unique=True) also made a UNIQUE *index* named
+        # ix_users_tenant_id, which a constraint drop does not remove — it still
+        # blocks a second user in the same tenant. Swap it for a plain index.
+        "DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'ix_users_tenant_id' "
+        "AND indexdef ILIKE 'CREATE UNIQUE%') THEN DROP INDEX ix_users_tenant_id; "
+        "CREATE INDEX ix_users_tenant_id ON users (tenant_id); END IF; END $$",
         # Per-user presence (multi-agent): last_seen_at on the membership row.
         "ALTER TABLE tenant_users ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ",
         # Per-user notifications: NULL user_id = whole-tenant (preserves old rows).
@@ -196,6 +202,8 @@ async def ensure_frontend_schema() -> None:
         # Prepaid wallet + one-time signup trial — see
         # app/services/wallet_service.py and NexusContext plan doc
         # i-want-to-implement-floofy-hickey.md section C.
+        # Per-tenant post-quantum opt-in (Settings -> Security).
+        "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS pq_encryption_enabled BOOLEAN NOT NULL DEFAULT FALSE",
         "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS balance_usd NUMERIC(10,4) NOT NULL DEFAULT 0",
         "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS trial_messages_used INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS trial_ended_at TIMESTAMPTZ",

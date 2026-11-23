@@ -113,6 +113,19 @@ async def _get_conversation_or_404(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found.")
     return convo
 
+async def _assert_can_act(convo: Conversation, user: User, db: AsyncSession) -> None:
+    """Agents may only act on a conversation that is unassigned or assigned to
+    them; owners/admins may act on any. Prevents one agent from resolving,
+    reopening or hijacking another agent's chat."""
+    role = await helpers.role_for(user, db)
+    if role in ("owner", "admin"):
+        return
+    if convo.assigned_user_id is not None and convo.assigned_user_id != user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This conversation is being handled by another agent.",
+        )
+
 @router.get("", response_model=List[FEConversationListItem])
 async def list_conversations(
     assigned: Literal["mine", "unassigned", "all"] = "all",
@@ -201,6 +214,7 @@ async def update_status(
     metric on the Overview page.
     """
     convo = await _get_conversation_or_404(conversation_id, current_user, db)
+    await _assert_can_act(convo, current_user, db)
     convo.status = body.status
     if body.status == "Resolved":
         convo.unresolved_reason = None
@@ -270,6 +284,7 @@ async def resolve_conversation(
     db: AsyncSession = Depends(get_db),
 ) -> FEConversationDetail:
     convo = await _get_conversation_or_404(conversation_id, current_user, db)
+    await _assert_can_act(convo, current_user, db)
     convo.status = "Resolved"
     convo.is_live = False
     # Credit whoever resolved it (survives even if the chat is later reassigned).
@@ -304,6 +319,7 @@ async def claim_conversation(
             Conversation.tenant_id == current_user.tenant_id,
             Conversation.deleted_at.is_(None),
             Conversation.assigned_user_id.is_(None),
+            Conversation.status != "Resolved",
         )
         .values(assigned_user_id=current_user.id, is_live=True)
     )
@@ -325,18 +341,22 @@ class FETransferRequest(BaseModel):
 async def transfer_conversation(
     conversation_id: str,
     body: FETransferRequest,
-    current_user: User = Depends(require_owner),
+    current_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> FEConversationDetail:
-    """Owner reassigns a live chat to a specific team member."""
+    """Owner/admin reassigns a chat to a specific, active team member."""
     convo = await _get_conversation_or_404(conversation_id, current_user, db)
     try:
         target = uuid.UUID(body.toUserId)
     except ValueError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Member not found.")
     membership = await db.execute(
-        select(TenantUser.id).where(
-            TenantUser.tenant_id == current_user.tenant_id, TenantUser.user_id == target
+        select(TenantUser.id)
+        .join(User, User.id == TenantUser.user_id)
+        .where(
+            TenantUser.tenant_id == current_user.tenant_id,
+            TenantUser.user_id == target,
+            User.is_active == True,  # noqa: E712
         )
     )
     if membership.scalar_one_or_none() is None:
@@ -360,6 +380,7 @@ async def join_conversation(
     live. Idempotent — joining an already-live conversation is a no-op, not
     an error (handles a double-click or two open tabs)."""
     convo = await _get_conversation_or_404(conversation_id, current_user, db)
+    await _assert_can_act(convo, current_user, db)
     if convo.status == "Resolved":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

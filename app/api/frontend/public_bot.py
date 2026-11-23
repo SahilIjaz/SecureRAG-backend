@@ -222,7 +222,7 @@ async def public_chat(
         db.add(ConversationMessage(conversation_id=conversation.id, role="bot", text=fallback))
         await db.flush()
         await db.commit()
-        session_token = create_widget_session_token(str(tenant.id), str(conversation.id))
+        session_token = create_widget_session_token(str(tenant.id), str(conversation.id), pq_enabled=bool(tenant.pq_encryption_enabled))
         return FEPublicChatResponse(reply=fallback, sessionToken=session_token)
 
     if usage is not None:
@@ -264,7 +264,7 @@ async def public_chat(
     # cards get real data without delaying the visitor's reply.
     schedule_classification(conversation.id)
 
-    session_token = create_widget_session_token(str(tenant.id), str(conversation.id))
+    session_token = create_widget_session_token(str(tenant.id), str(conversation.id), pq_enabled=bool(tenant.pq_encryption_enabled))
     return FEPublicChatResponse(
         reply=reply, sessionToken=session_token, handoff=handoff
     )

@@ -64,6 +64,13 @@ class Tenant(Base):
     preferred_llm_provider: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
     preferred_llm_model: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
 
+    # Per-tenant opt-in to post-quantum hardening (ML-KEM file envelope + ML-DSA
+    # widget-token signature — see app/core/pq_crypto.py). Only takes effect
+    # when the platform has the PQ keys provisioned; owner-controlled.
+    pq_encryption_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

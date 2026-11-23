@@ -444,7 +444,7 @@ async def post_widget_message(
     # Re-issued on every message so an active conversation's sliding window
     # never expires mid-use, while an abandoned/leaked token still dies
     # within WIDGET_SESSION_TOKEN_TTL_HOURS of the last real activity.
-    session_token = create_widget_session_token(str(tenant.id), str(conversation.id))
+    session_token = create_widget_session_token(str(tenant.id), str(conversation.id), pq_enabled=bool(tenant.pq_encryption_enabled))
 
     logger.info(
         "widget /message timing tenant=%s auth=%.0fms conv_load=%.0fms new_conv=%.0fms quota=%.0fms "
@@ -581,7 +581,7 @@ async def post_widget_message_stream(
     # flush above actually runs the INSERT — computed after it, unlike
     # before this change, when an earlier separate flush made it available
     # sooner but cost an extra round trip.
-    session_token = create_widget_session_token(str(tenant.id), str(conversation.id))
+    session_token = create_widget_session_token(str(tenant.id), str(conversation.id), pq_enabled=bool(tenant.pq_encryption_enabled))
 
     # Plain locals only past this point — no ORM object may cross into the
     # generator (the request's DB session is closed before its body runs).

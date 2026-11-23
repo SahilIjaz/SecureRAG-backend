@@ -19,6 +19,7 @@ from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
+from app.core import pq_crypto
 from app.core.rate_limit import limiter
 from app.core.rbac import require_admin, require_owner
 from sqlalchemy import func, select, update as _sa_update
@@ -47,6 +48,9 @@ from app.schemas.frontend import (
     FECreateApiKeyRequest,
     FECreateApiKeyResponse,
     FEInviteRequest,
+    FEChangeRoleRequest,
+    FESecuritySettings,
+    FEUpdateSecurityRequest,
     FEMember,
     FEPendingInvite,
     FETeamRoster,
@@ -152,7 +156,7 @@ def _fe_notifications(record: NotificationSetting) -> FENotificationSettings:
 
 @router.get("/notifications", response_model=FENotificationSettings)
 async def get_notifications(
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> FENotificationSettings:
     record = await _get_or_create_notifications(current_user, db)
@@ -161,7 +165,7 @@ async def get_notifications(
 @router.put("/notifications", response_model=FENotificationSettings)
 async def update_notifications(
     body: FENotificationSettingsPatch,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> FENotificationSettings:
     record = await _get_or_create_notifications(current_user, db)
@@ -470,11 +474,12 @@ def _member_is_online(last_seen_at) -> bool:
 
 @router.get("/members", response_model=FETeamRoster)
 async def list_members(
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> FETeamRoster:
     """The workspace's team: members (with role + online state) and pending
-    invites, plus the plan's agent quota. Readable by any member."""
+    invites, plus the plan's seat quota. Owner/admin only — agents don't get
+    to enumerate teammates' emails."""
     rows = await db.execute(
         select(TenantUser.role, TenantUser.last_seen_at, User.id, User.full_name, User.email)
         .join(User, User.id == TenantUser.user_id)
@@ -525,7 +530,8 @@ async def invite_member(
     db: AsyncSession = Depends(get_db),
 ) -> FEPendingInvite:
     await team_service.create_invite(
-        current_user.tenant_id, str(body.email), current_user.id, db
+        current_user.tenant_id, str(body.email), current_user.id, db,
+        role=TenantRole(body.role),
     )
     # Return the freshly-created pending invite for the UI.
     result = await db.execute(
@@ -595,3 +601,69 @@ async def remove_member(
     await db.delete(tu)
     await db.flush()
     return FESuccessResponse()
+
+@router.put("/members/{user_id}/role", response_model=FEMember)
+@limiter.limit("20/minute")
+async def change_member_role(
+    request: Request,
+    user_id: str,
+    body: FEChangeRoleRequest,
+    current_user: User = Depends(require_owner),
+    db: AsyncSession = Depends(get_db),
+) -> FEMember:
+    """Owner-only: switch a teammate between admin and agent. Never grants or
+    alters the owner role, and an owner can't change their own role."""
+    try:
+        uid = uuid.UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Member not found.")
+    tu = await team_service.change_member_role(
+        current_user.tenant_id, current_user.id, uid, TenantRole(body.role), db
+    )
+    member = (await db.execute(select(User).where(User.id == uid))).scalar_one()
+    return FEMember(
+        id=str(member.id), name=member.full_name or "", email=member.email,
+        role=tu.role.value, online=_member_is_online(tu.last_seen_at),
+    )
+
+# ── Security (post-quantum) ───────────────────────────────────────────────────
+
+def _security_settings(tenant: Tenant) -> FESecuritySettings:
+    return FESecuritySettings(
+        pqEnabled=bool(tenant.pq_encryption_enabled),
+        fileEncryptionAvailable=pq_crypto.file_encryption_available(),
+        tokenSigningAvailable=pq_crypto.token_signing_available(),
+        platformEnforced=bool(
+            settings.PQ_FILE_ENCRYPTION_ENABLED or settings.PQ_WIDGET_TOKEN_SIGNING_ENABLED
+        ),
+    )
+
+@router.get("/security", response_model=FESecuritySettings)
+async def get_security_settings(
+    current_user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> FESecuritySettings:
+    tenant = await helpers.get_tenant(current_user, db)
+    return _security_settings(tenant)
+
+@router.put("/security", response_model=FESecuritySettings)
+async def update_security_settings(
+    body: FEUpdateSecurityRequest,
+    current_user: User = Depends(require_owner),
+    db: AsyncSession = Depends(get_db),
+) -> FESecuritySettings:
+    """Owner-only per-workspace opt-in to post-quantum hardening. Only affects
+    NEW uploads and NEW widget sessions; existing files and sessions keep
+    working either way (blobs/tokens are self-describing)."""
+    if body.pqEnabled and not (
+        pq_crypto.file_encryption_available() or pq_crypto.token_signing_available()
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Post-quantum keys aren't provisioned on this platform yet.",
+        )
+    tenant = await helpers.get_tenant(current_user, db)
+    tenant.pq_encryption_enabled = body.pqEnabled
+    await db.flush()
+    helpers.invalidate_all_widget_tenant_cache()
+    return _security_settings(tenant)

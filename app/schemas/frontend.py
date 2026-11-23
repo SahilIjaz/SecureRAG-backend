@@ -614,6 +614,25 @@ class FETeamRoster(BaseModel):
 
 class FEInviteRequest(BaseModel):
     email: EmailStr
+    # Only admin/agent can ever be granted by invite — never owner.
+    role: Literal["admin", "agent"] = "agent"
+
+class FEChangeRoleRequest(BaseModel):
+    role: Literal["admin", "agent"]
+
+class FESecuritySettings(BaseModel):
+    pqEnabled: bool
+    # Whether the platform has the post-quantum keys provisioned. When false
+    # the toggle can't be turned on (nothing to wrap/sign with).
+    fileEncryptionAvailable: bool
+    tokenSigningAvailable: bool
+    # True when the platform forces PQ on for every workspace (legacy env flag).
+    platformEnforced: bool
+    fileAlgorithm: str = "ML-KEM-768 (FIPS 203) envelope + Fernet"
+    tokenAlgorithm: str = "ML-DSA-44 (FIPS 204) + HS256"
+
+class FEUpdateSecurityRequest(BaseModel):
+    pqEnabled: bool
 
 class FEAcceptInviteRequest(BaseModel):
     token: str = Field(..., min_length=1, max_length=256)

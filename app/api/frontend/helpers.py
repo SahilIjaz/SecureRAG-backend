@@ -333,6 +333,8 @@ _TENANT_CACHE_COLUMNS = (
     # cached too or a cache-hit request would see stale/missing values.
     "balance_usd", "trial_messages_used", "trial_ended_at", "wallet_low_balance_warned",
     "preferred_llm_provider", "preferred_llm_model",
+    # Per-tenant post-quantum opt-in — read when minting widget session tokens.
+    "pq_encryption_enabled",
 )
 _CONFIG_CACHE_COLUMNS = ("id", "tenant_id", "config", "created_at", "updated_at")
 _widget_tenant_cache: dict[str, tuple[float, dict, dict]] = {}
@@ -344,6 +346,12 @@ def invalidate_widget_tenant_cache(widget_api_key: str) -> None:
     (e.g. narrowing allowedDomains) wouldn't take effect on the widget for
     up to WIDGET_TENANT_CACHE_TTL_SECONDS."""
     _widget_tenant_cache.pop(widget_api_key, None)
+
+def invalidate_all_widget_tenant_cache() -> None:
+    """Drop every cached widget tenant — used when a tenant-level setting the
+    widget path reads (e.g. the PQ opt-in) changes, since the cache is keyed
+    by widget key and the caller may not have it."""
+    _widget_tenant_cache.clear()
 
 async def get_tenant_by_widget_api_key(
     key: str, db: AsyncSession
@@ -464,12 +472,5 @@ def onboarding_completed(tenant: Tenant) -> bool:
 async def role_for(user: User, db: AsyncSession) -> str:
     """The user's workspace role as a string ('owner'/'admin'/'agent'), from the
     tenant_users membership. Missing row → 'owner' (single-user fallback)."""
-    from app.models.tenant_user import TenantUser
-    result = await db.execute(
-        select(TenantUser.role).where(
-            TenantUser.tenant_id == user.tenant_id,
-            TenantUser.user_id == user.id,
-        )
-    )
-    role = result.scalar_one_or_none()
-    return role.value if role is not None else "owner"
+    from app.core.rbac import resolve_role
+    return (await resolve_role(user, db)).value

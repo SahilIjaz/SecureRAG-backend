@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.frontend import helpers
 from app.core import perf_timing
+from app.core.rbac import require_owner_any_valid
 from app.core.rate_limit import limiter
 from app.database import get_db
 from app.models.document import Document, DocumentSource, DocumentStatus
@@ -125,7 +126,7 @@ async def _build_summary(user: User, db: AsyncSession) -> Optional[FEOnboardingS
 async def save_step(
     step: int,
     payload: dict = Body(default={}),
-    current_user: User = Depends(get_any_valid_user),
+    current_user: User = Depends(require_owner_any_valid),
     db: AsyncSession = Depends(get_db),
 ) -> FESuccessResponse:
     if step not in (1, 2, 3, 4, 5):
@@ -167,7 +168,7 @@ async def save_step(
 @router.post("/checkout", response_model=FECheckoutResponse)
 async def onboarding_checkout(
     body: FECheckoutRequest,
-    current_user: User = Depends(get_any_valid_user),
+    current_user: User = Depends(require_owner_any_valid),
     db: AsyncSession = Depends(get_db),
 ) -> FECheckoutResponse:
     """
@@ -206,7 +207,7 @@ async def upload(
     request: Request,
     files: List[UploadFile] = File(default=[]),
     urls: List[str] = Form(default=[]),
-    current_user: User = Depends(get_any_valid_user),
+    current_user: User = Depends(require_owner_any_valid),
     db: AsyncSession = Depends(get_db),
 ) -> FEUploadDocumentsResponse:
     with perf_timing.timed("db_get_tenant"):
@@ -311,7 +312,7 @@ async def _create_pending_url_documents(
 @router.post("/complete", response_model=FECompleteOnboardingResponse, status_code=status.HTTP_201_CREATED)
 async def complete(
     body: FECompleteOnboardingRequest,
-    current_user: User = Depends(get_any_valid_user),
+    current_user: User = Depends(require_owner_any_valid),
     db: AsyncSession = Depends(get_db),
 ) -> FECompleteOnboardingResponse:
     with perf_timing.timed("db_get_tenant"):
@@ -414,7 +415,7 @@ async def complete(
 
 @router.get("/summary", response_model=Optional[FEOnboardingSummary])
 async def get_summary(
-    current_user: User = Depends(get_any_valid_user),
+    current_user: User = Depends(require_owner_any_valid),
     db: AsyncSession = Depends(get_db),
 ) -> Optional[FEOnboardingSummary]:
     return await _build_summary(current_user, db)
@@ -422,7 +423,7 @@ async def get_summary(
 @router.put("/summary", response_model=FECompleteOnboardingResponse)
 async def save_details(
     body: FESaveOnboardingDetailsRequest,
-    current_user: User = Depends(get_any_valid_user),
+    current_user: User = Depends(require_owner_any_valid),
     db: AsyncSession = Depends(get_db),
 ) -> FECompleteOnboardingResponse:
     tenant = await helpers.get_tenant(current_user, db)

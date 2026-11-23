@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.frontend import helpers
 from app.config import settings
+from app.core import pq_crypto
 from app.core.audit_middleware import client_ip
 from app.core.rate_limit import limiter
 from app.core.rbac import get_current_role, require_admin, require_owner
@@ -201,7 +202,7 @@ async def verify_audit_chain(
     return FEAuditVerification(**{**v, "checkedAt": _iso(v["checkedAt"])})
 
 
-def _controls() -> List[FEComplianceControl]:
+def _controls(pq_tenant_enabled: bool = False) -> List[FEComplianceControl]:
     def c(id_, label, enabled, evidence):
         return FEComplianceControl(id=id_, label=label, status="enabled" if enabled else "disabled", evidence=evidence)
     return [
@@ -209,7 +210,10 @@ def _controls() -> List[FEComplianceControl]:
         c("auth", "Authenticated sessions with revocation", True, "JWT access tokens with jti revocation and token_version invalidation on password change"),
         c("tenant_isolation", "Tenant isolation", True, "every query filters on tenant_id; vector search scoped to the tenant's Pinecone namespace"),
         c("encryption_at_rest", "Uploaded files encrypted at rest", bool(settings.FILE_ENCRYPTION_KEY),
-          "Fernet encryption before Cloudinary storage" + (" + post-quantum KEM wrapping" if settings.PQ_FILE_ENCRYPTION_ENABLED else "")),
+          "Fernet encryption before Cloudinary storage" + (" + post-quantum KEM wrapping" if pq_crypto.file_encryption_ready(pq_tenant_enabled) else "")),
+        c("post_quantum", "Post-quantum hardening (ML-KEM / ML-DSA)",
+          pq_crypto.file_encryption_ready(pq_tenant_enabled) or pq_crypto.token_signing_ready(pq_tenant_enabled),
+          "ML-KEM-768 envelope on new uploads and ML-DSA-44 signature on widget sessions (owner opt-in, Settings -> Security)"),
         c("audit_trail", "Append-only audit trail", settings.AUDIT_ENABLED,
           "every mutating request recorded; UPDATE/DELETE rejected by database trigger; per-tenant SHA-256 hash chain"),
         c("traceability", "Response traceability", True, "every reply stores retrieved evidence, scores, confidence, decision and model"),
@@ -231,7 +235,7 @@ async def compliance_summary(
         oldestEntryAt=_iso(st["oldest"]), newestEntryAt=_iso(st["newest"]),
         auditRetentionDays=settings.AUDIT_RETENTION_DAYS, traceRetentionDays=settings.TRACE_RETENTION_DAYS,
         integrity=FEAuditVerification(**{**v, "checkedAt": _iso(v["checkedAt"])}),
-        controls=_controls(),
+        controls=_controls(bool((await helpers.get_tenant(current_user, db)).pq_encryption_enabled)),
     )
 
 
