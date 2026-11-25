@@ -196,9 +196,12 @@ async def onboarding_checkout(
 
     plan_name = helpers.FE_TO_BE_PLAN[body.planId]
     with perf_timing.timed("stripe_start_trial_subscription_total"):
-        client_secret = await stripe_service.start_trial_subscription(
-            tenant, current_user, subscription, plan_name, db
-        )
+        try:
+            client_secret = await stripe_service.start_trial_subscription(
+                tenant, current_user, subscription, plan_name, db, skip_trial=body.skipTrial
+            )
+        except stripe_service.BillingError as e:
+            raise HTTPException(status_code=e.status_code, detail=e.message)
     return FECheckoutResponse(clientSecret=client_secret)
 
 @router.post("/upload", response_model=FEUploadDocumentsResponse)
@@ -354,10 +357,14 @@ async def complete(
     if card_confirmed is False:
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail="Add a payment card in the Plan step to start your free trial.",
+            detail="Complete the card or payment step in the Plan step to continue.",
         )
     if card_confirmed and subscription.trial_used_at is None:
         subscription.trial_used_at = datetime.now(timezone.utc)
+    if card_confirmed:
+        # Stripe is the source of truth for status/expiry/plan — don't depend
+        # on the webhook having landed before the wizard finishes.
+        await stripe_service.refresh_from_stripe(subscription, db, force=True)
 
     # SECURITY: derive the plan from the Stripe price on the subscription row
     # (set server-side at /checkout), never from body.plan. Trusting body.plan

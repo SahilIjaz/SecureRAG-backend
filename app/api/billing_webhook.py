@@ -97,10 +97,20 @@ async def stripe_webhook(
                 # stripe_service.credit_wallet_from_checkout_session for the
                 # idempotency guard (Stripe redelivers webhook events).
                 await stripe_service.credit_wallet_from_checkout_session(data, db)
+            elif event_type == "payment_intent.succeeded":
+                # In-app wallet top-ups (PaymentIntent). Idempotent with the
+                # browser-side confirm call — see stripe_service._credit_wallet.
+                await stripe_service.credit_wallet_from_payment_intent(data, db)
             elif event_type == "invoice.payment_failed":
                 customer_id = data.get("customer")
                 if customer_id:
                     await stripe_service.notify_payment_failed(customer_id, db)
+            elif event_type == "invoice.paid":
+                await stripe_service.notify_payment_succeeded(data, db)
+            elif event_type == "invoice.upcoming":
+                await stripe_service.notify_upcoming_renewal(data, db)
+            elif event_type == "customer.subscription.trial_will_end":
+                await stripe_service.notify_trial_ending(data, db)
 
             await db.commit()
         except Exception:
