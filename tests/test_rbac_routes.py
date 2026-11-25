@@ -34,7 +34,7 @@ AGENT_OK = {
     ("GET", "/api/notifications"), ("POST", "/api/notifications/read-all"),
     ("POST", "/api/notifications/{notification_id}/read"), ("DELETE", "/api/notifications"),
     ("DELETE", "/api/notifications/{notification_id}"), ("POST", "/api/presence/ping"),
-    ("GET", "/api/settings/workspace"),
+    ("GET", "/api/settings/workspace"), ("GET", "/api/settings/subscription-status"),
 }
 
 

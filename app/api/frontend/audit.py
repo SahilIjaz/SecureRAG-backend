@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from typing import List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from app.core.subscription_guard import require_active_subscription
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -38,7 +39,7 @@ from app.models.tenant_user import TenantRole
 from app.models.user import User
 from app.services import audit_service, trace_service
 
-router = APIRouter(tags=["Frontend — Audit & traceability"])
+router = APIRouter(tags=["Frontend — Audit & traceability"], dependencies=[Depends(require_active_subscription)])
 
 
 # ── Schemas (mirror Nexus-frontend src/types) ────────────────────────────────
