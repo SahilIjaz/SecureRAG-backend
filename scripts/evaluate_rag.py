@@ -18,9 +18,21 @@ It also runs NEGATIVE probes: questions derived from tenant A's documents
 are asked AS tenant B. A correct system answers from B's own data or refuses
 — any citation of an A-owned document is counted as a cross-tenant leak.
 
+With --csv it also exports the labelled data set the confidence gate is fitted
+on (scripts/fit_confidence.py): one row per question with the retrieval
+features the pre-generation score uses (top_rerank, gap, coverage) and a
+label = "answering this would have been good":
+  * answerable questions: label 1 when judged faithful to the retrieved
+    context (faithfulness >= --faith-cutoff), else 0 — including questions
+    where nothing was retrieved;
+  * unanswerable questions (cross-tenant probes + off-topic): label 0, so the
+    fit learns to refuse them.
+"Faithful" means supported by the retrieved context, not independently true.
+
 Usage:
     PYTHONPATH=. ./venv/bin/python scripts/evaluate_rag.py --questions 10
     PYTHONPATH=. ./venv/bin/python scripts/evaluate_rag.py --questions 50 --json results.json
+    PYTHONPATH=. ./venv/bin/python scripts/evaluate_rag.py --questions 100 --csv scripts/eval_results/e3.csv
 
 Cost note: each question spends two cheap classification-model calls
 (question generation + judging) and one normal answer generation.
@@ -28,6 +40,7 @@ Cost note: each question spends two cheap classification-model calls
 
 import argparse
 import asyncio
+import csv
 import json
 import re
 import statistics
@@ -154,6 +167,38 @@ async def _answer(tenant_id: str, question: str, doc_names: dict, attempts: int 
     return {}
 
 
+# Generic questions no tenant's knowledge base should answer; asked of every
+# tenant as unanswerable negatives for the confidence fit (--offtopic N).
+OFF_TOPIC_QUESTIONS = [
+    "What is the capital of Australia?",
+    "Who won the football world cup in 2010?",
+    "How do I bake sourdough bread at home?",
+    "What is the boiling point of water at sea level?",
+    "Can you recommend a good science fiction novel?",
+    "How many moons does Jupiter have?",
+    "What is the square root of 1764?",
+    "Who painted the Mona Lisa?",
+    "What is the best way to learn the guitar?",
+    "Explain how photosynthesis works.",
+]
+
+CSV_FIELDS = ["kind", "tenant", "question", "top_rerank", "gap", "coverage",
+              "pregen_confidence", "answered", "faithfulness", "label"]
+
+
+def _features(result: dict) -> dict:
+    """Retrieval features exactly as production computed them for this query
+    (answer_question runs with config=None here, so the gate never refuses and
+    every question yields features + an answer to judge)."""
+    r = result.get("retrieval") or {}
+    return {
+        "top_rerank": r.get("topRerank", 0.0),
+        "gap": r.get("gap", 0.0),
+        "coverage": r.get("coverage", 0.0),
+        "pregen_confidence": r.get("pregenConfidence", 0),
+    }
+
+
 def authorized(sources: list[dict], owned_doc_ids: set) -> bool:
     """Every citation must reference a document the asking tenant owns."""
     return all((s.get("documentId") in owned_doc_ids) for s in sources if s.get("documentId"))
@@ -164,6 +209,11 @@ async def main() -> None:
     parser.add_argument("--questions", type=int, default=10, help="questions per tenant")
     parser.add_argument("--probes", type=int, default=4, help="cross-tenant negative probes")
     parser.add_argument("--json", help="write full per-question results to this file")
+    parser.add_argument("--csv", help="write the labelled confidence data set (features + label) to this file")
+    parser.add_argument("--faith-cutoff", type=float, default=0.8,
+                        help="faithfulness >= this counts as a good (label 1) answer in the CSV")
+    parser.add_argument("--offtopic", type=int, default=5,
+                        help="off-topic unanswerable questions per tenant for the CSV")
     args = parser.parse_args()
 
     from app.core.redis_client import init_redis
@@ -212,6 +262,7 @@ async def main() -> None:
                 "confidence": result.get("confidence"),
                 "retrieval": result.get("retrieval"),
                 "latency_ms": round(elapsed_ms),
+                **_features(result),
             })
             tag = f"faith={faith:.2f}" if isinstance(faith, float) and faith >= 0 else "no-answer"
             print(f"  [{tag:>10}] auth={'OK' if records[-1]['authorized'] else 'LEAK'} {q[:70]}")
@@ -236,11 +287,24 @@ async def main() -> None:
             records.append({
                 "kind": "cross_tenant_probe", "tenant": asking_t["tenant_id"],
                 "question": q, "leaked": leaked, "cited_sources": len(sources),
+                "answered": bool(sources), **_features(result),
             })
             print(f"  [{'LEAK' if leaked else ' OK '}] {q[:70]}")
     else:
         print("\n(Only one tenant has data — cross-tenant probes skipped; "
               "isolation still proven structurally by namespace scoping.)")
+
+    # ── Off-topic negatives (CSV only): unanswerable by construction ───────
+    if args.csv and args.offtopic > 0:
+        print(f"\nOff-topic probes: {args.offtopic} per tenant")
+        for tenant in tenants:
+            for q in OFF_TOPIC_QUESTIONS[: args.offtopic]:
+                result = await _answer(tenant["tenant_id"], q, tenant["doc_names"])
+                records.append({
+                    "kind": "off_topic", "tenant": tenant["tenant_id"], "question": q,
+                    "answered": bool(result.get("sources")), **_features(result),
+                })
+                print(f"  [conf={records[-1]['pregen_confidence']:>3}] {q[:70]}")
 
     # ── Summary ────────────────────────────────────────────────────────────
     positives = [r for r in records if r["kind"] == "positive"]
@@ -264,6 +328,30 @@ async def main() -> None:
               f"→ isolation {100*(probes_run-leaks)/probes_run:.0f}%")
     if latencies:
         print(f"Median answer latency:        {statistics.median(latencies):.0f} ms")
+
+    if args.csv:
+        rows = []
+        for r in records:
+            if r["kind"] == "positive":
+                faith = r["faithfulness"]
+                if isinstance(faith, float) and faith < 0:
+                    continue  # judge failed — unlabelled, skip
+                label = 1 if (isinstance(faith, float) and faith >= args.faith_cutoff) else 0
+            else:
+                faith, label = "", 0  # unanswerable: the right behaviour is to refuse
+            rows.append({
+                "kind": r["kind"], "tenant": r["tenant"], "question": r["question"],
+                "top_rerank": r["top_rerank"], "gap": r["gap"], "coverage": r["coverage"],
+                "pregen_confidence": r["pregen_confidence"], "answered": r["answered"],
+                "faithfulness": "" if faith is None else faith, "label": label,
+            })
+        Path(args.csv).parent.mkdir(parents=True, exist_ok=True)
+        with open(args.csv, "w", newline="", encoding="utf-8") as fh:
+            w = csv.DictWriter(fh, fieldnames=CSV_FIELDS)
+            w.writeheader()
+            w.writerows(rows)
+        pos = sum(r["label"] for r in rows)
+        print(f"\nLabelled CSV: {len(rows)} rows ({pos} good / {len(rows) - pos} bad) → {args.csv}")
 
     if args.json:
         Path(args.json).write_text(json.dumps(records, indent=2, default=str))

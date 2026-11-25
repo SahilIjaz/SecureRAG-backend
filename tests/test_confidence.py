@@ -5,13 +5,16 @@ Tests for the computed-confidence signals, cross-document conflict detection
 Run with:  PYTHONPATH=. ./venv/bin/pytest tests/ -v
 """
 
+import pytest
+
 from app.config import settings
 from app.services.confidence import (
+    compute_pregen_confidence,
     compute_retrieval_metrics,
     conflict_prompt_note,
     detect_conflicts,
 )
-from app.services.rag_service import _effective_confidence, _gate_decision
+from app.services.rag_service import _gate_decision, _pregen_confidence, _pregen_gate
 
 
 # ── Retrieval metrics (similarity / coverage / entropy formula) ──────────────
@@ -146,9 +149,90 @@ def test_gate_high_confidence_answers():
     assert _gate_decision(95, 60, handoff_enabled=True) == "answer"
 
 
-def test_effective_confidence_prefers_self_report_then_formula():
-    assert _effective_confidence(80, {"retrievalConfidence": 20}) == 80
-    assert _effective_confidence(None, {"retrievalConfidence": 42}) == 42
-    assert _effective_confidence(None, {}) is None
+def test_pregen_confidence_prefers_sigmoid_then_legacy():
+    assert _pregen_confidence({"pregenConfidence": 80, "retrievalConfidence": 20}) == 80
+    assert _pregen_confidence({"retrievalConfidence": 42}) == 42
+    assert _pregen_confidence({}) is None
     # None → "answer": without any signal the gate cannot judge.
     assert _gate_decision(None, 60, handoff_enabled=True) == "answer"
+
+
+# ── Pre-generation confidence (sigmoid over rerank / gap / coverage) ─────────
+
+def test_pregen_empty_is_zero():
+    m = compute_pregen_confidence([])
+    assert m["pregenConfidence"] == 0 and m["rerankAvailable"] is False
+
+
+def test_pregen_monotonic_in_rerank_score():
+    low = compute_pregen_confidence([{"rerank_score": 0.2}, {"rerank_score": 0.1}])
+    mid = compute_pregen_confidence([{"rerank_score": 0.6}, {"rerank_score": 0.1}])
+    high = compute_pregen_confidence([{"rerank_score": 0.95}, {"rerank_score": 0.1}])
+    assert low["pregenConfidence"] < mid["pregenConfidence"] < high["pregenConfidence"]
+    assert high["pregenConfidence"] > 80 and low["pregenConfidence"] < 20
+
+
+def test_pregen_single_chunk_gap_is_zero():
+    m = compute_pregen_confidence([{"rerank_score": 0.9}])
+    assert m["gap"] == 0.0 and m["topRerank"] == 0.9
+
+
+def test_pregen_gap_is_top1_minus_top2():
+    m = compute_pregen_confidence([{"rerank_score": 0.3}, {"rerank_score": 0.9}])
+    assert m["topRerank"] == 0.9 and m["gap"] == 0.6
+
+
+def test_pregen_without_rerank_falls_back_to_legacy_formula():
+    chunks = [{"score": 0.8}, {"score": 0.7}]
+    m = compute_pregen_confidence(chunks)
+    assert m["rerankAvailable"] is False
+    assert m["pregenConfidence"] == compute_retrieval_metrics(chunks)["retrievalConfidence"]
+
+
+def test_pregen_disabled_flag_uses_legacy_formula():
+    chunks = [{"rerank_score": 0.9}, {"rerank_score": 0.1}]
+    saved = settings.RAG_PREGEN_CONF_ENABLED
+    settings.RAG_PREGEN_CONF_ENABLED = False
+    try:
+        m = compute_pregen_confidence(chunks)
+        assert m["pregenConfidence"] == compute_retrieval_metrics(chunks)["retrievalConfidence"]
+    finally:
+        settings.RAG_PREGEN_CONF_ENABLED = saved
+
+
+def test_pregen_gate_refuses_weak_evidence():
+    weak = {"pregenConfidence": 10}
+    assert _pregen_gate(weak, "what is the refund policy", None, 60, False) == ("refuse", 10)
+    assert _pregen_gate(weak, "what is the refund policy", None, 60, True) == ("handoff", 10)
+
+
+def test_pregen_gate_relaxes_short_followup():
+    weak = {"pregenConfidence": 10}
+    history = [{"role": "user", "text": "hi"}, {"role": "bot", "text": "hello"}]
+    # Short message + history → never refused.
+    assert _pregen_gate(weak, "yes please", history, 60, False)[0] == "answer"
+    # A long standalone question with history is still gated.
+    long_q = "what is the full refund policy for annual plans please"
+    assert _pregen_gate(weak, long_q, history, 60, False)[0] == "refuse"
+
+
+@pytest.mark.asyncio
+async def test_weak_evidence_refused_without_llm_call(monkeypatch):
+    """The whole point: a refusal must not spend an LLM generation."""
+    from app.services import rag_service
+
+    chunks = [{"rerank_score": 0.05, "text": "unrelated", "document_id": "d1"}]
+    metrics = {**compute_retrieval_metrics(chunks), **compute_pregen_confidence(chunks), "conflicts": []}
+
+    async def fake_prepare(*a, **k):
+        return chunks, "PROMPT", 200, False, metrics
+
+    async def boom(*a, **k):
+        raise AssertionError("LLM must not be called when the pre-gate refuses")
+
+    monkeypatch.setattr(rag_service, "_prepare_generation", fake_prepare)
+    monkeypatch.setattr(rag_service.llm_router, "generate", boom)
+
+    config = {"identity": {"fallbackMessage": "FALLBACK"}, "behavior": {"confidenceThreshold": 60}}
+    result = await rag_service.answer_question("t1", "completely unrelated question here", config=config, doc_names={"d1": "a.pdf"})
+    assert result["answer"] == "FALLBACK" and result["refused"] is True and result["sources"] == []
