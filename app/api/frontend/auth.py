@@ -35,7 +35,7 @@ from app.config import settings
 from app.core import perf_timing
 from app.core.rate_limit import limiter
 from app.core.security import create_access_token, decode_token, hash_password, verify_otp, verify_password
-from app.database import get_db
+from app.database import AsyncSessionLocal, get_db
 from app.models.email_verification import EmailVerification, OTPPurpose
 from app.models.refresh_token import RefreshToken
 from app.models.tenant import Tenant
@@ -246,12 +246,26 @@ async def _verify_otp_async(plain_otp: str, hashed_otp: str) -> bool:
 async def _fail_otp_attempt(otp_record, db: AsyncSession, kind: str = "code") -> None:
     """Record one wrong guess against an OTP and lock the code once the attempt
     ceiling is hit (marking it used so _latest_valid_otp stops returning it and
-    the caller must request a fresh code). Always raises — never returns."""
-    otp_record.attempts = (otp_record.attempts or 0) + 1
-    locked = otp_record.attempts >= settings.OTP_MAX_ATTEMPTS
-    if locked:
-        otp_record.is_used = True
-    await db.flush()
+    the caller must request a fresh code). Always raises — never returns.
+
+    The counter is written in its OWN committed transaction: this function ends
+    by raising HTTPException, and get_db() rolls the request session back on any
+    exception — so a flush on `db` would be discarded and the lockout would never
+    take effect. The increment is a single atomic UPDATE so concurrent guesses
+    can't undercount either."""
+    async with AsyncSessionLocal() as attempt_db:
+        attempts = (await attempt_db.execute(
+            update(EmailVerification)
+            .where(EmailVerification.id == otp_record.id)
+            .values(attempts=EmailVerification.attempts + 1)
+            .returning(EmailVerification.attempts)
+        )).scalar_one()
+        locked = attempts >= settings.OTP_MAX_ATTEMPTS
+        if locked:
+            await attempt_db.execute(
+                update(EmailVerification).where(EmailVerification.id == otp_record.id).values(is_used=True)
+            )
+        await attempt_db.commit()
     if locked:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -326,7 +340,7 @@ async def verify_otp_endpoint(
     # Verified account — this is the forgot-password flow.
     otp_record = await _latest_valid_otp(user.id, OTPPurpose.password_reset, db)
     if otp_record is None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Reset code has expired or does not exist. Please request a new one.")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Code has expired, was already used, or does not exist. Please request a new one.")
     if not await _verify_otp_async(body.otp, otp_record.otp_code):
         await _fail_otp_attempt(otp_record, db, kind="reset code")
 
