@@ -64,3 +64,6 @@ migrations/__pycache__/
 
 # Dependency manifests must be tracked despite the *.txt rule above
 !requirements*.txt
+
+.coverage
+*.partial
