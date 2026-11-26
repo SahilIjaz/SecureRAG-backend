@@ -1,0 +1,472 @@
+[
+  {
+    "id": "TC_AUTH_001",
+    "scenario": "Valid user registration",
+    "request": "POST /api/auth/signup",
+    "expected": "201, OTP initiated",
+    "http_status": 201,
+    "response": "{\"success\": true, \"message\": \"Account created. Please check your email for the verification code.\"}",
+    "note": "",
+    "status": "PASS"
+  },
+  {
+    "id": "TC_AUTH_002",
+    "scenario": "Existing email registration",
+    "request": "POST /api/auth/signup (same email)",
+    "expected": "No second account created (response is enumeration-safe)",
+    "http_status": 201,
+    "response": "{\"success\": true, \"message\": \"Account already registered but not verified. A new OTP has been sent.\"}",
+    "note": "users with this email in DB: 1",
+    "status": "PASS"
+  },
+  {
+    "id": "TC_AUTH_003",
+    "scenario": "Invalid email format",
+    "request": "POST /api/auth/signup",
+    "expected": "422",
+    "http_status": 422,
+    "response": "{\"detail\": [{\"type\": \"value_error\", \"loc\": [\"body\", \"email\"], \"msg\": \"value is not a valid email address: An email address must have an @-sign.\", \"input\": \"not-an-email\", \"ctx\": {\"reason\": \"An email address must have an @-sign.\"}}]}",
+    "note": "",
+    "status": "PASS"
+  },
+  {
+    "id": "TC_AUTH_004",
+    "scenario": "Invalid password",
+    "request": "POST /api/auth/signup",
+    "expected": "422",
+    "http_status": 422,
+    "response": "{\"detail\": [{\"type\": \"string_too_short\", \"loc\": [\"body\", \"password\"], \"msg\": \"String should have at least 8 characters\", \"input\": \"abc\", \"ctx\": {\"min_length\": 8}}]}",
+    "note": "",
+    "status": "PASS"
+  },
+  {
+    "id": "TC_AUTH_007",
+    "scenario": "Expired OTP verification",
+    "request": "POST /api/auth/verify-otp",
+    "expected": "400 rejected",
+    "http_status": 400,
+    "response": "{\"detail\": \"OTP has expired or does not exist. Please request a new one.\"}",
+    "note": "",
+    "status": "PASS"
+  },
+  {
+    "id": "TC_AUTH_006",
+    "scenario": "Invalid OTP verification",
+    "request": "POST /api/auth/verify-otp",
+    "expected": "400 rejected",
+    "http_status": 400,
+    "response": "{\"detail\": \"Invalid OTP code. Please try again.\"}",
+    "note": "",
+    "status": "PASS"
+  },
+  {
+    "id": "TC_AUTH_005",
+    "scenario": "Valid OTP verification",
+    "request": "POST /api/auth/verify-otp",
+    "expected": "200, email verified",
+    "http_status": 200,
+    "response": "{\"success\": true, \"token\": \"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIzM2U0YWVkYS0xZDQzLTRhYzktYWU5NC05ZjViMDAxZjUwNGYiLCJ0ZW5hbnRfaWQiOiJhODIwMjNhMS1kMDFlLTRkN2EtODAxOS0wMTMyYmMyOTc0MTIiLCJ0diI6MCwiZXhwIjoxNzk1NjQ5OTY4LCJ0eXBlIjoiYWNjZXNzIiwianRpIjoiNzcyYWI2YjQyOGU1NGYwZGE1NDVhMjljOGYwN2M1OTQ\u2026",
+    "note": "",
+    "status": "PASS"
+  },
+  {
+    "id": "TC_AUTH_008",
+    "scenario": "Valid login",
+    "request": "POST /api/auth/login",
+    "expected": "200 + token",
+    "http_status": 200,
+    "response": "{\"success\": true, \"token\": \"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIzM2U0YWVkYS0xZDQzLTRhYzktYWU5NC05ZjViMDAxZjUwNGYiLCJ0ZW5hbnRfaWQiOiJhODIwMjNhMS1kMDFlLTRkN2EtODAxOS0wMTMyYmMyOTc0MTIiLCJ0diI6MCwiZXhwIjoxNzk1NjQ5OTY4LCJ0eXBlIjoiYWNjZXNzIiwianRpIjoiNjM1YWQwZmI0M2YxNDY4YWFhNDlhY2I3M2I3YTBmZTY\u2026",
+    "note": "",
+    "status": "PASS"
+  },
+  {
+    "id": "TC_AUTH_009",
+    "scenario": "Incorrect password",
+    "request": "POST /api/auth/login",
+    "expected": "401",
+    "http_status": 401,
+    "response": "{\"detail\": \"Invalid email or password.\"}",
+    "note": "",
+    "status": "PASS"
+  },
+  {
+    "id": "TC_AUTH_010",
+    "scenario": "Unregistered email",
+    "request": "POST /api/auth/login",
+    "expected": "401",
+    "http_status": 401,
+    "response": "{\"detail\": \"Invalid email or password.\"}",
+    "note": "",
+    "status": "PASS"
+  },
+  {
+    "id": "TC_AUTH_012",
+    "scenario": "Password reset request",
+    "request": "POST /api/auth/forgot-password",
+    "expected": "200",
+    "http_status": 200,
+    "response": "{\"success\": true}",
+    "note": "",
+    "status": "PASS"
+  },
+  {
+    "id": "TC_AUTH_013a",
+    "scenario": "Password reset completion",
+    "request": "POST /api/auth/reset-password",
+    "expected": "200",
+    "http_status": 200,
+    "response": "{\"success\": true}",
+    "note": "",
+    "status": "PASS"
+  },
+  {
+    "id": "TC_AUTH_013",
+    "scenario": "Password reset then login with new password",
+    "request": "POST /api/auth/login",
+    "expected": "login 200",
+    "http_status": 200,
+    "response": "{\"success\": true, \"token\": \"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIzM2U0YWVkYS0xZDQzLTRhYzktYWU5NC05ZjViMDAxZjUwNGYiLCJ0ZW5hbnRfaWQiOiJhODIwMjNhMS1kMDFlLTRkN2EtODAxOS0wMTMyYmMyOTc0MTIiLCJ0diI6MSwiZXhwIjoxNzk1NjQ5OTY4LCJ0eXBlIjoiYWNjZXNzIiwianRpIjoiZGYzNjJiOGQzODJiNDkxODg0M2I4MjM0ODk5NDI2ZGY\u2026",
+    "note": "",
+    "status": "PASS"
+  },
+  {
+    "id": "TC_AUTH_014",
+    "scenario": "Protected API without JWT",
+    "request": "GET /api/user/me",
+    "expected": "401/403",
+    "http_status": 401,
+    "response": "{\"detail\": \"Not authenticated.\"}",
+    "note": "",
+    "status": "PASS"
+  },
+  {
+    "id": "TC_AUTH_015",
+    "scenario": "Invalid JWT",
+    "request": "GET /api/user/me",
+    "expected": "401",
+    "http_status": 401,
+    "response": "{\"detail\": \"Token is invalid or has expired.\"}",
+    "note": "",
+    "status": "PASS"
+  },
+  {
+    "id": "TC_AUTH_015a",
+    "scenario": "Valid JWT accepted (control)",
+    "request": "GET /api/user/me",
+    "expected": "200",
+    "http_status": 200,
+    "response": "{\"id\": \"33e4aeda-1d43-4ac9-ae94-9f5b001f504f\", \"email\": \"qa-evidence-20fc20a8@example.com\", \"companyName\": \"QA Evidence 20fc20a8\", \"onboardingCompleted\": false, \"role\": \"owner\"}",
+    "note": "",
+    "status": "PASS"
+  },
+  {
+    "id": "TC_AUTH_016",
+    "scenario": "Logout invalidates the token",
+    "request": "POST /api/auth/logout, GET /api/user/me",
+    "expected": "logout 200 then /me 401",
+    "http_status": 401,
+    "response": "{\"detail\": \"You have been logged out. Please log in again.\"}",
+    "note": "",
+    "status": "PASS"
+  },
+  {
+    "id": "TC_AUTH_002b",
+    "scenario": "Registration with an already VERIFIED email",
+    "request": "POST /api/auth/signup (verified email)",
+    "expected": "No second account (4xx or enumeration-safe 2xx)",
+    "http_status": 409,
+    "response": "{\"detail\": \"An account with this email already exists.\"}",
+    "note": "users with this email in DB: 1",
+    "status": "PASS"
+  },
+  {
+    "id": "TC_WS_006",
+    "scenario": "Owner views/manages members",
+    "request": "GET /api/settings/members",
+    "expected": "200 roster",
+    "http_status": 200,
+    "response": "{\"members\": [{\"id\": \"33e4aeda-1d43-4ac9-ae94-9f5b001f504f\", \"name\": \"QA Evidence 20fc20a8\", \"email\": \"qa-evidence-20fc20a8@example.com\", \"role\": \"owner\", \"online\": false}], \"pendingInvites\": [], \"agentsUsed\": 0, \"agentsLimit\": 2}",
+    "note": "",
+    "status": "PASS"
+  },
+  {
+    "id": "TC_WS_003",
+    "scenario": "Team invitation",
+    "request": "POST /api/settings/members/invite",
+    "expected": "201 invite created",
+    "http_status": 201,
+    "response": "{\"id\": \"927f8496-ded9-4ec9-a082-ac2487cbd6a6\", \"email\": \"invitee-20fc20a8@example.com\", \"role\": \"agent\", \"invitedLabel\": \"just now\"}",
+    "note": "",
+    "status": "PASS"
+  },
+  {
+    "id": "TC_WS_007a",
+    "scenario": "Owner role cannot be granted by invite",
+    "request": "POST /api/settings/members/invite",
+    "expected": "422",
+    "http_status": 422,
+    "response": "{\"detail\": [{\"type\": \"literal_error\", \"loc\": [\"body\", \"role\"], \"msg\": \"Input should be 'admin' or 'agent'\", \"input\": \"owner\", \"ctx\": {\"expected\": \"'admin' or 'agent'\"}}]}",
+    "note": "",
+    "status": "PASS"
+  },
+  {
+    "id": "TC_WS_005",
+    "scenario": "Invalid/expired invitation",
+    "request": "POST /api/auth/accept-invite",
+    "expected": "4xx rejected",
+    "http_status": 400,
+    "response": "{\"detail\": \"This invitation link is invalid or has expired.\"}",
+    "note": "",
+    "status": "PASS"
+  },
+  {
+    "id": "TC_WS_002",
+    "scenario": "Invalid workspace details (bad onboarding step)",
+    "request": "POST /api/onboarding/step/9",
+    "expected": "400",
+    "http_status": 400,
+    "response": "{\"detail\": \"Invalid onboarding step.\"}",
+    "note": "",
+    "status": "PASS"
+  },
+  {
+    "id": "TC_DOC_005",
+    "scenario": "Unsupported CSV upload",
+    "request": "POST /api/knowledge/documents",
+    "expected": "4xx rejected",
+    "http_status": 415,
+    "response": "{\"detail\": \"File type 'text/csv' is not allowed. Allowed: PDF, DOCX, TXT, MD.\"}",
+    "note": "",
+    "status": "PASS"
+  },
+  {
+    "id": "TC_DOC_007",
+    "scenario": "Fake PDF (text with .pdf extension)",
+    "request": "POST /api/knowledge/documents",
+    "expected": "4xx rejected",
+    "http_status": 415,
+    "response": "{\"detail\": \"File content doesn't match the declared type 'application/pdf'.\"}",
+    "note": "",
+    "status": "PASS"
+  },
+  {
+    "id": "TC_DOC_008",
+    "scenario": "Empty TXT file",
+    "request": "POST /api/knowledge/documents",
+    "expected": "4xx rejected",
+    "http_status": 422,
+    "response": "{\"detail\": \"'empty.txt' is empty.\"}",
+    "note": "",
+    "status": "PASS"
+  },
+  {
+    "id": "TC_DOC_003",
+    "scenario": "Valid TXT upload",
+    "request": "POST /api/knowledge/documents",
+    "expected": "201 accepted",
+    "http_status": 201,
+    "response": "[{\"id\": \"25d29311-c5b6-437d-a38c-dadbb103026d\", \"name\": \"handbook-20fc20a8.txt\", \"status\": \"Processing\", \"chunks\": null, \"sizeLabel\": \"0 KB\", \"addedLabel\": \"just now\", \"error\": null, \"authority\": {\"version\": 1, \"effectiveDate\": null, \"approvalStatus\": \"unverified\", \"supersedesDocumentId\": null, \"sup\u2026",
+    "note": "",
+    "status": "PASS"
+  },
+  {
+    "id": "TC_DOC_004",
+    "scenario": "Valid Markdown upload",
+    "request": "POST /api/knowledge/documents",
+    "expected": "201 accepted",
+    "http_status": 201,
+    "response": "[{\"id\": \"66cb6fa3-e373-44c1-b7db-f7353a711019\", \"name\": \"notes-20fc20a8.md\", \"status\": \"Processing\", \"chunks\": null, \"sizeLabel\": \"0 KB\", \"addedLabel\": \"just now\", \"error\": null, \"authority\": {\"version\": 1, \"effectiveDate\": null, \"approvalStatus\": \"unverified\", \"supersedesDocumentId\": null, \"superse\u2026",
+    "note": "",
+    "status": "PASS"
+  },
+  {
+    "id": "TC_DOC_002",
+    "scenario": "Valid DOCX upload",
+    "request": "POST /api/knowledge/documents",
+    "expected": "201 accepted",
+    "http_status": 201,
+    "response": "[{\"id\": \"6ae2cb85-d484-4693-b329-56ab608f6868\", \"name\": \"policy-20fc20a8.docx\", \"status\": \"Processing\", \"chunks\": null, \"sizeLabel\": \"1 KB\", \"addedLabel\": \"just now\", \"error\": null, \"authority\": {\"version\": 1, \"effectiveDate\": null, \"approvalStatus\": \"unverified\", \"supersedesDocumentId\": null, \"supe\u2026",
+    "note": "",
+    "status": "PASS"
+  },
+  {
+    "id": "TC_DOC_001",
+    "scenario": "Valid PDF upload",
+    "request": "POST /api/knowledge/documents",
+    "expected": "201 accepted",
+    "http_status": 201,
+    "response": "[{\"id\": \"d67e41aa-097e-484d-b12b-d39c2c7ba0af\", \"name\": \"hours-20fc20a8.pdf\", \"status\": \"Processing\", \"chunks\": null, \"sizeLabel\": \"1 KB\", \"addedLabel\": \"just now\", \"error\": null, \"authority\": {\"version\": 1, \"effectiveDate\": null, \"approvalStatus\": \"unverified\", \"supersedesDocumentId\": null, \"supers\u2026",
+    "note": "",
+    "status": "PASS"
+  },
+  {
+    "id": "TC_DOC_013",
+    "scenario": "Restricted local URL",
+    "request": "POST /api/knowledge/urls",
+    "expected": "4xx rejected",
+    "http_status": 422,
+    "response": "{\"detail\": \"This URL can't be added: URL resolves to blocked/private IP. Cannot scrape internal services: localhost\"}",
+    "note": "",
+    "status": "PASS"
+  },
+  {
+    "id": "TC_DOC_014",
+    "scenario": "Unsupported URL scheme (ftp)",
+    "request": "POST /api/knowledge/urls",
+    "expected": "4xx rejected",
+    "http_status": 422,
+    "response": "{\"detail\": \"This URL can't be added: Could not resolve hostname: ftp\"}",
+    "note": "",
+    "status": "PASS"
+  },
+  {
+    "id": "TC_DOC_014b",
+    "scenario": "Unsupported URL scheme (javascript)",
+    "request": "POST /api/knowledge/urls",
+    "expected": "4xx rejected",
+    "http_status": 422,
+    "response": "{\"detail\": \"This URL can't be added: Could not resolve hostname: javascript\"}",
+    "note": "",
+    "status": "PASS"
+  },
+  {
+    "id": "TC_DOC_006",
+    "scenario": "Malformed PDF",
+    "request": "POST /api/knowledge/documents, GET /api/knowledge/documents (poll)",
+    "expected": "Rejected at upload or ends in a failed state (never Indexed)",
+    "http_status": 422,
+    "response": "{\"detail\": \"This URL can't be added: Could not resolve hostname: javascript\"}",
+    "note": "final status: Failed",
+    "status": "PASS"
+  },
+  {
+    "id": "TC_DOC_016",
+    "scenario": "View documents",
+    "request": "GET /api/knowledge/documents",
+    "expected": "200 list contains uploads",
+    "http_status": 200,
+    "response": "[{\"id\": \"d67e41aa-097e-484d-b12b-d39c2c7ba0af\", \"name\": \"hours-20fc20a8.pdf\", \"status\": \"Indexed\", \"chunks\": 1, \"sizeLabel\": \"1 KB\", \"addedLabel\": \"just now\", \"error\": null, \"authority\": {\"version\": 1, \"effectiveDate\": null, \"approvalStatus\": \"unverified\", \"supersedesDocumentId\": null, \"supersedesDo\u2026",
+    "note": "",
+    "status": "PASS"
+  },
+  {
+    "id": "TC_DOC_011",
+    "scenario": "Chunking and indexing",
+    "request": "GET /api/knowledge/documents (poll)",
+    "expected": "uploads reach ready status",
+    "http_status": 200,
+    "response": "[{\"id\": \"d67e41aa-097e-484d-b12b-d39c2c7ba0af\", \"name\": \"hours-20fc20a8.pdf\", \"status\": \"Indexed\", \"chunks\": 1, \"sizeLabel\": \"1 KB\", \"addedLabel\": \"just now\", \"error\": null, \"authority\": {\"version\": 1, \"effectiveDate\": null, \"approvalStatus\": \"unverified\", \"supersedesDocumentId\": null, \"supersedesDo\u2026",
+    "note": "{\"hours-20fc20a8.pdf\": \"Indexed\", \"policy-20fc20a8.docx\": \"Indexed\", \"notes-20fc20a8.md\": \"Indexed\", \"handbook-20fc20a8.txt\": \"Indexed\", \"broken.pdf\": \"Failed\"}",
+    "status": "PASS"
+  },
+  {
+    "id": "TC_DOC_010",
+    "scenario": "Text extraction",
+    "request": "GET /api/knowledge/documents",
+    "expected": "documents processed (ready)",
+    "http_status": 200,
+    "response": "[{\"id\": \"d67e41aa-097e-484d-b12b-d39c2c7ba0af\", \"name\": \"hours-20fc20a8.pdf\", \"status\": \"Indexed\", \"chunks\": 1, \"sizeLabel\": \"1 KB\", \"addedLabel\": \"just now\", \"error\": null, \"authority\": {\"version\": 1, \"effectiveDate\": null, \"approvalStatus\": \"unverified\", \"supersedesDocumentId\": null, \"supersedesDo\u2026",
+    "note": "",
+    "status": "PASS"
+  },
+  {
+    "id": "TC_RAG_009",
+    "scenario": "Empty chatbot message",
+    "request": "POST /api/chatbot/test-chat",
+    "expected": "422",
+    "http_status": 422,
+    "response": "{\"detail\": [{\"type\": \"string_too_short\", \"loc\": [\"body\", \"message\"], \"msg\": \"String should have at least 1 character\", \"input\": \"\", \"ctx\": {\"min_length\": 1}}]}",
+    "note": "",
+    "status": "PASS"
+  },
+  {
+    "id": "TC_RAG_001",
+    "scenario": "Document-based question answering",
+    "request": "POST /api/chatbot/test-chat",
+    "expected": "answer contains the codeword",
+    "http_status": 200,
+    "response": "{\"reply\": \"According to handbook-20fc20a8.txt, the codeword is PELICAN-20fc20a8.\", \"sources\": [{\"documentId\": \"25d29311-c5b6-437d-a38c-dadbb103026d\", \"documentName\": \"handbook-20fc20a8.txt\", \"snippet\": \"Nexus QA handbook 20fc20a8. The refund window is 14 days. Support hours are 9am to 5pm. The codew\u2026",
+    "note": "",
+    "status": "PASS"
+  },
+  {
+    "id": "TC_RAG_002",
+    "scenario": "Question unrelated to uploaded knowledge",
+    "request": "POST /api/chatbot/test-chat",
+    "expected": "fallback / no fabricated answer",
+    "http_status": 200,
+    "response": "{\"reply\": \"I'm not sure about that yet \\u2014 want me to connect you with a teammate?\", \"sources\": [], \"handoff\": true, \"confidence\": 0, \"conversationId\": null, \"conflicts\": [], \"conflict\": false, \"traceId\": \"64132240-3528-4868-866b-c67927a98fdc\"}",
+    "note": "",
+    "status": "PASS"
+  },
+  {
+    "id": "TC_RAG_010",
+    "scenario": "Consecutive chatbot messages",
+    "request": "POST /api/chatbot/test-chat x2",
+    "expected": "both 200",
+    "http_status": 200,
+    "response": "{\"reply\": \"According to the *hours-20fc20a8.pdf* and *handbook-20fc20a8.txt* documents, support hours are from 9am to 5pm, Monday to Friday.\", \"sources\": [{\"documentId\": \"d67e41aa-097e-484d-b12b-d39c2c7ba0af\", \"documentName\": \"hours-20fc20a8.pdf\", \"snippet\": \"Support hours are 9am to 5pm Monday to F\u2026",
+    "note": "",
+    "status": "PASS"
+  },
+  {
+    "id": "TC_RAG_011a",
+    "scenario": "Read chatbot configuration",
+    "request": "GET /api/chatbot/config",
+    "expected": "200",
+    "http_status": 200,
+    "response": "{\"identity\": {\"name\": \"Support Assistant\", \"avatarUrl\": null, \"welcomeMessage\": \"Hi! I'm here to help. Ask me anything about our product.\", \"persona\": \"friendly\", \"language\": \"en\", \"fallbackMessage\": \"I'm not sure about that yet \\u2014 want me to connect you with a teammate?\"}, \"behavior\": {\"handoff\u2026",
+    "note": "",
+    "status": "PASS"
+  },
+  {
+    "id": "TC_BILL_002",
+    "scenario": "View subscription details",
+    "request": "GET /api/settings/billing",
+    "expected": "200 with plan info",
+    "http_status": 200,
+    "response": "{\"planId\": \"growth\", \"status\": \"Trialing\", \"priceLabel\": \"$22 / month\", \"renewsOn\": \"Nov 28, 2026\", \"paymentMethod\": null, \"trialEndsOn\": \"Nov 28, 2026\", \"accessActive\": true, \"cancelAtPeriodEnd\": false, \"walletBalanceUsd\": 0.0, \"trialMessagesRemaining\": 47, \"trialDaysRemaining\": 3}",
+    "note": "",
+    "status": "PASS"
+  },
+  {
+    "id": "TC_BILL_007",
+    "scenario": "View workspace credit balance",
+    "request": "GET /api/settings/billing",
+    "expected": "wallet balance present in billing info",
+    "http_status": 200,
+    "response": "{\"planId\": \"growth\", \"status\": \"Trialing\", \"priceLabel\": \"$22 / month\", \"renewsOn\": \"Nov 28, 2026\", \"paymentMethod\": null, \"trialEndsOn\": \"Nov 28, 2026\", \"accessActive\": true, \"cancelAtPeriodEnd\": false, \"walletBalanceUsd\": 0.0, \"trialMessagesRemaining\": 47, \"trialDaysRemaining\": 3}",
+    "note": "",
+    "status": "PASS"
+  },
+  {
+    "id": "TC_BILL_011",
+    "scenario": "View billing / usage history",
+    "request": "GET /api/settings/billing/wallet/transactions",
+    "expected": "200 list",
+    "http_status": 200,
+    "response": "{\"transactions\": [], \"total\": 0, \"page\": 1, \"pageSize\": 10}",
+    "note": "",
+    "status": "PASS"
+  },
+  {
+    "id": "TC_BILL_001",
+    "scenario": "Trial / subscription status for a new workspace",
+    "request": "GET /api/settings/subscription-status",
+    "expected": "200, usable",
+    "http_status": 200,
+    "response": "{\"usable\": true, \"expiresOn\": \"Nov 28, 2026\", \"isOwner\": true}",
+    "note": "",
+    "status": "PASS"
+  },
+  {
+    "id": "TC_DOC_015",
+    "scenario": "Delete document",
+    "request": "DELETE /api/knowledge/documents/{id}",
+    "expected": "200 removed",
+    "http_status": 200,
+    "response": "{\"success\": true}",
+    "note": "",
+    "status": "PASS"
+  }
+]

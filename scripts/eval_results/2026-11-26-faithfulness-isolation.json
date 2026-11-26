@@ -1,0 +1,1102 @@
+[
+  {
+    "kind": "positive",
+    "tenant": "94ae05f1-0076-4937-97f9-98136aed9280",
+    "question": "What are the five stages of the data warehouse environment?",
+    "answered": true,
+    "faithfulness": 1.0,
+    "authorized": true,
+    "confidence": 98,
+    "retrieval": {
+      "similarity": 0.9211,
+      "coverage": 1.0,
+      "entropy": 0.9999,
+      "retrievalConfidence": 76,
+      "pregenConfidence": 98,
+      "topRerank": 0.9211,
+      "gap": 0.0,
+      "rerankAvailable": true,
+      "conflicts": [
+        {
+          "type": "numeric",
+          "scope": "intra_document",
+          "documentA": "20f8f98f-43e0-40e7-8415-1c113ef4dec6",
+          "documentB": "20f8f98f-43e0-40e7-8415-1c113ef4dec6",
+          "valueA": 12.0,
+          "valueB": 13.0,
+          "statementA": "Shoaib Farooq 12",
+          "statementB": "Shoaib Farooq 13",
+          "context": "farooq shoaib",
+          "verified": true,
+          "resolution": {
+            "status": "unresolved",
+            "rule": "same_document",
+            "reason": "both statements come from the same document",
+            "winner": null,
+            "loser": null
+          }
+        }
+      ],
+      "conflictSummary": {
+        "total": 1,
+        "resolved": 0,
+        "unresolved": 1
+      }
+    },
+    "latency_ms": 12371,
+    "top_rerank": 0.9211,
+    "gap": 0.0,
+    "coverage": 1.0,
+    "pregen_confidence": 98
+  },
+  {
+    "kind": "positive",
+    "tenant": "94ae05f1-0076-4937-97f9-98136aed9280",
+    "question": "Which industries are typical early adopters of credit risk prediction and inventory management technologies?",
+    "answered": true,
+    "faithfulness": 1.0,
+    "authorized": true,
+    "confidence": 75,
+    "retrieval": {
+      "similarity": 0.8046,
+      "coverage": 0.6667,
+      "entropy": 0.8249,
+      "retrievalConfidence": 64,
+      "pregenConfidence": 75,
+      "topRerank": 0.8046,
+      "gap": 0.0,
+      "rerankAvailable": true,
+      "conflicts": [
+        {
+          "type": "numeric",
+          "scope": "intra_document",
+          "documentA": "20f8f98f-43e0-40e7-8415-1c113ef4dec6",
+          "documentB": "20f8f98f-43e0-40e7-8415-1c113ef4dec6",
+          "valueA": 12.0,
+          "valueB": 13.0,
+          "statementA": "Shoaib Farooq 12",
+          "statementB": "Shoaib Farooq 13",
+          "context": "farooq shoaib",
+          "verified": true,
+          "resolution": {
+            "status": "unresolved",
+            "rule": "same_document",
+            "reason": "both statements come from the same document",
+            "winner": null,
+            "loser": null
+          }
+        }
+      ],
+      "conflictSummary": {
+        "total": 1,
+        "resolved": 0,
+        "unresolved": 1
+      }
+    },
+    "latency_ms": 7295,
+    "top_rerank": 0.8046,
+    "gap": 0.0,
+    "coverage": 0.6667,
+    "pregen_confidence": 75
+  },
+  {
+    "kind": "positive",
+    "tenant": "94ae05f1-0076-4937-97f9-98136aed9280",
+    "question": "When should aggregate entities be included in the dimensional model?",
+    "answered": true,
+    "faithfulness": 1.0,
+    "authorized": true,
+    "confidence": 100,
+    "retrieval": {
+      "similarity": 0.9763,
+      "coverage": 1.0,
+      "entropy": 0.9999,
+      "retrievalConfidence": 79,
+      "pregenConfidence": 100,
+      "topRerank": 0.9763,
+      "gap": 0.0,
+      "rerankAvailable": true,
+      "conflicts": [],
+      "conflictSummary": {
+        "total": 0,
+        "resolved": 0,
+        "unresolved": 0
+      }
+    },
+    "latency_ms": 6219,
+    "top_rerank": 0.9763,
+    "gap": 0.0,
+    "coverage": 1.0,
+    "pregen_confidence": 100
+  },
+  {
+    "kind": "positive",
+    "tenant": "94ae05f1-0076-4937-97f9-98136aed9280",
+    "question": "What does fully aggregate aware mean for strategies?",
+    "answered": true,
+    "faithfulness": 1.0,
+    "authorized": true,
+    "confidence": 97,
+    "retrieval": {
+      "similarity": 0.9017,
+      "coverage": 0.6667,
+      "entropy": 0.8942,
+      "retrievalConfidence": 67,
+      "pregenConfidence": 97,
+      "topRerank": 0.9017,
+      "gap": 0.0,
+      "rerankAvailable": true,
+      "conflicts": [],
+      "conflictSummary": {
+        "total": 0,
+        "resolved": 0,
+        "unresolved": 0
+      }
+    },
+    "latency_ms": 7409,
+    "top_rerank": 0.9017,
+    "gap": 0.0,
+    "coverage": 0.6667,
+    "pregen_confidence": 97
+  },
+  {
+    "kind": "positive",
+    "tenant": "94ae05f1-0076-4937-97f9-98136aed9280",
+    "question": "Why should you avoid pre-aggregating all combinations of dimensions in a ROLAP environment?",
+    "answered": true,
+    "faithfulness": 1.0,
+    "authorized": true,
+    "confidence": 100,
+    "retrieval": {
+      "similarity": 0.9896,
+      "coverage": 1.0,
+      "entropy": 0.9916,
+      "retrievalConfidence": 80,
+      "pregenConfidence": 100,
+      "topRerank": 0.9896,
+      "gap": 0.0,
+      "rerankAvailable": true,
+      "conflicts": [],
+      "conflictSummary": {
+        "total": 0,
+        "resolved": 0,
+        "unresolved": 0
+      }
+    },
+    "latency_ms": 3951,
+    "top_rerank": 0.9896,
+    "gap": 0.0,
+    "coverage": 1.0,
+    "pregen_confidence": 100
+  },
+  {
+    "kind": "positive",
+    "tenant": "94ae05f1-0076-4937-97f9-98136aed9280",
+    "question": "What will I learn about data warehouse performance in this course?",
+    "answered": true,
+    "faithfulness": 1.0,
+    "authorized": true,
+    "confidence": 98,
+    "retrieval": {
+      "similarity": 0.9112,
+      "coverage": 1.0,
+      "entropy": 0.9946,
+      "retrievalConfidence": 76,
+      "pregenConfidence": 98,
+      "topRerank": 0.9112,
+      "gap": 0.0,
+      "rerankAvailable": true,
+      "conflicts": [],
+      "conflictSummary": {
+        "total": 0,
+        "resolved": 0,
+        "unresolved": 0
+      }
+    },
+    "latency_ms": 9933,
+    "top_rerank": 0.9112,
+    "gap": 0.0,
+    "coverage": 1.0,
+    "pregen_confidence": 98
+  },
+  {
+    "kind": "positive",
+    "tenant": "94ae05f1-0076-4937-97f9-98136aed9280",
+    "question": "How do you calculate speedup using Amdahl's Law?",
+    "answered": true,
+    "faithfulness": 1.0,
+    "authorized": true,
+    "confidence": 100,
+    "retrieval": {
+      "similarity": 0.9851,
+      "coverage": 0.6667,
+      "entropy": 0.8119,
+      "retrievalConfidence": 73,
+      "pregenConfidence": 100,
+      "topRerank": 0.9851,
+      "gap": 0.0,
+      "rerankAvailable": true,
+      "conflicts": [],
+      "conflictSummary": {
+        "total": 0,
+        "resolved": 0,
+        "unresolved": 0
+      }
+    },
+    "latency_ms": 4021,
+    "top_rerank": 0.9851,
+    "gap": 0.0,
+    "coverage": 0.6667,
+    "pregen_confidence": 100
+  },
+  {
+    "kind": "positive",
+    "tenant": "94ae05f1-0076-4937-97f9-98136aed9280",
+    "question": "What tradeoffs should be considered when choosing a physical implementation for an OLAP deployment?",
+    "answered": true,
+    "faithfulness": 1.0,
+    "authorized": true,
+    "confidence": 100,
+    "retrieval": {
+      "similarity": 0.9947,
+      "coverage": 1.0,
+      "entropy": 0.9992,
+      "retrievalConfidence": 80,
+      "pregenConfidence": 100,
+      "topRerank": 0.9947,
+      "gap": 0.0,
+      "rerankAvailable": true,
+      "conflicts": [],
+      "conflictSummary": {
+        "total": 0,
+        "resolved": 0,
+        "unresolved": 0
+      }
+    },
+    "latency_ms": 3089,
+    "top_rerank": 0.9947,
+    "gap": 0.0,
+    "coverage": 1.0,
+    "pregen_confidence": 100
+  },
+  {
+    "kind": "positive",
+    "tenant": "94ae05f1-0076-4937-97f9-98136aed9280",
+    "question": "What are the differences between MOLAP, ROLAP, and HOLAP?",
+    "answered": true,
+    "faithfulness": 1.0,
+    "authorized": true,
+    "confidence": 100,
+    "retrieval": {
+      "similarity": 0.9824,
+      "coverage": 0.6667,
+      "entropy": 0.9008,
+      "retrievalConfidence": 71,
+      "pregenConfidence": 100,
+      "topRerank": 0.9824,
+      "gap": 0.0,
+      "rerankAvailable": true,
+      "conflicts": [],
+      "conflictSummary": {
+        "total": 0,
+        "resolved": 0,
+        "unresolved": 0
+      }
+    },
+    "latency_ms": 3208,
+    "top_rerank": 0.9824,
+    "gap": 0.0,
+    "coverage": 0.6667,
+    "pregen_confidence": 100
+  },
+  {
+    "kind": "positive",
+    "tenant": "94ae05f1-0076-4937-97f9-98136aed9280",
+    "question": "What are the main challenges and difficulties involved in implementing Business Intelligence and data warehouses?",
+    "answered": true,
+    "faithfulness": 1.0,
+    "authorized": true,
+    "confidence": 1,
+    "retrieval": {
+      "similarity": 0.5862,
+      "coverage": 0.6667,
+      "entropy": 0.9905,
+      "retrievalConfidence": 50,
+      "pregenConfidence": 1,
+      "topRerank": 0.5862,
+      "gap": 0.0,
+      "rerankAvailable": true,
+      "conflicts": [],
+      "conflictSummary": {
+        "total": 0,
+        "resolved": 0,
+        "unresolved": 0
+      }
+    },
+    "latency_ms": 3222,
+    "top_rerank": 0.5862,
+    "gap": 0.0,
+    "coverage": 0.6667,
+    "pregen_confidence": 1
+  },
+  {
+    "kind": "positive",
+    "tenant": "94ae05f1-0076-4937-97f9-98136aed9280",
+    "question": "What types of metrics can be used for pre-aggregates?",
+    "answered": true,
+    "faithfulness": 1.0,
+    "authorized": true,
+    "confidence": 96,
+    "retrieval": {
+      "similarity": 0.8844,
+      "coverage": 1.0,
+      "entropy": 1.0,
+      "retrievalConfidence": 74,
+      "pregenConfidence": 96,
+      "topRerank": 0.8844,
+      "gap": 0.0,
+      "rerankAvailable": true,
+      "conflicts": [],
+      "conflictSummary": {
+        "total": 0,
+        "resolved": 0,
+        "unresolved": 0
+      }
+    },
+    "latency_ms": 5966,
+    "top_rerank": 0.8844,
+    "gap": 0.0,
+    "coverage": 1.0,
+    "pregen_confidence": 96
+  },
+  {
+    "kind": "positive",
+    "tenant": "94ae05f1-0076-4937-97f9-98136aed9280",
+    "question": "What is the ultimate goal of a star schema design?",
+    "answered": true,
+    "faithfulness": 1.0,
+    "authorized": true,
+    "confidence": 100,
+    "retrieval": {
+      "similarity": 0.9995,
+      "coverage": 1.0,
+      "entropy": 0.9962,
+      "retrievalConfidence": 80,
+      "pregenConfidence": 100,
+      "topRerank": 0.9995,
+      "gap": 0.0,
+      "rerankAvailable": true,
+      "conflicts": [],
+      "conflictSummary": {
+        "total": 0,
+        "resolved": 0,
+        "unresolved": 0
+      }
+    },
+    "latency_ms": 5610,
+    "top_rerank": 0.9995,
+    "gap": 0.0,
+    "coverage": 1.0,
+    "pregen_confidence": 100
+  },
+  {
+    "kind": "positive",
+    "tenant": "94ae05f1-0076-4937-97f9-98136aed9280",
+    "question": "What is a data warehouse?",
+    "answered": true,
+    "faithfulness": 1.0,
+    "authorized": true,
+    "confidence": 100,
+    "retrieval": {
+      "similarity": 0.9981,
+      "coverage": 1.0,
+      "entropy": 1.0,
+      "retrievalConfidence": 80,
+      "pregenConfidence": 100,
+      "topRerank": 0.9981,
+      "gap": 0.0,
+      "rerankAvailable": true,
+      "conflicts": [
+        {
+          "type": "numeric",
+          "scope": "intra_document",
+          "documentA": "20f8f98f-43e0-40e7-8415-1c113ef4dec6",
+          "documentB": "20f8f98f-43e0-40e7-8415-1c113ef4dec6",
+          "valueA": 1.0,
+          "valueB": 2.0,
+          "statementA": "Shoaib Farooq 1",
+          "statementB": "Shoaib Farooq 2",
+          "context": "farooq shoaib",
+          "verified": true,
+          "resolution": {
+            "status": "unresolved",
+            "rule": "same_document",
+            "reason": "both statements come from the same document",
+            "winner": null,
+            "loser": null
+          }
+        }
+      ],
+      "conflictSummary": {
+        "total": 1,
+        "resolved": 0,
+        "unresolved": 1
+      }
+    },
+    "latency_ms": 4297,
+    "top_rerank": 0.9981,
+    "gap": 0.0,
+    "coverage": 1.0,
+    "pregen_confidence": 100
+  },
+  {
+    "kind": "positive",
+    "tenant": "94ae05f1-0076-4937-97f9-98136aed9280",
+    "question": "What is the difference between security groups and network ACLs?",
+    "answered": true,
+    "faithfulness": 1.0,
+    "authorized": true,
+    "confidence": 0,
+    "retrieval": {
+      "similarity": 0.0046,
+      "coverage": 0.0,
+      "entropy": 0.8005,
+      "retrievalConfidence": 4,
+      "pregenConfidence": 0,
+      "topRerank": 0.0046,
+      "gap": 0.0,
+      "rerankAvailable": true,
+      "conflicts": [
+        {
+          "type": "numeric",
+          "scope": "intra_document",
+          "documentA": "37bf089f-1255-49a0-8291-6b27adaa574c",
+          "documentB": "37bf089f-1255-49a0-8291-6b27adaa574c",
+          "valueA": 4.0,
+          "valueB": 5.0,
+          "statementA": "Case Study 4",
+          "statementB": "Case Study 5",
+          "context": "case study",
+          "verified": true,
+          "resolution": {
+            "status": "unresolved",
+            "rule": "same_document",
+            "reason": "both statements come from the same document",
+            "winner": null,
+            "loser": null
+          }
+        }
+      ],
+      "conflictSummary": {
+        "total": 1,
+        "resolved": 0,
+        "unresolved": 1
+      }
+    },
+    "latency_ms": 43812,
+    "top_rerank": 0.0046,
+    "gap": 0.0,
+    "coverage": 0.0,
+    "pregen_confidence": 0
+  },
+  {
+    "kind": "positive",
+    "tenant": "94ae05f1-0076-4937-97f9-98136aed9280",
+    "question": "What is a data warehouse?",
+    "answered": true,
+    "faithfulness": 1.0,
+    "authorized": true,
+    "confidence": 100,
+    "retrieval": {
+      "similarity": 0.9981,
+      "coverage": 1.0,
+      "entropy": 1.0,
+      "retrievalConfidence": 80,
+      "pregenConfidence": 100,
+      "topRerank": 0.9981,
+      "gap": 0.0,
+      "rerankAvailable": true,
+      "conflicts": [
+        {
+          "type": "numeric",
+          "scope": "intra_document",
+          "documentA": "20f8f98f-43e0-40e7-8415-1c113ef4dec6",
+          "documentB": "20f8f98f-43e0-40e7-8415-1c113ef4dec6",
+          "valueA": 1.0,
+          "valueB": 2.0,
+          "statementA": "Shoaib Farooq 1",
+          "statementB": "Shoaib Farooq 2",
+          "context": "farooq shoaib",
+          "verified": true,
+          "resolution": {
+            "status": "unresolved",
+            "rule": "same_document",
+            "reason": "both statements come from the same document",
+            "winner": null,
+            "loser": null
+          }
+        }
+      ],
+      "conflictSummary": {
+        "total": 1,
+        "resolved": 0,
+        "unresolved": 1
+      }
+    },
+    "latency_ms": 5742,
+    "top_rerank": 0.9981,
+    "gap": 0.0,
+    "coverage": 1.0,
+    "pregen_confidence": 100
+  },
+  {
+    "kind": "positive",
+    "tenant": "94ae05f1-0076-4937-97f9-98136aed9280",
+    "question": "What are the limitations of using a star schema in a data warehousing environment?",
+    "answered": true,
+    "faithfulness": 1.0,
+    "authorized": true,
+    "confidence": 99,
+    "retrieval": {
+      "similarity": 0.9599,
+      "coverage": 1.0,
+      "entropy": 0.981,
+      "retrievalConfidence": 78,
+      "pregenConfidence": 99,
+      "topRerank": 0.9599,
+      "gap": 0.0,
+      "rerankAvailable": true,
+      "conflicts": [],
+      "conflictSummary": {
+        "total": 0,
+        "resolved": 0,
+        "unresolved": 0
+      }
+    },
+    "latency_ms": 6795,
+    "top_rerank": 0.9599,
+    "gap": 0.0,
+    "coverage": 1.0,
+    "pregen_confidence": 99
+  },
+  {
+    "kind": "positive",
+    "tenant": "94ae05f1-0076-4937-97f9-98136aed9280",
+    "question": "Should my data warehouse architecture drive my choice of OLAP tools?",
+    "answered": true,
+    "faithfulness": 1.0,
+    "authorized": true,
+    "confidence": 99,
+    "retrieval": {
+      "similarity": 0.9301,
+      "coverage": 0.6667,
+      "entropy": 0.8951,
+      "retrievalConfidence": 69,
+      "pregenConfidence": 99,
+      "topRerank": 0.9301,
+      "gap": 0.0,
+      "rerankAvailable": true,
+      "conflicts": [],
+      "conflictSummary": {
+        "total": 0,
+        "resolved": 0,
+        "unresolved": 0
+      }
+    },
+    "latency_ms": 3440,
+    "top_rerank": 0.9301,
+    "gap": 0.0,
+    "coverage": 0.6667,
+    "pregen_confidence": 99
+  },
+  {
+    "kind": "positive",
+    "tenant": "94ae05f1-0076-4937-97f9-98136aed9280",
+    "question": "What is the difference between scalability and elasticity in cloud computing?",
+    "answered": true,
+    "faithfulness": 1.0,
+    "authorized": true,
+    "confidence": 94,
+    "retrieval": {
+      "similarity": 0.873,
+      "coverage": 0.6667,
+      "entropy": 0.6559,
+      "retrievalConfidence": 71,
+      "pregenConfidence": 94,
+      "topRerank": 0.873,
+      "gap": 0.0,
+      "rerankAvailable": true,
+      "conflicts": [
+        {
+          "type": "numeric",
+          "scope": "intra_document",
+          "documentA": "37bf089f-1255-49a0-8291-6b27adaa574c",
+          "documentB": "37bf089f-1255-49a0-8291-6b27adaa574c",
+          "valueA": 1.0,
+          "valueB": 2.0,
+          "statementA": "Case Study 1",
+          "statementB": "Case Study 2",
+          "context": "case study",
+          "verified": true,
+          "resolution": {
+            "status": "unresolved",
+            "rule": "same_document",
+            "reason": "both statements come from the same document",
+            "winner": null,
+            "loser": null
+          }
+        }
+      ],
+      "conflictSummary": {
+        "total": 1,
+        "resolved": 0,
+        "unresolved": 1
+      }
+    },
+    "latency_ms": 3193,
+    "top_rerank": 0.873,
+    "gap": 0.0,
+    "coverage": 0.6667,
+    "pregen_confidence": 94
+  },
+  {
+    "kind": "positive",
+    "tenant": "94ae05f1-0076-4937-97f9-98136aed9280",
+    "question": "Why do traditional optimizers tend to avoid considering cartesian product joins?",
+    "answered": true,
+    "faithfulness": 1.0,
+    "authorized": true,
+    "confidence": 100,
+    "retrieval": {
+      "similarity": 0.9996,
+      "coverage": 1.0,
+      "entropy": 1.0,
+      "retrievalConfidence": 80,
+      "pregenConfidence": 100,
+      "topRerank": 0.9996,
+      "gap": 0.0,
+      "rerankAvailable": true,
+      "conflicts": [],
+      "conflictSummary": {
+        "total": 0,
+        "resolved": 0,
+        "unresolved": 0
+      }
+    },
+    "latency_ms": 3600,
+    "top_rerank": 0.9996,
+    "gap": 0.0,
+    "coverage": 1.0,
+    "pregen_confidence": 100
+  },
+  {
+    "kind": "positive",
+    "tenant": "94ae05f1-0076-4937-97f9-98136aed9280",
+    "question": "What assumptions are used for the approximate calculations of block size and rows?",
+    "answered": true,
+    "faithfulness": 1.0,
+    "authorized": true,
+    "confidence": 0,
+    "retrieval": {
+      "similarity": 0.3838,
+      "coverage": 0.0,
+      "entropy": 0.6684,
+      "retrievalConfidence": 26,
+      "pregenConfidence": 0,
+      "topRerank": 0.3838,
+      "gap": 0.0,
+      "rerankAvailable": true,
+      "conflicts": [],
+      "conflictSummary": {
+        "total": 0,
+        "resolved": 0,
+        "unresolved": 0
+      }
+    },
+    "latency_ms": 7215,
+    "top_rerank": 0.3838,
+    "gap": 0.0,
+    "coverage": 0.0,
+    "pregen_confidence": 0
+  },
+  {
+    "kind": "positive",
+    "tenant": "47e6afba-634b-4271-9abe-6bbbc5895c4b",
+    "question": "How many days do I have to request a full refund?",
+    "answered": true,
+    "faithfulness": 1.0,
+    "authorized": true,
+    "confidence": 68,
+    "retrieval": {
+      "similarity": 0.855,
+      "coverage": 0.6667,
+      "entropy": 0.7415,
+      "retrievalConfidence": 68,
+      "pregenConfidence": 68,
+      "topRerank": 0.855,
+      "gap": 0.0721,
+      "rerankAvailable": false,
+      "conflicts": [],
+      "conflictSummary": {
+        "total": 0,
+        "resolved": 0,
+        "unresolved": 0
+      }
+    },
+    "latency_ms": 2772,
+    "top_rerank": 0.855,
+    "gap": 0.0721,
+    "coverage": 0.6667,
+    "pregen_confidence": 68
+  },
+  {
+    "kind": "positive",
+    "tenant": "47e6afba-634b-4271-9abe-6bbbc5895c4b",
+    "question": "Can I use this domain for testing and monitoring purposes?",
+    "answered": true,
+    "faithfulness": 1.0,
+    "authorized": true,
+    "confidence": 68,
+    "retrieval": {
+      "similarity": 0.8579,
+      "coverage": 0.6667,
+      "entropy": 0.7581,
+      "retrievalConfidence": 68,
+      "pregenConfidence": 68,
+      "topRerank": 0.8579,
+      "gap": 0.1009,
+      "rerankAvailable": false,
+      "conflicts": [],
+      "conflictSummary": {
+        "total": 0,
+        "resolved": 0,
+        "unresolved": 0
+      }
+    },
+    "latency_ms": 5957,
+    "top_rerank": 0.8579,
+    "gap": 0.1009,
+    "coverage": 0.6667,
+    "pregen_confidence": 68
+  },
+  {
+    "kind": "cross_tenant_probe",
+    "tenant": "47e6afba-634b-4271-9abe-6bbbc5895c4b",
+    "question": "What makes implementing business intelligence and data warehousing environments so difficult?",
+    "leaked": false,
+    "cited_sources": 2,
+    "answered": true,
+    "top_rerank": 0.7811,
+    "gap": 0.0332,
+    "coverage": 0.6667,
+    "pregen_confidence": 66
+  },
+  {
+    "kind": "cross_tenant_probe",
+    "tenant": "47e6afba-634b-4271-9abe-6bbbc5895c4b",
+    "question": "What should drive your choice of OLAP tools in a data warehouse?",
+    "leaked": false,
+    "cited_sources": 2,
+    "answered": true,
+    "top_rerank": 0.7645,
+    "gap": 0.0434,
+    "coverage": 1.0,
+    "pregen_confidence": 68
+  },
+  {
+    "kind": "cross_tenant_probe",
+    "tenant": "47e6afba-634b-4271-9abe-6bbbc5895c4b",
+    "question": "What is the difference between scalability and elasticity in cloud computing?",
+    "leaked": false,
+    "cited_sources": 2,
+    "answered": true,
+    "top_rerank": 0.7559,
+    "gap": 0.0231,
+    "coverage": 1.0,
+    "pregen_confidence": 68
+  },
+  {
+    "kind": "cross_tenant_probe",
+    "tenant": "47e6afba-634b-4271-9abe-6bbbc5895c4b",
+    "question": "What assumptions were used to calculate the approximate block size and sales distribution for the join steps?",
+    "leaked": false,
+    "cited_sources": 2,
+    "answered": true,
+    "top_rerank": 0.7217,
+    "gap": 0.0294,
+    "coverage": 0.6667,
+    "pregen_confidence": 63
+  },
+  {
+    "kind": "cross_tenant_probe",
+    "tenant": "47e6afba-634b-4271-9abe-6bbbc5895c4b",
+    "question": "What is a data warehouse?",
+    "leaked": false,
+    "cited_sources": 2,
+    "answered": true,
+    "top_rerank": 0.755,
+    "gap": 0.0383,
+    "coverage": 1.0,
+    "pregen_confidence": 68
+  },
+  {
+    "kind": "cross_tenant_probe",
+    "tenant": "47e6afba-634b-4271-9abe-6bbbc5895c4b",
+    "question": "What are the limitations of using a star schema in a data warehouse?",
+    "leaked": false,
+    "cited_sources": 2,
+    "answered": true,
+    "top_rerank": 0.7735,
+    "gap": 0.0286,
+    "coverage": 0.6667,
+    "pregen_confidence": 65
+  },
+  {
+    "kind": "cross_tenant_probe",
+    "tenant": "47e6afba-634b-4271-9abe-6bbbc5895c4b",
+    "question": "How is speedup calculated using Amdahl's Law?",
+    "leaked": false,
+    "cited_sources": 2,
+    "answered": true,
+    "top_rerank": 0.7658,
+    "gap": 0.0152,
+    "coverage": 0.6667,
+    "pregen_confidence": 65
+  },
+  {
+    "kind": "cross_tenant_probe",
+    "tenant": "47e6afba-634b-4271-9abe-6bbbc5895c4b",
+    "question": "How do you handle a cube that becomes too large to support in a single instance?",
+    "leaked": false,
+    "cited_sources": 2,
+    "answered": true,
+    "top_rerank": 0.7781,
+    "gap": 0.0239,
+    "coverage": 0.6667,
+    "pregen_confidence": 65
+  },
+  {
+    "kind": "cross_tenant_probe",
+    "tenant": "47e6afba-634b-4271-9abe-6bbbc5895c4b",
+    "question": "What is the ultimate goal of a star schema design?",
+    "leaked": false,
+    "cited_sources": 2,
+    "answered": true,
+    "top_rerank": 0.7273,
+    "gap": 0.0219,
+    "coverage": 1.0,
+    "pregen_confidence": 66
+  },
+  {
+    "kind": "cross_tenant_probe",
+    "tenant": "47e6afba-634b-4271-9abe-6bbbc5895c4b",
+    "question": "Why should I avoid pre-aggregating all dimension combinations in a ROLAP environment?",
+    "leaked": false,
+    "cited_sources": 2,
+    "answered": true,
+    "top_rerank": 0.8016,
+    "gap": 0.0481,
+    "coverage": 0.6667,
+    "pregen_confidence": 67
+  },
+  {
+    "kind": "off_topic",
+    "tenant": "94ae05f1-0076-4937-97f9-98136aed9280",
+    "question": "What is the capital of Australia?",
+    "answered": true,
+    "top_rerank": 0.0017,
+    "gap": 0.0005,
+    "coverage": 0.0,
+    "pregen_confidence": 0
+  },
+  {
+    "kind": "off_topic",
+    "tenant": "94ae05f1-0076-4937-97f9-98136aed9280",
+    "question": "Who won the football world cup in 2010?",
+    "answered": true,
+    "top_rerank": 0.0067,
+    "gap": 0.0023,
+    "coverage": 0.0,
+    "pregen_confidence": 0
+  },
+  {
+    "kind": "off_topic",
+    "tenant": "94ae05f1-0076-4937-97f9-98136aed9280",
+    "question": "How do I bake sourdough bread at home?",
+    "answered": true,
+    "top_rerank": 0.0008,
+    "gap": 0.0,
+    "coverage": 0.0,
+    "pregen_confidence": 0
+  },
+  {
+    "kind": "off_topic",
+    "tenant": "94ae05f1-0076-4937-97f9-98136aed9280",
+    "question": "What is the boiling point of water at sea level?",
+    "answered": true,
+    "top_rerank": 0.0036,
+    "gap": 0.0025,
+    "coverage": 0.0,
+    "pregen_confidence": 0
+  },
+  {
+    "kind": "off_topic",
+    "tenant": "94ae05f1-0076-4937-97f9-98136aed9280",
+    "question": "Can you recommend a good science fiction novel?",
+    "answered": true,
+    "top_rerank": 0.0059,
+    "gap": 0.002,
+    "coverage": 0.0,
+    "pregen_confidence": 0
+  },
+  {
+    "kind": "off_topic",
+    "tenant": "94ae05f1-0076-4937-97f9-98136aed9280",
+    "question": "How many moons does Jupiter have?",
+    "answered": true,
+    "top_rerank": 0.0153,
+    "gap": 0.0014,
+    "coverage": 0.0,
+    "pregen_confidence": 0
+  },
+  {
+    "kind": "off_topic",
+    "tenant": "94ae05f1-0076-4937-97f9-98136aed9280",
+    "question": "What is the square root of 1764?",
+    "answered": true,
+    "top_rerank": 0.0016,
+    "gap": 0.0,
+    "coverage": 0.0,
+    "pregen_confidence": 0
+  },
+  {
+    "kind": "off_topic",
+    "tenant": "94ae05f1-0076-4937-97f9-98136aed9280",
+    "question": "Who painted the Mona Lisa?",
+    "answered": true,
+    "top_rerank": 0.0027,
+    "gap": 0.0004,
+    "coverage": 0.0,
+    "pregen_confidence": 0
+  },
+  {
+    "kind": "off_topic",
+    "tenant": "94ae05f1-0076-4937-97f9-98136aed9280",
+    "question": "What is the best way to learn the guitar?",
+    "answered": true,
+    "top_rerank": 0.0006,
+    "gap": 0.0004,
+    "coverage": 0.0,
+    "pregen_confidence": 0
+  },
+  {
+    "kind": "off_topic",
+    "tenant": "94ae05f1-0076-4937-97f9-98136aed9280",
+    "question": "Explain how photosynthesis works.",
+    "answered": true,
+    "top_rerank": 0.0021,
+    "gap": 0.0008,
+    "coverage": 0.0,
+    "pregen_confidence": 0
+  },
+  {
+    "kind": "off_topic",
+    "tenant": "47e6afba-634b-4271-9abe-6bbbc5895c4b",
+    "question": "What is the capital of Australia?",
+    "answered": true,
+    "top_rerank": 0.7283,
+    "gap": 0.0226,
+    "coverage": 1.0,
+    "pregen_confidence": 66
+  },
+  {
+    "kind": "off_topic",
+    "tenant": "47e6afba-634b-4271-9abe-6bbbc5895c4b",
+    "question": "Who won the football world cup in 2010?",
+    "answered": true,
+    "top_rerank": 0.7244,
+    "gap": 0.0288,
+    "coverage": 1.0,
+    "pregen_confidence": 66
+  },
+  {
+    "kind": "off_topic",
+    "tenant": "47e6afba-634b-4271-9abe-6bbbc5895c4b",
+    "question": "How do I bake sourdough bread at home?",
+    "answered": true,
+    "top_rerank": 0.7534,
+    "gap": 0.0063,
+    "coverage": 1.0,
+    "pregen_confidence": 68
+  },
+  {
+    "kind": "off_topic",
+    "tenant": "47e6afba-634b-4271-9abe-6bbbc5895c4b",
+    "question": "What is the boiling point of water at sea level?",
+    "answered": true,
+    "top_rerank": 0.7517,
+    "gap": 0.0157,
+    "coverage": 1.0,
+    "pregen_confidence": 68
+  },
+  {
+    "kind": "off_topic",
+    "tenant": "47e6afba-634b-4271-9abe-6bbbc5895c4b",
+    "question": "Can you recommend a good science fiction novel?",
+    "answered": true,
+    "top_rerank": 0.7487,
+    "gap": 0.0297,
+    "coverage": 1.0,
+    "pregen_confidence": 67
+  },
+  {
+    "kind": "off_topic",
+    "tenant": "47e6afba-634b-4271-9abe-6bbbc5895c4b",
+    "question": "How many moons does Jupiter have?",
+    "answered": true,
+    "top_rerank": 0.7156,
+    "gap": 0.006,
+    "coverage": 1.0,
+    "pregen_confidence": 66
+  },
+  {
+    "kind": "off_topic",
+    "tenant": "47e6afba-634b-4271-9abe-6bbbc5895c4b",
+    "question": "What is the square root of 1764?",
+    "answered": true,
+    "top_rerank": 0.7483,
+    "gap": 0.0124,
+    "coverage": 1.0,
+    "pregen_confidence": 67
+  },
+  {
+    "kind": "off_topic",
+    "tenant": "47e6afba-634b-4271-9abe-6bbbc5895c4b",
+    "question": "Who painted the Mona Lisa?",
+    "answered": true,
+    "top_rerank": 0.6987,
+    "gap": 0.0303,
+    "coverage": 1.0,
+    "pregen_confidence": 65
+  },
+  {
+    "kind": "off_topic",
+    "tenant": "47e6afba-634b-4271-9abe-6bbbc5895c4b",
+    "question": "What is the best way to learn the guitar?",
+    "answered": true,
+    "top_rerank": 0.7335,
+    "gap": 0.0058,
+    "coverage": 0.6667,
+    "pregen_confidence": 63
+  },
+  {
+    "kind": "off_topic",
+    "tenant": "47e6afba-634b-4271-9abe-6bbbc5895c4b",
+    "question": "Explain how photosynthesis works.",
+    "answered": true,
+    "top_rerank": 0.7821,
+    "gap": 0.0227,
+    "coverage": 1.0,
+    "pregen_confidence": 69
+  }
+]

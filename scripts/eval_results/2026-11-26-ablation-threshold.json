@@ -1,0 +1,658 @@
+{
+  "summary": {
+    "n": {
+      "near_miss": 12,
+      "cross_tenant": 8,
+      "off_topic": 12,
+      "answerable_lexical": 17,
+      "answerable_paraphrased": 16
+    },
+    "ablation": {
+      "dense": {
+        "lexical": {
+          "n": 17,
+          "recall_at_5": 0.9411764705882353,
+          "mrr": 0.9117647058823529
+        },
+        "paraphrased": {
+          "n": 16,
+          "recall_at_5": 0.6875,
+          "mrr": 0.546875
+        }
+      },
+      "keyword": {
+        "lexical": {
+          "n": 17,
+          "recall_at_5": 1.0,
+          "mrr": 0.9215686274509804
+        },
+        "paraphrased": {
+          "n": 16,
+          "recall_at_5": 0.8125,
+          "mrr": 0.546875
+        }
+      },
+      "hybrid": {
+        "lexical": {
+          "n": 17,
+          "recall_at_5": 1.0,
+          "mrr": 0.9313725490196079
+        },
+        "paraphrased": {
+          "n": 16,
+          "recall_at_5": 0.75,
+          "mrr": 0.5572916666666666
+        }
+      },
+      "hybrid_rerank": {
+        "lexical": {
+          "n": 17,
+          "recall_at_5": 1.0,
+          "mrr": 1.0
+        },
+        "paraphrased": {
+          "n": 16,
+          "recall_at_5": 0.875,
+          "mrr": 0.6375
+        }
+      }
+    },
+    "band": 15,
+    "sweep_production_band": [
+      {
+        "threshold": 40,
+        "answerable_answered": 0.5454545454545454,
+        "unsupported_answer_rate": 0.0625,
+        "unanswerable_answered": 0.46875,
+        "near_miss_unsupported": 0.08333333333333333,
+        "off_topic_unsupported": 0.08333333333333333,
+        "cross_tenant_unsupported": 0.0
+      },
+      {
+        "threshold": 45,
+        "answerable_answered": 0.5454545454545454,
+        "unsupported_answer_rate": 0.0625,
+        "unanswerable_answered": 0.46875,
+        "near_miss_unsupported": 0.08333333333333333,
+        "off_topic_unsupported": 0.08333333333333333,
+        "cross_tenant_unsupported": 0.0
+      },
+      {
+        "threshold": 50,
+        "answerable_answered": 0.5454545454545454,
+        "unsupported_answer_rate": 0.0625,
+        "unanswerable_answered": 0.46875,
+        "near_miss_unsupported": 0.08333333333333333,
+        "off_topic_unsupported": 0.08333333333333333,
+        "cross_tenant_unsupported": 0.0
+      },
+      {
+        "threshold": 55,
+        "answerable_answered": 0.42424242424242425,
+        "unsupported_answer_rate": 0.03125,
+        "unanswerable_answered": 0.0625,
+        "near_miss_unsupported": 0.08333333333333333,
+        "off_topic_unsupported": 0.0,
+        "cross_tenant_unsupported": 0.0
+      },
+      {
+        "threshold": 60,
+        "answerable_answered": 0.42424242424242425,
+        "unsupported_answer_rate": 0.03125,
+        "unanswerable_answered": 0.0625,
+        "near_miss_unsupported": 0.08333333333333333,
+        "off_topic_unsupported": 0.0,
+        "cross_tenant_unsupported": 0.0
+      },
+      {
+        "threshold": 65,
+        "answerable_answered": 0.42424242424242425,
+        "unsupported_answer_rate": 0.03125,
+        "unanswerable_answered": 0.0625,
+        "near_miss_unsupported": 0.08333333333333333,
+        "off_topic_unsupported": 0.0,
+        "cross_tenant_unsupported": 0.0
+      },
+      {
+        "threshold": 70,
+        "answerable_answered": 0.3939393939393939,
+        "unsupported_answer_rate": 0.03125,
+        "unanswerable_answered": 0.0625,
+        "near_miss_unsupported": 0.08333333333333333,
+        "off_topic_unsupported": 0.0,
+        "cross_tenant_unsupported": 0.0
+      },
+      {
+        "threshold": 75,
+        "answerable_answered": 0.36363636363636365,
+        "unsupported_answer_rate": 0.03125,
+        "unanswerable_answered": 0.0625,
+        "near_miss_unsupported": 0.08333333333333333,
+        "off_topic_unsupported": 0.0,
+        "cross_tenant_unsupported": 0.0
+      },
+      {
+        "threshold": 80,
+        "answerable_answered": 0.36363636363636365,
+        "unsupported_answer_rate": 0.03125,
+        "unanswerable_answered": 0.03125,
+        "near_miss_unsupported": 0.08333333333333333,
+        "off_topic_unsupported": 0.0,
+        "cross_tenant_unsupported": 0.0
+      }
+    ],
+    "sweep_no_clarify": [
+      {
+        "threshold": 40,
+        "answerable_answered": 0.5757575757575758,
+        "unsupported_answer_rate": 0.0625,
+        "unanswerable_answered": 0.46875,
+        "near_miss_unsupported": 0.08333333333333333,
+        "off_topic_unsupported": 0.08333333333333333,
+        "cross_tenant_unsupported": 0.0
+      },
+      {
+        "threshold": 45,
+        "answerable_answered": 0.5454545454545454,
+        "unsupported_answer_rate": 0.0625,
+        "unanswerable_answered": 0.46875,
+        "near_miss_unsupported": 0.08333333333333333,
+        "off_topic_unsupported": 0.08333333333333333,
+        "cross_tenant_unsupported": 0.0
+      },
+      {
+        "threshold": 50,
+        "answerable_answered": 0.5454545454545454,
+        "unsupported_answer_rate": 0.0625,
+        "unanswerable_answered": 0.46875,
+        "near_miss_unsupported": 0.08333333333333333,
+        "off_topic_unsupported": 0.08333333333333333,
+        "cross_tenant_unsupported": 0.0
+      },
+      {
+        "threshold": 55,
+        "answerable_answered": 0.5454545454545454,
+        "unsupported_answer_rate": 0.0625,
+        "unanswerable_answered": 0.46875,
+        "near_miss_unsupported": 0.08333333333333333,
+        "off_topic_unsupported": 0.08333333333333333,
+        "cross_tenant_unsupported": 0.0
+      },
+      {
+        "threshold": 60,
+        "answerable_answered": 0.5454545454545454,
+        "unsupported_answer_rate": 0.0625,
+        "unanswerable_answered": 0.46875,
+        "near_miss_unsupported": 0.08333333333333333,
+        "off_topic_unsupported": 0.08333333333333333,
+        "cross_tenant_unsupported": 0.0
+      },
+      {
+        "threshold": 65,
+        "answerable_answered": 0.5454545454545454,
+        "unsupported_answer_rate": 0.0625,
+        "unanswerable_answered": 0.46875,
+        "near_miss_unsupported": 0.08333333333333333,
+        "off_topic_unsupported": 0.08333333333333333,
+        "cross_tenant_unsupported": 0.0
+      },
+      {
+        "threshold": 70,
+        "answerable_answered": 0.42424242424242425,
+        "unsupported_answer_rate": 0.03125,
+        "unanswerable_answered": 0.0625,
+        "near_miss_unsupported": 0.08333333333333333,
+        "off_topic_unsupported": 0.0,
+        "cross_tenant_unsupported": 0.0
+      },
+      {
+        "threshold": 75,
+        "answerable_answered": 0.42424242424242425,
+        "unsupported_answer_rate": 0.03125,
+        "unanswerable_answered": 0.0625,
+        "near_miss_unsupported": 0.08333333333333333,
+        "off_topic_unsupported": 0.0,
+        "cross_tenant_unsupported": 0.0
+      },
+      {
+        "threshold": 80,
+        "answerable_answered": 0.42424242424242425,
+        "unsupported_answer_rate": 0.03125,
+        "unanswerable_answered": 0.0625,
+        "near_miss_unsupported": 0.08333333333333333,
+        "off_topic_unsupported": 0.0,
+        "cross_tenant_unsupported": 0.0
+      }
+    ],
+    "gate_off": {
+      "answerable_answered": 1.0,
+      "unsupported_answer_rate": 0.0625
+    },
+    "answerable_correct_when_answered": 0.8787878787878788
+  },
+  "records": [
+    {
+      "set": "answerable_lexical",
+      "q": "What types of metrics can be stored in pre-aggregate summary tables?",
+      "conf": 80,
+      "asserted": true,
+      "correct": true
+    },
+    {
+      "set": "answerable_paraphrased",
+      "q": "Why do precomputed rollup tables take up so much storage and cost so much to keep current?",
+      "conf": 0,
+      "asserted": true,
+      "correct": true
+    },
+    {
+      "set": "answerable_lexical",
+      "q": "Can star schemas handle growing decision support needs, or do they eventually need multiple fact tables?",
+      "conf": 100,
+      "asserted": true,
+      "correct": true
+    },
+    {
+      "set": "answerable_paraphrased",
+      "q": "Will a basic reporting database design still meet our needs as our analytics requirements become more complex?",
+      "conf": 0,
+      "asserted": true,
+      "correct": true
+    },
+    {
+      "set": "answerable_lexical",
+      "q": "How many pre-aggregates are possible with just geography and calendar dimensions, and what happens when product is added?",
+      "conf": 100,
+      "asserted": true,
+      "correct": true
+    },
+    {
+      "set": "answerable_paraphrased",
+      "q": "Why can't we just summarize our data in every possible combination ahead of time?",
+      "conf": 0,
+      "asserted": true,
+      "correct": true
+    },
+    {
+      "set": "answerable_lexical",
+      "q": "What response time do OLAP queries need to execute within?",
+      "conf": 95,
+      "asserted": true,
+      "correct": true
+    },
+    {
+      "set": "answerable_paraphrased",
+      "q": "What kinds of industries typically adopt these analytics systems first, and why?",
+      "conf": 0,
+      "asserted": true,
+      "correct": true
+    },
+    {
+      "set": "answerable_lexical",
+      "q": "Why can't my VPC B and VPC C instances talk to each other through VPC A?",
+      "conf": 0,
+      "asserted": true,
+      "correct": true
+    },
+    {
+      "set": "answerable_paraphrased",
+      "q": "Why can't two of my networks reach each other just because they both connect to a third one?",
+      "conf": 0,
+      "asserted": true,
+      "correct": true
+    },
+    {
+      "set": "answerable_lexical",
+      "q": "What is the difference between MOLAP cubes and relational database aggregates in terms of storage and performance?",
+      "conf": 100,
+      "asserted": true,
+      "correct": true
+    },
+    {
+      "set": "answerable_paraphrased",
+      "q": "How do multidimensional data stores keep their summarized figures differently from regular database tables?",
+      "conf": 0,
+      "asserted": true,
+      "correct": true
+    },
+    {
+      "set": "answerable_lexical",
+      "q": "How many I/Os would a hash or sort-merge join need to scan the fact table, and how many rows are in the intermediate result for raincoat purchases?",
+      "conf": 100,
+      "asserted": true,
+      "correct": false
+    },
+    {
+      "set": "answerable_lexical",
+      "q": "What are the five stages of analytics in a data warehouse environment, from reporting what happened to activating what you want?",
+      "conf": 99,
+      "asserted": true,
+      "correct": true
+    },
+    {
+      "set": "answerable_paraphrased",
+      "q": "How does a company-wide analytics store differ from a smaller, team-specific one?",
+      "conf": 0,
+      "asserted": true,
+      "correct": false
+    },
+    {
+      "set": "answerable_lexical",
+      "q": "Why do star schemas improve performance and simplify SQL generation for OLAP analysis?",
+      "conf": 100,
+      "asserted": true,
+      "correct": true
+    },
+    {
+      "set": "answerable_paraphrased",
+      "q": "What makes star schema designs so fast for interactive OLAP analysis?",
+      "conf": 16,
+      "asserted": true,
+      "correct": true
+    },
+    {
+      "set": "answerable_lexical",
+      "q": "How can I control the trade-off between disk storage and query performance when designing pre-aggregates in an OLAP cube?",
+      "conf": 85,
+      "asserted": true,
+      "correct": false
+    },
+    {
+      "set": "answerable_paraphrased",
+      "q": "How can I balance my analytics data's storage footprint against how quickly reports load?",
+      "conf": 0,
+      "asserted": true,
+      "correct": true
+    },
+    {
+      "set": "answerable_lexical",
+      "q": "What is a data warehouse, and how does it differ from a single software or hardware product?",
+      "conf": 100,
+      "asserted": true,
+      "correct": true
+    },
+    {
+      "set": "answerable_paraphrased",
+      "q": "What exactly makes a data warehouse different from a single software product or piece of hardware?",
+      "conf": 95,
+      "asserted": true,
+      "correct": true
+    },
+    {
+      "set": "answerable_lexical",
+      "q": "What's the difference between scalability and elasticity in cloud computing?",
+      "conf": 96,
+      "asserted": true,
+      "correct": true
+    },
+    {
+      "set": "answerable_paraphrased",
+      "q": "What's the difference between permanently expanding capacity as demand grows and only temporarily adding and removing capacity during brief busy periods?",
+      "conf": 44,
+      "asserted": true,
+      "correct": true
+    },
+    {
+      "set": "answerable_lexical",
+      "q": "Why don't row counts shrink proportionally when data is aggregated up a dimensional hierarchy?",
+      "conf": 0,
+      "asserted": true,
+      "correct": true
+    },
+    {
+      "set": "answerable_paraphrased",
+      "q": "Why would a business track some cost adjustments for broader product groupings instead of individual item barcodes?",
+      "conf": 0,
+      "asserted": true,
+      "correct": true
+    },
+    {
+      "set": "answerable_lexical",
+      "q": "What is a data warehouse and how is it used for decision-making?",
+      "conf": 100,
+      "asserted": true,
+      "correct": true
+    },
+    {
+      "set": "answerable_paraphrased",
+      "q": "What kind of central storage holds company data pulled from operational systems, cleaned and organized so staff can make better decisions?",
+      "conf": 13,
+      "asserted": true,
+      "correct": true
+    },
+    {
+      "set": "answerable_lexical",
+      "q": "What is the difference between MOLAP, ROLAP, and HOLAP?",
+      "conf": 100,
+      "asserted": true,
+      "correct": true
+    },
+    {
+      "set": "answerable_paraphrased",
+      "q": "How do the different analytical reporting methods compare on speed and hand",
+      "conf": 0,
+      "asserted": true,
+      "correct": false
+    },
+    {
+      "set": "near_miss",
+      "q": "What percentage of rows is eliminated when sales data is aggregated from the UPC level to the SKU level?",
+      "conf": 1,
+      "asserted": false
+    },
+    {
+      "set": "near_miss",
+      "q": "How many days of query logs does the Usage-Based Optimization Wizard need to analyze before it recommends new aggregates?",
+      "conf": 90,
+      "asserted": false
+    },
+    {
+      "set": "near_miss",
+      "q": "How much storage would pre-aggregates need for a retail chain with 500 stores and 10,000 products?",
+      "conf": 0,
+      "asserted": false
+    },
+    {
+      "set": "near_miss",
+      "q": "How many sub-cubes does Microsoft Analytic Services typically create when partitioning a cube by geographic region?",
+      "conf": 1,
+      "asserted": false
+    },
+    {
+      "set": "near_miss",
+      "q": "How long would it take to read a terabyte of data with 10 parallel tasks?",
+      "conf": 98,
+      "asserted": true
+    },
+    {
+      "set": "near_miss",
+      "q": "How much query response time improvement does a MOLAP deployment deliver over a ROLAP deployment on the same dataset?",
+      "conf": 0,
+      "asserted": false
+    },
+    {
+      "set": "near_miss",
+      "q": "What specific hardware vendor or software product does an organization typically use to build its data warehouse?",
+      "conf": 4,
+      "asserted": false
+    },
+    {
+      "set": "near_miss",
+      "q": "What ephemeral port range do NACLs typically use for return traffic on Linux systems?",
+      "conf": 0,
+      "asserted": false
+    },
+    {
+      "set": "near_miss",
+      "q": "What specific response time threshold, in seconds, do end users expect for batch analytical queries in a data warehouse?",
+      "conf": 0,
+      "asserted": false
+    },
+    {
+      "set": "near_miss",
+      "q": "What specific performance improvement percentage do star schemas deliver over normalized schemas in Red Brick and Teradata?",
+      "conf": 10,
+      "asserted": false
+    },
+    {
+      "set": "near_miss",
+      "q": "What specific sales figures did the company's data warehouse report for the first quarter last year?",
+      "conf": 0,
+      "asserted": false
+    },
+    {
+      "set": "near_miss",
+      "q": "Which specific aggregate-awareness wizard vendor recommends building the most aggregates, and how many dimensions triggers a switch from MOLAP to relational storage?",
+      "conf": 11,
+      "asserted": false
+    },
+    {
+      "set": "answerable_lexical",
+      "q": "Can I use example.com for testing or monitoring my application?",
+      "conf": 68,
+      "asserted": true,
+      "correct": true
+    },
+    {
+      "set": "answerable_paraphrased",
+      "q": "Can I use this domain for my own testing or monitoring without asking anyone's permission?",
+      "conf": 68,
+      "asserted": true,
+      "correct": true
+    },
+    {
+      "set": "answerable_lexical",
+      "q": "What is Acme's refund policy?",
+      "conf": 68,
+      "asserted": true,
+      "correct": true
+    },
+    {
+      "set": "answerable_paraphrased",
+      "q": "How many working days will my package take to reach me if I live in Pakistan?",
+      "conf": 69,
+      "asserted": true,
+      "correct": true
+    },
+    {
+      "set": "off_topic",
+      "q": "What is the capital of Australia?",
+      "conf": 0,
+      "asserted": false
+    },
+    {
+      "set": "off_topic",
+      "q": "Who won the football world cup in 2010?",
+      "conf": 0,
+      "asserted": false
+    },
+    {
+      "set": "off_topic",
+      "q": "How do I bake sourdough bread at home?",
+      "conf": 0,
+      "asserted": false
+    },
+    {
+      "set": "off_topic",
+      "q": "What is the boiling point of water at sea level?",
+      "conf": 0,
+      "asserted": false
+    },
+    {
+      "set": "off_topic",
+      "q": "Can you recommend a good science fiction novel?",
+      "conf": 0,
+      "asserted": false
+    },
+    {
+      "set": "off_topic",
+      "q": "How many moons does Jupiter have?",
+      "conf": 0,
+      "asserted": false
+    },
+    {
+      "set": "off_topic",
+      "q": "What is the capital of Australia?",
+      "conf": 66,
+      "asserted": true
+    },
+    {
+      "set": "off_topic",
+      "q": "Who won the football world cup in 2010?",
+      "conf": 66,
+      "asserted": false
+    },
+    {
+      "set": "off_topic",
+      "q": "How do I bake sourdough bread at home?",
+      "conf": 68,
+      "asserted": false
+    },
+    {
+      "set": "off_topic",
+      "q": "What is the boiling point of water at sea level?",
+      "conf": 68,
+      "asserted": false
+    },
+    {
+      "set": "off_topic",
+      "q": "Can you recommend a good science fiction novel?",
+      "conf": 67,
+      "asserted": false
+    },
+    {
+      "set": "off_topic",
+      "q": "How many moons does Jupiter have?",
+      "conf": 66,
+      "asserted": false
+    },
+    {
+      "set": "cross_tenant",
+      "q": "What is the difference between MOLAP, ROLAP, and HOLAP?",
+      "conf": 68,
+      "asserted": false
+    },
+    {
+      "set": "cross_tenant",
+      "q": "Do star schemas always solve every decision support need, or do they have limits as systems grow?",
+      "conf": 0,
+      "asserted": false
+    },
+    {
+      "set": "cross_tenant",
+      "q": "How many I/Os would a hash or sort-merge join need to scan the fact table, and how does the query plan reduce the intermediate result set?",
+      "conf": 65,
+      "asserted": false
+    },
+    {
+      "set": "cross_tenant",
+      "q": "How can aggregate metrics be delivered without running aggregation on the most detailed warehouse data at query time?",
+      "conf": 66,
+      "asserted": false
+    },
+    {
+      "set": "cross_tenant",
+      "q": "Why do traditional query optimizers avoid cartesian product joins, and how can you encourage them to use one anyway?",
+      "conf": 67,
+      "asserted": false
+    },
+    {
+      "set": "cross_tenant",
+      "q": "How can a large OLAP cube be split into smaller sub-cubes, and how are queries handled across them?",
+      "conf": 69,
+      "asserted": false
+    },
+    {
+      "set": "cross_tenant",
+      "q": "How many pre-aggregates would there be with geography, calendar, and product dimensions combined?",
+      "conf": 67,
+      "asserted": false
+    },
+    {
+      "set": "cross_tenant",
+      "q": "Which kinds of metrics can I store in pre-aggregate summary tables?",
+      "conf": 69,
+      "asserted": false
+    }
+  ]
+}

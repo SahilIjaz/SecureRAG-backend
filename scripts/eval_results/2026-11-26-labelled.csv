@@ -1,0 +1,53 @@
+kind,tenant,question,top_rerank,gap,coverage,pregen_confidence,answered,faithfulness,label
+positive,94ae05f1-0076-4937-97f9-98136aed9280,What are the five stages of the data warehouse environment?,0.9211,0.0,1.0,98,True,1.0,1
+positive,94ae05f1-0076-4937-97f9-98136aed9280,Which industries are typical early adopters of credit risk prediction and inventory management technologies?,0.8046,0.0,0.6667,75,True,1.0,1
+positive,94ae05f1-0076-4937-97f9-98136aed9280,When should aggregate entities be included in the dimensional model?,0.9763,0.0,1.0,100,True,1.0,1
+positive,94ae05f1-0076-4937-97f9-98136aed9280,What does fully aggregate aware mean for strategies?,0.9017,0.0,0.6667,97,True,1.0,1
+positive,94ae05f1-0076-4937-97f9-98136aed9280,Why should you avoid pre-aggregating all combinations of dimensions in a ROLAP environment?,0.9896,0.0,1.0,100,True,1.0,1
+positive,94ae05f1-0076-4937-97f9-98136aed9280,What will I learn about data warehouse performance in this course?,0.9112,0.0,1.0,98,True,1.0,1
+positive,94ae05f1-0076-4937-97f9-98136aed9280,How do you calculate speedup using Amdahl's Law?,0.9851,0.0,0.6667,100,True,1.0,1
+positive,94ae05f1-0076-4937-97f9-98136aed9280,What tradeoffs should be considered when choosing a physical implementation for an OLAP deployment?,0.9947,0.0,1.0,100,True,1.0,1
+positive,94ae05f1-0076-4937-97f9-98136aed9280,"What are the differences between MOLAP, ROLAP, and HOLAP?",0.9824,0.0,0.6667,100,True,1.0,1
+positive,94ae05f1-0076-4937-97f9-98136aed9280,What are the main challenges and difficulties involved in implementing Business Intelligence and data warehouses?,0.5862,0.0,0.6667,1,True,1.0,1
+positive,94ae05f1-0076-4937-97f9-98136aed9280,What types of metrics can be used for pre-aggregates?,0.8844,0.0,1.0,96,True,1.0,1
+positive,94ae05f1-0076-4937-97f9-98136aed9280,What is the ultimate goal of a star schema design?,0.9995,0.0,1.0,100,True,1.0,1
+positive,94ae05f1-0076-4937-97f9-98136aed9280,What is a data warehouse?,0.9981,0.0,1.0,100,True,1.0,1
+positive,94ae05f1-0076-4937-97f9-98136aed9280,What is the difference between security groups and network ACLs?,0.0046,0.0,0.0,0,True,1.0,1
+positive,94ae05f1-0076-4937-97f9-98136aed9280,What is a data warehouse?,0.9981,0.0,1.0,100,True,1.0,1
+positive,94ae05f1-0076-4937-97f9-98136aed9280,What are the limitations of using a star schema in a data warehousing environment?,0.9599,0.0,1.0,99,True,1.0,1
+positive,94ae05f1-0076-4937-97f9-98136aed9280,Should my data warehouse architecture drive my choice of OLAP tools?,0.9301,0.0,0.6667,99,True,1.0,1
+positive,94ae05f1-0076-4937-97f9-98136aed9280,What is the difference between scalability and elasticity in cloud computing?,0.873,0.0,0.6667,94,True,1.0,1
+positive,94ae05f1-0076-4937-97f9-98136aed9280,Why do traditional optimizers tend to avoid considering cartesian product joins?,0.9996,0.0,1.0,100,True,1.0,1
+positive,94ae05f1-0076-4937-97f9-98136aed9280,What assumptions are used for the approximate calculations of block size and rows?,0.3838,0.0,0.0,0,True,1.0,1
+positive,47e6afba-634b-4271-9abe-6bbbc5895c4b,How many days do I have to request a full refund?,0.855,0.0721,0.6667,68,True,1.0,1
+positive,47e6afba-634b-4271-9abe-6bbbc5895c4b,Can I use this domain for testing and monitoring purposes?,0.8579,0.1009,0.6667,68,True,1.0,1
+cross_tenant_probe,47e6afba-634b-4271-9abe-6bbbc5895c4b,What makes implementing business intelligence and data warehousing environments so difficult?,0.7811,0.0332,0.6667,66,True,,0
+cross_tenant_probe,47e6afba-634b-4271-9abe-6bbbc5895c4b,What should drive your choice of OLAP tools in a data warehouse?,0.7645,0.0434,1.0,68,True,,0
+cross_tenant_probe,47e6afba-634b-4271-9abe-6bbbc5895c4b,What is the difference between scalability and elasticity in cloud computing?,0.7559,0.0231,1.0,68,True,,0
+cross_tenant_probe,47e6afba-634b-4271-9abe-6bbbc5895c4b,What assumptions were used to calculate the approximate block size and sales distribution for the join steps?,0.7217,0.0294,0.6667,63,True,,0
+cross_tenant_probe,47e6afba-634b-4271-9abe-6bbbc5895c4b,What is a data warehouse?,0.755,0.0383,1.0,68,True,,0
+cross_tenant_probe,47e6afba-634b-4271-9abe-6bbbc5895c4b,What are the limitations of using a star schema in a data warehouse?,0.7735,0.0286,0.6667,65,True,,0
+cross_tenant_probe,47e6afba-634b-4271-9abe-6bbbc5895c4b,How is speedup calculated using Amdahl's Law?,0.7658,0.0152,0.6667,65,True,,0
+cross_tenant_probe,47e6afba-634b-4271-9abe-6bbbc5895c4b,How do you handle a cube that becomes too large to support in a single instance?,0.7781,0.0239,0.6667,65,True,,0
+cross_tenant_probe,47e6afba-634b-4271-9abe-6bbbc5895c4b,What is the ultimate goal of a star schema design?,0.7273,0.0219,1.0,66,True,,0
+cross_tenant_probe,47e6afba-634b-4271-9abe-6bbbc5895c4b,Why should I avoid pre-aggregating all dimension combinations in a ROLAP environment?,0.8016,0.0481,0.6667,67,True,,0
+off_topic,94ae05f1-0076-4937-97f9-98136aed9280,What is the capital of Australia?,0.0017,0.0005,0.0,0,True,,0
+off_topic,94ae05f1-0076-4937-97f9-98136aed9280,Who won the football world cup in 2010?,0.0067,0.0023,0.0,0,True,,0
+off_topic,94ae05f1-0076-4937-97f9-98136aed9280,How do I bake sourdough bread at home?,0.0008,0.0,0.0,0,True,,0
+off_topic,94ae05f1-0076-4937-97f9-98136aed9280,What is the boiling point of water at sea level?,0.0036,0.0025,0.0,0,True,,0
+off_topic,94ae05f1-0076-4937-97f9-98136aed9280,Can you recommend a good science fiction novel?,0.0059,0.002,0.0,0,True,,0
+off_topic,94ae05f1-0076-4937-97f9-98136aed9280,How many moons does Jupiter have?,0.0153,0.0014,0.0,0,True,,0
+off_topic,94ae05f1-0076-4937-97f9-98136aed9280,What is the square root of 1764?,0.0016,0.0,0.0,0,True,,0
+off_topic,94ae05f1-0076-4937-97f9-98136aed9280,Who painted the Mona Lisa?,0.0027,0.0004,0.0,0,True,,0
+off_topic,94ae05f1-0076-4937-97f9-98136aed9280,What is the best way to learn the guitar?,0.0006,0.0004,0.0,0,True,,0
+off_topic,94ae05f1-0076-4937-97f9-98136aed9280,Explain how photosynthesis works.,0.0021,0.0008,0.0,0,True,,0
+off_topic,47e6afba-634b-4271-9abe-6bbbc5895c4b,What is the capital of Australia?,0.7283,0.0226,1.0,66,True,,0
+off_topic,47e6afba-634b-4271-9abe-6bbbc5895c4b,Who won the football world cup in 2010?,0.7244,0.0288,1.0,66,True,,0
+off_topic,47e6afba-634b-4271-9abe-6bbbc5895c4b,How do I bake sourdough bread at home?,0.7534,0.0063,1.0,68,True,,0
+off_topic,47e6afba-634b-4271-9abe-6bbbc5895c4b,What is the boiling point of water at sea level?,0.7517,0.0157,1.0,68,True,,0
+off_topic,47e6afba-634b-4271-9abe-6bbbc5895c4b,Can you recommend a good science fiction novel?,0.7487,0.0297,1.0,67,True,,0
+off_topic,47e6afba-634b-4271-9abe-6bbbc5895c4b,How many moons does Jupiter have?,0.7156,0.006,1.0,66,True,,0
+off_topic,47e6afba-634b-4271-9abe-6bbbc5895c4b,What is the square root of 1764?,0.7483,0.0124,1.0,67,True,,0
+off_topic,47e6afba-634b-4271-9abe-6bbbc5895c4b,Who painted the Mona Lisa?,0.6987,0.0303,1.0,65,True,,0
+off_topic,47e6afba-634b-4271-9abe-6bbbc5895c4b,What is the best way to learn the guitar?,0.7335,0.0058,0.6667,63,True,,0
+off_topic,47e6afba-634b-4271-9abe-6bbbc5895c4b,Explain how photosynthesis works.,0.7821,0.0227,1.0,69,True,,0
