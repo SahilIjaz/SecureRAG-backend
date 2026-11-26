@@ -67,3 +67,11 @@ migrations/__pycache__/
 
 .coverage
 *.partial
+
+# Test evidence is part of the submission (Chapter 6): keep it despite the *.md / *.log rules
+!test_results/
+!test_results/**
+!scripts/eval_results/
+!scripts/eval_results/**
+
+.pytest_cache/
