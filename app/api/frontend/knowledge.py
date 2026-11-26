@@ -164,7 +164,7 @@ async def get_stats(
         totalChunks=sum(d.chunk_count or 0 for d in docs),
         chunksLimit=display["chunks"],
         storageUsedMb=round(sum(d.file_size_mb or 0.0 for d in docs), 2),
-        storageLimitMb=float(quota.max_storage_mb) if quota else 0.0,
+        storageLimitMb=float(quota.max_storage_mb) if quota else float(display["storage_mb"]),
         wordsUsed=sum(d.word_count or 0 for d in docs),
         wordsLimit=display["words"],
         maxFileSizeMb=quota.max_file_size_mb if quota else settings.MAX_UPLOAD_SIZE_MB,

@@ -399,7 +399,7 @@ async def get_usage(
         # gate upload/FAQ/URL-scrape check against, and can drift after a
         # failed write; this number is always "what's actually there".
         storageUsedMb=round(storage_used_mb, 2),
-        storageTotalMb=float(quota.max_storage_mb) if quota else 0.0,
+        storageTotalMb=float(quota.max_storage_mb) if quota else float(display["storage_mb"]),
         wordsUsed=words_used,
         wordsTotal=display["words"],
         resetsOn=helpers.format_date(helpers.first_of_next_month()),

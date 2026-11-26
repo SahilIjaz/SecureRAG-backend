@@ -61,6 +61,7 @@ PLAN_DISPLAY_LIMITS: dict[str, dict[str, int]] = {
         "urls": ent.max_urls,
         "chunks": ent.max_chunks,
         "words": ent.max_words,
+        "storage_mb": ent.max_storage_mb,
     }
     for plan, ent in PLAN_ENTITLEMENTS.items()
 }
