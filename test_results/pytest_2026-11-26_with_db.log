@@ -1,0 +1,1245 @@
+D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\pytest_asyncio\plugin.py:306: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
+The event loop scope for asynchronous fixtures will default to the fixture scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to "function" scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session". Set it to "fixture-scope" to keep the current behavior.
+
+  warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
+........................................................................ [ 19%]
+........................................................................ [ 38%]
+........................................................................ [ 58%]
+........................................................................ [ 77%]
+........................................................................ [ 96%]
+............                                                             [100%]
+============================== warnings summary ===============================
+venv\Lib\site-packages\anyio\pytest_plugin.py:14
+  D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\anyio\pytest_plugin.py:14: PytestRemovedIn10Warning: _pytest.python.CallSpec2 has been renamed to CallSpec.
+  The CallSpec2 alias will be removed in pytest 10.
+  Update imports to use CallSpec instead.
+  See https://docs.pytest.org/en/stable/deprecations.html#callspec2-renamed
+    from _pytest.python import CallSpec2
+
+tests/test_tenant_isolation.py::test_cannot_delete_other_tenants_document
+  D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\slowapi\extension.py:635: DeprecationWarning: The 'warn' method is deprecated, use 'warning' instead
+    self.logger.warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=================================== PASSES ====================================
+________ test_retention_purge_only_removes_expired_rows_of_that_tenant ________
+------------------------------ Captured log call ------------------------------
+ERROR    sqlalchemy.pool.impl.AsyncAdaptedQueuePool:base.py:378 Exception closing connection <AdaptedConnection <asyncpg.connection.Connection object at 0x0000023936CFE4D0>>
+Traceback (most recent call last):
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\pool\base.py", line 376, in _close_connection
+    self._dialect.do_close(connection)
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\engine\default.py", line 708, in do_close
+    dbapi_connection.close()
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\dialects\postgresql\asyncpg.py", line 886, in close
+    self.await_(self._connection.close())
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 132, in await_only
+    return current.parent.switch(awaitable)  # type: ignore[no-any-return,attr-defined] # noqa: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 196, in greenlet_spawn
+    value = await result
+            ^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\asyncpg\connection.py", line 1467, in close
+    await self._protocol.close(timeout)
+  File "asyncpg\protocol\protocol.pyx", line 639, in close
+  File "asyncpg\protocol\coreproto.pyx", line 1125, in asyncpg.protocol.protocol.CoreProtocol._terminate
+  File "asyncpg\protocol\protocol.pyx", line 966, in asyncpg.protocol.protocol.BaseProtocol._write
+  File "C:\Users\hp\AppData\Local\Programs\Python\Python311\Lib\asyncio\proactor_events.py", line 365, in write
+    self._loop_writing(data=bytes(data))
+  File "C:\Users\hp\AppData\Local\Programs\Python\Python311\Lib\asyncio\proactor_events.py", line 401, in _loop_writing
+    self._write_fut = self._loop._proactor.send(self._sock, data)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'NoneType' object has no attribute 'send'
+_ test_traces_are_tenant_scoped_and_a_failed_trace_does_not_poison_the_session _
+------------------------------ Captured log call ------------------------------
+ERROR    sqlalchemy.pool.impl.AsyncAdaptedQueuePool:base.py:378 Exception closing connection <AdaptedConnection <asyncpg.connection.Connection object at 0x0000023936EBD120>>
+Traceback (most recent call last):
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\pool\base.py", line 376, in _close_connection
+    self._dialect.do_close(connection)
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\engine\default.py", line 708, in do_close
+    dbapi_connection.close()
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\dialects\postgresql\asyncpg.py", line 886, in close
+    self.await_(self._connection.close())
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 132, in await_only
+    return current.parent.switch(awaitable)  # type: ignore[no-any-return,attr-defined] # noqa: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 196, in greenlet_spawn
+    value = await result
+            ^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\asyncpg\connection.py", line 1467, in close
+    await self._protocol.close(timeout)
+  File "asyncpg\protocol\protocol.pyx", line 639, in close
+  File "asyncpg\protocol\coreproto.pyx", line 1125, in asyncpg.protocol.protocol.CoreProtocol._terminate
+  File "asyncpg\protocol\protocol.pyx", line 966, in asyncpg.protocol.protocol.BaseProtocol._write
+  File "C:\Users\hp\AppData\Local\Programs\Python\Python311\Lib\asyncio\proactor_events.py", line 365, in write
+    self._loop_writing(data=bytes(data))
+  File "C:\Users\hp\AppData\Local\Programs\Python\Python311\Lib\asyncio\proactor_events.py", line 401, in _loop_writing
+    self._write_fut = self._loop._proactor.send(self._sock, data)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'NoneType' object has no attribute 'send'
+ERROR    app.services.trace_service:trace_service.py:116 TRACE WRITE FAILED tenant=163a71e7-178a-4419-a40c-26be4b7cfb04 channel=test
+Traceback (most recent call last):
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\dialects\postgresql\asyncpg.py", line 534, in _prepare_and_execute
+    self._rows = deque(await prepared_stmt.fetch(*parameters))
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\asyncpg\prepared_stmt.py", line 176, in fetch
+    data = await self.__bind_execute(args, 0, timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\asyncpg\prepared_stmt.py", line 241, in __bind_execute
+    data, status, _ = await self.__do_execute(
+                      ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\asyncpg\prepared_stmt.py", line 230, in __do_execute
+    return await executor(protocol)
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "asyncpg\protocol\protocol.pyx", line 207, in bind_execute
+asyncpg.exceptions.ForeignKeyViolationError: insert or update on table "answer_traces" violates foreign key constraint "answer_traces_conversation_id_fkey"
+DETAIL:  Key (conversation_id)=(d0b70325-e1bf-40eb-ae97-77789a916250) is not present in table "conversations".
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\engine\base.py", line 1967, in _exec_single_context
+    self.dialect.do_execute(
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\engine\default.py", line 941, in do_execute
+    cursor.execute(statement, parameters)
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\dialects\postgresql\asyncpg.py", line 568, in execute
+    self._adapt_connection.await_(
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 132, in await_only
+    return current.parent.switch(awaitable)  # type: ignore[no-any-return,attr-defined] # noqa: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 196, in greenlet_spawn
+    value = await result
+            ^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\dialects\postgresql\asyncpg.py", line 546, in _prepare_and_execute
+    self._handle_exception(error)
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\dialects\postgresql\asyncpg.py", line 497, in _handle_exception
+    self._adapt_connection._handle_exception(error)
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\dialects\postgresql\asyncpg.py", line 780, in _handle_exception
+    raise translated_error from error
+sqlalchemy.dialects.postgresql.asyncpg.AsyncAdapt_asyncpg_dbapi.IntegrityError: <class 'asyncpg.exceptions.ForeignKeyViolationError'>: insert or update on table "answer_traces" violates foreign key constraint "answer_traces_conversation_id_fkey"
+DETAIL:  Key (conversation_id)=(d0b70325-e1bf-40eb-ae97-77789a916250) is not present in table "conversations".
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "d:\FYP\FYP-Code\Backend\app\services\trace_service.py", line 113, in record_trace
+    await db.flush()
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\ext\asyncio\session.py", line 800, in flush
+    await greenlet_spawn(self.sync_session.flush, objects=objects)
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 203, in greenlet_spawn
+    result = context.switch(value)
+             ^^^^^^^^^^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\orm\session.py", line 4352, in flush
+    self._flush(objects)
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\orm\session.py", line 4487, in _flush
+    with util.safe_reraise():
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\langhelpers.py", line 146, in __exit__
+    raise exc_value.with_traceback(exc_tb)
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\orm\session.py", line 4448, in _flush
+    flush_context.execute()
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\orm\unitofwork.py", line 466, in execute
+    rec.execute(self)
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\orm\unitofwork.py", line 642, in execute
+    util.preloaded.orm_persistence.save_obj(
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\orm\persistence.py", line 93, in save_obj
+    _emit_insert_statements(
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\orm\persistence.py", line 1233, in _emit_insert_statements
+    result = connection.execute(
+             ^^^^^^^^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\engine\base.py", line 1418, in execute
+    return meth(
+           ^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\sql\elements.py", line 515, in _execute_on_connection
+    return connection._execute_clauseelement(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\engine\base.py", line 1640, in _execute_clauseelement
+    ret = self._execute_context(
+          ^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\engine\base.py", line 1846, in _execute_context
+    return self._exec_single_context(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\engine\base.py", line 1986, in _exec_single_context
+    self._handle_dbapi_exception(
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\engine\base.py", line 2355, in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\engine\base.py", line 1967, in _exec_single_context
+    self.dialect.do_execute(
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\engine\default.py", line 941, in do_execute
+    cursor.execute(statement, parameters)
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\dialects\postgresql\asyncpg.py", line 568, in execute
+    self._adapt_connection.await_(
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 132, in await_only
+    return current.parent.switch(awaitable)  # type: ignore[no-any-return,attr-defined] # noqa: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 196, in greenlet_spawn
+    value = await result
+            ^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\dialects\postgresql\asyncpg.py", line 546, in _prepare_and_execute
+    self._handle_exception(error)
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\dialects\postgresql\asyncpg.py", line 497, in _handle_exception
+    self._adapt_connection._handle_exception(error)
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\dialects\postgresql\asyncpg.py", line 780, in _handle_exception
+    raise translated_error from error
+sqlalchemy.exc.IntegrityError: (sqlalchemy.dialects.postgresql.asyncpg.IntegrityError) <class 'asyncpg.exceptions.ForeignKeyViolationError'>: insert or update on table "answer_traces" violates foreign key constraint "answer_traces_conversation_id_fkey"
+DETAIL:  Key (conversation_id)=(d0b70325-e1bf-40eb-ae97-77789a916250) is not present in table "conversations".
+[SQL: INSERT INTO answer_traces (id, tenant_id, conversation_id, message_id, channel, question, answer, decision, confidence, provider, model, prompt_tokens, completion_tokens, total_tokens, latency_ms, retrieval, chunks, conflicts) VALUES ($1::UUID, $2::UUID, $3::UUID, $4::UUID, $5::VARCHAR, $6::VARCHAR, $7::VARCHAR, $8::VARCHAR, $9::INTEGER, $10::VARCHAR, $11::VARCHAR, $12::INTEGER, $13::INTEGER, $14::INTEGER, $15::INTEGER, $16::JSONB, $17::JSONB, $18::JSONB) RETURNING answer_traces.created_at]
+[parameters: (UUID('bc472099-0914-49ce-af40-c1ba315d33ef'), UUID('163a71e7-178a-4419-a40c-26be4b7cfb04'), UUID('d0b70325-e1bf-40eb-ae97-77789a916250'), None, 'test', 'q', 'a', 'answer', 80, 'gemini', 'm', 1, 1, 2, 5, '{"retrievalConfidence": 80}', '[]', '[]')]
+(Background on this error at: https://sqlalche.me/e/20/gkpj)
+_________ test_unpriced_model_is_billed_at_provider_fallback_not_free _________
+------------------------------ Captured log call ------------------------------
+WARNING  app.services.llm.pricing:pricing.py:73 No LLM_PRICING_TABLE entry for gemini/some-new-model — cost will be recorded as unknown
+__________ test_database_rejects_cross_tenant_and_self_supersession ___________
+------------------------------ Captured log call ------------------------------
+ERROR    sqlalchemy.pool.impl.AsyncAdaptedQueuePool:base.py:378 Exception closing connection <AdaptedConnection <asyncpg.connection.Connection object at 0x0000023936EBDC60>>
+Traceback (most recent call last):
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\pool\base.py", line 376, in _close_connection
+    self._dialect.do_close(connection)
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\engine\default.py", line 708, in do_close
+    dbapi_connection.close()
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\dialects\postgresql\asyncpg.py", line 886, in close
+    self.await_(self._connection.close())
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 132, in await_only
+    return current.parent.switch(awaitable)  # type: ignore[no-any-return,attr-defined] # noqa: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 196, in greenlet_spawn
+    value = await result
+            ^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\asyncpg\connection.py", line 1467, in close
+    await self._protocol.close(timeout)
+  File "asyncpg\protocol\protocol.pyx", line 639, in close
+  File "asyncpg\protocol\coreproto.pyx", line 1125, in asyncpg.protocol.protocol.CoreProtocol._terminate
+  File "asyncpg\protocol\protocol.pyx", line 966, in asyncpg.protocol.protocol.BaseProtocol._write
+  File "C:\Users\hp\AppData\Local\Programs\Python\Python311\Lib\asyncio\proactor_events.py", line 365, in write
+    self._loop_writing(data=bytes(data))
+  File "C:\Users\hp\AppData\Local\Programs\Python\Python311\Lib\asyncio\proactor_events.py", line 401, in _loop_writing
+    self._write_fut = self._loop._proactor.send(self._sock, data)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'NoneType' object has no attribute 'send'
+_____________________ test_authority_map_is_tenant_scoped _____________________
+------------------------------ Captured log call ------------------------------
+ERROR    sqlalchemy.pool.impl.AsyncAdaptedQueuePool:base.py:378 Exception closing connection <AdaptedConnection <asyncpg.connection.Connection object at 0x00000239371CB970>>
+Traceback (most recent call last):
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\pool\base.py", line 376, in _close_connection
+    self._dialect.do_close(connection)
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\engine\default.py", line 708, in do_close
+    dbapi_connection.close()
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\dialects\postgresql\asyncpg.py", line 886, in close
+    self.await_(self._connection.close())
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 132, in await_only
+    return current.parent.switch(awaitable)  # type: ignore[no-any-return,attr-defined] # noqa: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 196, in greenlet_spawn
+    value = await result
+            ^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\asyncpg\connection.py", line 1467, in close
+    await self._protocol.close(timeout)
+  File "asyncpg\protocol\protocol.pyx", line 639, in close
+  File "asyncpg\protocol\coreproto.pyx", line 1125, in asyncpg.protocol.protocol.CoreProtocol._terminate
+  File "asyncpg\protocol\protocol.pyx", line 966, in asyncpg.protocol.protocol.BaseProtocol._write
+  File "C:\Users\hp\AppData\Local\Programs\Python\Python311\Lib\asyncio\proactor_events.py", line 365, in write
+    self._loop_writing(data=bytes(data))
+  File "C:\Users\hp\AppData\Local\Programs\Python\Python311\Lib\asyncio\proactor_events.py", line 401, in _loop_writing
+    self._write_fut = self._loop._proactor.send(self._sock, data)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'NoneType' object has no attribute 'send'
+________________________ test_generate_stops_at_budget ________________________
+------------------------------ Captured log call ------------------------------
+WARNING  app.services.llm.router:router.py:110 LLM budget exhausted before trying gemini/m1
+_______________ test_refresh_sweep_skips_documents_not_yet_due ________________
+------------------------------ Captured log call ------------------------------
+ERROR    sqlalchemy.pool.impl.AsyncAdaptedQueuePool:base.py:378 Exception closing connection <AdaptedConnection <asyncpg.connection.Connection object at 0x0000023936EBEF20>>
+Traceback (most recent call last):
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\pool\base.py", line 376, in _close_connection
+    self._dialect.do_close(connection)
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\engine\default.py", line 708, in do_close
+    dbapi_connection.close()
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\dialects\postgresql\asyncpg.py", line 886, in close
+    self.await_(self._connection.close())
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 132, in await_only
+    return current.parent.switch(awaitable)  # type: ignore[no-any-return,attr-defined] # noqa: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 196, in greenlet_spawn
+    value = await result
+            ^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\asyncpg\connection.py", line 1467, in close
+    await self._protocol.close(timeout)
+  File "asyncpg\protocol\protocol.pyx", line 639, in close
+  File "asyncpg\protocol\coreproto.pyx", line 1125, in asyncpg.protocol.protocol.CoreProtocol._terminate
+  File "asyncpg\protocol\protocol.pyx", line 966, in asyncpg.protocol.protocol.BaseProtocol._write
+  File "C:\Users\hp\AppData\Local\Programs\Python\Python311\Lib\asyncio\proactor_events.py", line 365, in write
+    self._loop_writing(data=bytes(data))
+  File "C:\Users\hp\AppData\Local\Programs\Python\Python311\Lib\asyncio\proactor_events.py", line 401, in _loop_writing
+    self._write_fut = self._loop._proactor.send(self._sock, data)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'NoneType' object has no attribute 'send'
+__________ test_refresh_sweep_updates_last_checked_at_when_unchanged __________
+------------------------------ Captured log call ------------------------------
+ERROR    sqlalchemy.pool.impl.AsyncAdaptedQueuePool:base.py:378 Exception closing connection <AdaptedConnection <asyncpg.connection.Connection object at 0x000002393750E4D0>>
+Traceback (most recent call last):
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\pool\base.py", line 376, in _close_connection
+    self._dialect.do_close(connection)
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\engine\default.py", line 708, in do_close
+    dbapi_connection.close()
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\dialects\postgresql\asyncpg.py", line 886, in close
+    self.await_(self._connection.close())
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 132, in await_only
+    return current.parent.switch(awaitable)  # type: ignore[no-any-return,attr-defined] # noqa: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 196, in greenlet_spawn
+    value = await result
+            ^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\asyncpg\connection.py", line 1467, in close
+    await self._protocol.close(timeout)
+  File "asyncpg\protocol\protocol.pyx", line 639, in close
+  File "asyncpg\protocol\coreproto.pyx", line 1125, in asyncpg.protocol.protocol.CoreProtocol._terminate
+  File "asyncpg\protocol\protocol.pyx", line 966, in asyncpg.protocol.protocol.BaseProtocol._write
+  File "C:\Users\hp\AppData\Local\Programs\Python\Python311\Lib\asyncio\proactor_events.py", line 365, in write
+    self._loop_writing(data=bytes(data))
+  File "C:\Users\hp\AppData\Local\Programs\Python\Python311\Lib\asyncio\proactor_events.py", line 401, in _loop_writing
+    self._write_fut = self._loop._proactor.send(self._sock, data)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'NoneType' object has no attribute 'send'
+______________ test_refresh_sweep_reschedules_a_changed_document ______________
+------------------------------ Captured log call ------------------------------
+ERROR    sqlalchemy.pool.impl.AsyncAdaptedQueuePool:base.py:378 Exception closing connection <AdaptedConnection <asyncpg.connection.Connection object at 0x000002393750EF20>>
+Traceback (most recent call last):
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\pool\base.py", line 376, in _close_connection
+    self._dialect.do_close(connection)
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\engine\default.py", line 708, in do_close
+    dbapi_connection.close()
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\dialects\postgresql\asyncpg.py", line 886, in close
+    self.await_(self._connection.close())
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 132, in await_only
+    return current.parent.switch(awaitable)  # type: ignore[no-any-return,attr-defined] # noqa: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 196, in greenlet_spawn
+    value = await result
+            ^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\asyncpg\connection.py", line 1467, in close
+    await self._protocol.close(timeout)
+  File "asyncpg\protocol\protocol.pyx", line 639, in close
+  File "asyncpg\protocol\coreproto.pyx", line 1125, in asyncpg.protocol.protocol.CoreProtocol._terminate
+  File "asyncpg\protocol\protocol.pyx", line 966, in asyncpg.protocol.protocol.BaseProtocol._write
+  File "C:\Users\hp\AppData\Local\Programs\Python\Python311\Lib\asyncio\proactor_events.py", line 365, in write
+    self._loop_writing(data=bytes(data))
+  File "C:\Users\hp\AppData\Local\Programs\Python\Python311\Lib\asyncio\proactor_events.py", line 401, in _loop_writing
+    self._write_fut = self._loop._proactor.send(self._sock, data)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'NoneType' object has no attribute 'send'
+__________ test_refresh_sweep_leaves_document_alone_when_probe_fails __________
+------------------------------ Captured log call ------------------------------
+ERROR    sqlalchemy.pool.impl.AsyncAdaptedQueuePool:base.py:378 Exception closing connection <AdaptedConnection <asyncpg.connection.Connection object at 0x000002393750F100>>
+Traceback (most recent call last):
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\pool\base.py", line 376, in _close_connection
+    self._dialect.do_close(connection)
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\engine\default.py", line 708, in do_close
+    dbapi_connection.close()
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\dialects\postgresql\asyncpg.py", line 886, in close
+    self.await_(self._connection.close())
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 132, in await_only
+    return current.parent.switch(awaitable)  # type: ignore[no-any-return,attr-defined] # noqa: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 196, in greenlet_spawn
+    value = await result
+            ^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\asyncpg\connection.py", line 1467, in close
+    await self._protocol.close(timeout)
+  File "asyncpg\protocol\protocol.pyx", line 639, in close
+  File "asyncpg\protocol\coreproto.pyx", line 1125, in asyncpg.protocol.protocol.CoreProtocol._terminate
+  File "asyncpg\protocol\protocol.pyx", line 966, in asyncpg.protocol.protocol.BaseProtocol._write
+  File "C:\Users\hp\AppData\Local\Programs\Python\Python311\Lib\asyncio\proactor_events.py", line 365, in write
+    self._loop_writing(data=bytes(data))
+  File "C:\Users\hp\AppData\Local\Programs\Python\Python311\Lib\asyncio\proactor_events.py", line 401, in _loop_writing
+    self._write_fut = self._loop._proactor.send(self._sock, data)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'NoneType' object has no attribute 'send'
+___________ test_word_limit_blocks_a_document_that_would_exceed_it ____________
+------------------------------ Captured log call ------------------------------
+ERROR    sqlalchemy.pool.impl.AsyncAdaptedQueuePool:base.py:378 Exception closing connection <AdaptedConnection <asyncpg.connection.Connection object at 0x000002393750F970>>
+Traceback (most recent call last):
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\pool\base.py", line 376, in _close_connection
+    self._dialect.do_close(connection)
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\engine\default.py", line 708, in do_close
+    dbapi_connection.close()
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\dialects\postgresql\asyncpg.py", line 886, in close
+    self.await_(self._connection.close())
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 132, in await_only
+    return current.parent.switch(awaitable)  # type: ignore[no-any-return,attr-defined] # noqa: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 196, in greenlet_spawn
+    value = await result
+            ^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\asyncpg\connection.py", line 1467, in close
+    await self._protocol.close(timeout)
+  File "asyncpg\protocol\protocol.pyx", line 639, in close
+  File "asyncpg\protocol\coreproto.pyx", line 1125, in asyncpg.protocol.protocol.CoreProtocol._terminate
+  File "asyncpg\protocol\protocol.pyx", line 966, in asyncpg.protocol.protocol.BaseProtocol._write
+  File "C:\Users\hp\AppData\Local\Programs\Python\Python311\Lib\asyncio\proactor_events.py", line 365, in write
+    self._loop_writing(data=bytes(data))
+  File "C:\Users\hp\AppData\Local\Programs\Python\Python311\Lib\asyncio\proactor_events.py", line 401, in _loop_writing
+    self._write_fut = self._loop._proactor.send(self._sock, data)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'NoneType' object has no attribute 'send'
+_________________ test_word_limit_allows_a_document_that_fits _________________
+------------------------------ Captured log call ------------------------------
+ERROR    sqlalchemy.pool.impl.AsyncAdaptedQueuePool:base.py:378 Exception closing connection <AdaptedConnection <asyncpg.connection.Connection object at 0x0000023948459B70>>
+Traceback (most recent call last):
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\pool\base.py", line 376, in _close_connection
+    self._dialect.do_close(connection)
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\engine\default.py", line 708, in do_close
+    dbapi_connection.close()
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\dialects\postgresql\asyncpg.py", line 886, in close
+    self.await_(self._connection.close())
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 132, in await_only
+    return current.parent.switch(awaitable)  # type: ignore[no-any-return,attr-defined] # noqa: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 196, in greenlet_spawn
+    value = await result
+            ^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\asyncpg\connection.py", line 1467, in close
+    await self._protocol.close(timeout)
+  File "asyncpg\protocol\protocol.pyx", line 639, in close
+  File "asyncpg\protocol\coreproto.pyx", line 1125, in asyncpg.protocol.protocol.CoreProtocol._terminate
+  File "asyncpg\protocol\protocol.pyx", line 966, in asyncpg.protocol.protocol.BaseProtocol._write
+  File "C:\Users\hp\AppData\Local\Programs\Python\Python311\Lib\asyncio\proactor_events.py", line 365, in write
+    self._loop_writing(data=bytes(data))
+  File "C:\Users\hp\AppData\Local\Programs\Python\Python311\Lib\asyncio\proactor_events.py", line 401, in _loop_writing
+    self._write_fut = self._loop._proactor.send(self._sock, data)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'NoneType' object has no attribute 'send'
+___________ test_chunk_limit_blocks_a_document_that_would_exceed_it ___________
+------------------------------ Captured log call ------------------------------
+ERROR    sqlalchemy.pool.impl.AsyncAdaptedQueuePool:base.py:378 Exception closing connection <AdaptedConnection <asyncpg.connection.Connection object at 0x000002394845AD40>>
+Traceback (most recent call last):
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\pool\base.py", line 376, in _close_connection
+    self._dialect.do_close(connection)
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\engine\default.py", line 708, in do_close
+    dbapi_connection.close()
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\dialects\postgresql\asyncpg.py", line 886, in close
+    self.await_(self._connection.close())
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 132, in await_only
+    return current.parent.switch(awaitable)  # type: ignore[no-any-return,attr-defined] # noqa: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 196, in greenlet_spawn
+    value = await result
+            ^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\asyncpg\connection.py", line 1467, in close
+    await self._protocol.close(timeout)
+  File "asyncpg\protocol\protocol.pyx", line 639, in close
+  File "asyncpg\protocol\coreproto.pyx", line 1125, in asyncpg.protocol.protocol.CoreProtocol._terminate
+  File "asyncpg\protocol\protocol.pyx", line 966, in asyncpg.protocol.protocol.BaseProtocol._write
+  File "C:\Users\hp\AppData\Local\Programs\Python\Python311\Lib\asyncio\proactor_events.py", line 365, in write
+    self._loop_writing(data=bytes(data))
+  File "C:\Users\hp\AppData\Local\Programs\Python\Python311\Lib\asyncio\proactor_events.py", line 401, in _loop_writing
+    self._write_fut = self._loop._proactor.send(self._sock, data)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'NoneType' object has no attribute 'send'
+________ test_limits_check_excludes_the_document_being_indexed_itself _________
+------------------------------ Captured log call ------------------------------
+ERROR    sqlalchemy.pool.impl.AsyncAdaptedQueuePool:base.py:378 Exception closing connection <AdaptedConnection <asyncpg.connection.Connection object at 0x000002394845B5B0>>
+Traceback (most recent call last):
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\pool\base.py", line 376, in _close_connection
+    self._dialect.do_close(connection)
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\engine\default.py", line 708, in do_close
+    dbapi_connection.close()
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\dialects\postgresql\asyncpg.py", line 886, in close
+    self.await_(self._connection.close())
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 132, in await_only
+    return current.parent.switch(awaitable)  # type: ignore[no-any-return,attr-defined] # noqa: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 196, in greenlet_spawn
+    value = await result
+            ^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\asyncpg\connection.py", line 1467, in close
+    await self._protocol.close(timeout)
+  File "asyncpg\protocol\protocol.pyx", line 639, in close
+  File "asyncpg\protocol\coreproto.pyx", line 1125, in asyncpg.protocol.protocol.CoreProtocol._terminate
+  File "asyncpg\protocol\protocol.pyx", line 966, in asyncpg.protocol.protocol.BaseProtocol._write
+  File "C:\Users\hp\AppData\Local\Programs\Python\Python311\Lib\asyncio\proactor_events.py", line 365, in write
+    self._loop_writing(data=bytes(data))
+  File "C:\Users\hp\AppData\Local\Programs\Python\Python311\Lib\asyncio\proactor_events.py", line 401, in _loop_writing
+    self._write_fut = self._loop._proactor.send(self._sock, data)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'NoneType' object has no attribute 'send'
+_______ test_get_active_document_totals_sums_live_and_ignores_inactive ________
+------------------------------ Captured log call ------------------------------
+ERROR    sqlalchemy.pool.impl.AsyncAdaptedQueuePool:base.py:378 Exception closing connection <AdaptedConnection <asyncpg.connection.Connection object at 0x000002394845B880>>
+Traceback (most recent call last):
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\pool\base.py", line 376, in _close_connection
+    self._dialect.do_close(connection)
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\engine\default.py", line 708, in do_close
+    dbapi_connection.close()
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\dialects\postgresql\asyncpg.py", line 886, in close
+    self.await_(self._connection.close())
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 132, in await_only
+    return current.parent.switch(awaitable)  # type: ignore[no-any-return,attr-defined] # noqa: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 196, in greenlet_spawn
+    value = await result
+            ^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\asyncpg\connection.py", line 1467, in close
+    await self._protocol.close(timeout)
+  File "asyncpg\protocol\protocol.pyx", line 639, in close
+  File "asyncpg\protocol\coreproto.pyx", line 1125, in asyncpg.protocol.protocol.CoreProtocol._terminate
+  File "asyncpg\protocol\protocol.pyx", line 966, in asyncpg.protocol.protocol.BaseProtocol._write
+  File "C:\Users\hp\AppData\Local\Programs\Python\Python311\Lib\asyncio\proactor_events.py", line 365, in write
+    self._loop_writing(data=bytes(data))
+  File "C:\Users\hp\AppData\Local\Programs\Python\Python311\Lib\asyncio\proactor_events.py", line 401, in _loop_writing
+    self._write_fut = self._loop._proactor.send(self._sock, data)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'NoneType' object has no attribute 'send'
+_________ test_faq_entries_are_blocked_once_storage_limit_is_reached __________
+------------------------------ Captured log call ------------------------------
+ERROR    sqlalchemy.pool.impl.AsyncAdaptedQueuePool:base.py:378 Exception closing connection <AdaptedConnection <asyncpg.connection.Connection object at 0x000002394845BD30>>
+Traceback (most recent call last):
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\pool\base.py", line 376, in _close_connection
+    self._dialect.do_close(connection)
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\engine\default.py", line 708, in do_close
+    dbapi_connection.close()
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\dialects\postgresql\asyncpg.py", line 886, in close
+    self.await_(self._connection.close())
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 132, in await_only
+    return current.parent.switch(awaitable)  # type: ignore[no-any-return,attr-defined] # noqa: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 196, in greenlet_spawn
+    value = await result
+            ^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\asyncpg\connection.py", line 1467, in close
+    await self._protocol.close(timeout)
+  File "asyncpg\protocol\protocol.pyx", line 639, in close
+  File "asyncpg\protocol\coreproto.pyx", line 1125, in asyncpg.protocol.protocol.CoreProtocol._terminate
+  File "asyncpg\protocol\protocol.pyx", line 966, in asyncpg.protocol.protocol.BaseProtocol._write
+  File "C:\Users\hp\AppData\Local\Programs\Python\Python311\Lib\asyncio\proactor_events.py", line 365, in write
+    self._loop_writing(data=bytes(data))
+  File "C:\Users\hp\AppData\Local\Programs\Python\Python311\Lib\asyncio\proactor_events.py", line 401, in _loop_writing
+    self._write_fut = self._loop._proactor.send(self._sock, data)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'NoneType' object has no attribute 'send'
+_________________ test_document_list_contains_only_own_tenant _________________
+----------------------------- Captured log setup ------------------------------
+ERROR    sqlalchemy.pool.impl.AsyncAdaptedQueuePool:base.py:378 Exception closing connection <AdaptedConnection <asyncpg.connection.Connection object at 0x000002394845B3D0>>
+Traceback (most recent call last):
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\pool\base.py", line 376, in _close_connection
+    self._dialect.do_close(connection)
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\engine\default.py", line 708, in do_close
+    dbapi_connection.close()
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\dialects\postgresql\asyncpg.py", line 886, in close
+    self.await_(self._connection.close())
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 132, in await_only
+    return current.parent.switch(awaitable)  # type: ignore[no-any-return,attr-defined] # noqa: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 196, in greenlet_spawn
+    value = await result
+            ^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\asyncpg\connection.py", line 1467, in close
+    await self._protocol.close(timeout)
+  File "asyncpg\protocol\protocol.pyx", line 639, in close
+  File "asyncpg\protocol\coreproto.pyx", line 1125, in asyncpg.protocol.protocol.CoreProtocol._terminate
+  File "asyncpg\protocol\protocol.pyx", line 966, in asyncpg.protocol.protocol.BaseProtocol._write
+  File "C:\Users\hp\AppData\Local\Programs\Python\Python311\Lib\asyncio\proactor_events.py", line 365, in write
+    self._loop_writing(data=bytes(data))
+  File "C:\Users\hp\AppData\Local\Programs\Python\Python311\Lib\asyncio\proactor_events.py", line 401, in _loop_writing
+    self._write_fut = self._loop._proactor.send(self._sock, data)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'NoneType' object has no attribute 'send'
+__________________ test_cannot_delete_other_tenants_document __________________
+----------------------------- Captured log setup ------------------------------
+ERROR    sqlalchemy.pool.impl.AsyncAdaptedQueuePool:base.py:378 Exception closing connection <AdaptedConnection <asyncpg.connection.Connection object at 0x000002394845AF20>>
+Traceback (most recent call last):
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\pool\base.py", line 376, in _close_connection
+    self._dialect.do_close(connection)
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\engine\default.py", line 708, in do_close
+    dbapi_connection.close()
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\dialects\postgresql\asyncpg.py", line 886, in close
+    self.await_(self._connection.close())
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 132, in await_only
+    return current.parent.switch(awaitable)  # type: ignore[no-any-return,attr-defined] # noqa: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 196, in greenlet_spawn
+    value = await result
+            ^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\asyncpg\connection.py", line 1467, in close
+    await self._protocol.close(timeout)
+  File "asyncpg\protocol\protocol.pyx", line 639, in close
+  File "asyncpg\protocol\coreproto.pyx", line 1125, in asyncpg.protocol.protocol.CoreProtocol._terminate
+  File "asyncpg\protocol\protocol.pyx", line 966, in asyncpg.protocol.protocol.BaseProtocol._write
+  File "C:\Users\hp\AppData\Local\Programs\Python\Python311\Lib\asyncio\proactor_events.py", line 365, in write
+    self._loop_writing(data=bytes(data))
+  File "C:\Users\hp\AppData\Local\Programs\Python\Python311\Lib\asyncio\proactor_events.py", line 401, in _loop_writing
+    self._write_fut = self._loop._proactor.send(self._sock, data)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'NoneType' object has no attribute 'send'
+------------------------------ Captured log call ------------------------------
+WARNING  slowapi:extension.py:635 Rate limit storage unreachable - falling back to in-memory storage
+_______________ test_conversation_list_contains_only_own_tenant _______________
+----------------------------- Captured log setup ------------------------------
+ERROR    sqlalchemy.pool.impl.AsyncAdaptedQueuePool:base.py:378 Exception closing connection <AdaptedConnection <asyncpg.connection.Connection object at 0x00000239485A0B80>>
+Traceback (most recent call last):
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\pool\base.py", line 376, in _close_connection
+    self._dialect.do_close(connection)
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\engine\default.py", line 708, in do_close
+    dbapi_connection.close()
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\dialects\postgresql\asyncpg.py", line 886, in close
+    self.await_(self._connection.close())
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 132, in await_only
+    return current.parent.switch(awaitable)  # type: ignore[no-any-return,attr-defined] # noqa: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 196, in greenlet_spawn
+    value = await result
+            ^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\asyncpg\connection.py", line 1467, in close
+    await self._protocol.close(timeout)
+  File "asyncpg\protocol\protocol.pyx", line 639, in close
+  File "asyncpg\protocol\coreproto.pyx", line 1125, in asyncpg.protocol.protocol.CoreProtocol._terminate
+  File "asyncpg\protocol\protocol.pyx", line 966, in asyncpg.protocol.protocol.BaseProtocol._write
+  File "C:\Users\hp\AppData\Local\Programs\Python\Python311\Lib\asyncio\proactor_events.py", line 365, in write
+    self._loop_writing(data=bytes(data))
+  File "C:\Users\hp\AppData\Local\Programs\Python\Python311\Lib\asyncio\proactor_events.py", line 401, in _loop_writing
+    self._write_fut = self._loop._proactor.send(self._sock, data)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'NoneType' object has no attribute 'send'
+_________________ test_cannot_read_other_tenants_conversation _________________
+----------------------------- Captured log setup ------------------------------
+ERROR    sqlalchemy.pool.impl.AsyncAdaptedQueuePool:base.py:378 Exception closing connection <AdaptedConnection <asyncpg.connection.Connection object at 0x000002394845B1F0>>
+Traceback (most recent call last):
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\pool\base.py", line 376, in _close_connection
+    self._dialect.do_close(connection)
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\engine\default.py", line 708, in do_close
+    dbapi_connection.close()
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\dialects\postgresql\asyncpg.py", line 886, in close
+    self.await_(self._connection.close())
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 132, in await_only
+    return current.parent.switch(awaitable)  # type: ignore[no-any-return,attr-defined] # noqa: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 196, in greenlet_spawn
+    value = await result
+            ^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\asyncpg\connection.py", line 1467, in close
+    await self._protocol.close(timeout)
+  File "asyncpg\protocol\protocol.pyx", line 639, in close
+  File "asyncpg\protocol\coreproto.pyx", line 1125, in asyncpg.protocol.protocol.CoreProtocol._terminate
+  File "asyncpg\protocol\protocol.pyx", line 966, in asyncpg.protocol.protocol.BaseProtocol._write
+  File "C:\Users\hp\AppData\Local\Programs\Python\Python311\Lib\asyncio\proactor_events.py", line 365, in write
+    self._loop_writing(data=bytes(data))
+  File "C:\Users\hp\AppData\Local\Programs\Python\Python311\Lib\asyncio\proactor_events.py", line 401, in _loop_writing
+    self._write_fut = self._loop._proactor.send(self._sock, data)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'NoneType' object has no attribute 'send'
+___________ test_cannot_modify_or_delete_other_tenants_conversation ___________
+----------------------------- Captured log setup ------------------------------
+ERROR    sqlalchemy.pool.impl.AsyncAdaptedQueuePool:base.py:378 Exception closing connection <AdaptedConnection <asyncpg.connection.Connection object at 0x00000239484594E0>>
+Traceback (most recent call last):
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\pool\base.py", line 376, in _close_connection
+    self._dialect.do_close(connection)
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\engine\default.py", line 708, in do_close
+    dbapi_connection.close()
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\dialects\postgresql\asyncpg.py", line 886, in close
+    self.await_(self._connection.close())
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 132, in await_only
+    return current.parent.switch(awaitable)  # type: ignore[no-any-return,attr-defined] # noqa: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 196, in greenlet_spawn
+    value = await result
+            ^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\asyncpg\connection.py", line 1467, in close
+    await self._protocol.close(timeout)
+  File "asyncpg\protocol\protocol.pyx", line 639, in close
+  File "asyncpg\protocol\coreproto.pyx", line 1125, in asyncpg.protocol.protocol.CoreProtocol._terminate
+  File "asyncpg\protocol\protocol.pyx", line 966, in asyncpg.protocol.protocol.BaseProtocol._write
+  File "C:\Users\hp\AppData\Local\Programs\Python\Python311\Lib\asyncio\proactor_events.py", line 365, in write
+    self._loop_writing(data=bytes(data))
+  File "C:\Users\hp\AppData\Local\Programs\Python\Python311\Lib\asyncio\proactor_events.py", line 401, in _loop_writing
+    self._write_fut = self._loop._proactor.send(self._sock, data)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'NoneType' object has no attribute 'send'
+__________ test_token_for_tenant_a_cannot_impersonate_tenant_b_user ___________
+----------------------------- Captured log setup ------------------------------
+ERROR    sqlalchemy.pool.impl.AsyncAdaptedQueuePool:base.py:378 Exception closing connection <AdaptedConnection <asyncpg.connection.Connection object at 0x00000239485A3970>>
+Traceback (most recent call last):
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\pool\base.py", line 376, in _close_connection
+    self._dialect.do_close(connection)
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\engine\default.py", line 708, in do_close
+    dbapi_connection.close()
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\dialects\postgresql\asyncpg.py", line 886, in close
+    self.await_(self._connection.close())
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 132, in await_only
+    return current.parent.switch(awaitable)  # type: ignore[no-any-return,attr-defined] # noqa: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 196, in greenlet_spawn
+    value = await result
+            ^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\asyncpg\connection.py", line 1467, in close
+    await self._protocol.close(timeout)
+  File "asyncpg\protocol\protocol.pyx", line 639, in close
+  File "asyncpg\protocol\coreproto.pyx", line 1125, in asyncpg.protocol.protocol.CoreProtocol._terminate
+  File "asyncpg\protocol\protocol.pyx", line 966, in asyncpg.protocol.protocol.BaseProtocol._write
+  File "C:\Users\hp\AppData\Local\Programs\Python\Python311\Lib\asyncio\proactor_events.py", line 365, in write
+    self._loop_writing(data=bytes(data))
+  File "C:\Users\hp\AppData\Local\Programs\Python\Python311\Lib\asyncio\proactor_events.py", line 401, in _loop_writing
+    self._write_fut = self._loop._proactor.send(self._sock, data)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'NoneType' object has no attribute 'send'
+_____________________ test_issue_and_rotate_refresh_token _____________________
+------------------------------ Captured log call ------------------------------
+ERROR    sqlalchemy.pool.impl.AsyncAdaptedQueuePool:base.py:378 Exception closing connection <AdaptedConnection <asyncpg.connection.Connection object at 0x00000239485A27A0>>
+Traceback (most recent call last):
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\pool\base.py", line 376, in _close_connection
+    self._dialect.do_close(connection)
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\engine\default.py", line 708, in do_close
+    dbapi_connection.close()
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\dialects\postgresql\asyncpg.py", line 886, in close
+    self.await_(self._connection.close())
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 132, in await_only
+    return current.parent.switch(awaitable)  # type: ignore[no-any-return,attr-defined] # noqa: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 196, in greenlet_spawn
+    value = await result
+            ^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\asyncpg\connection.py", line 1467, in close
+    await self._protocol.close(timeout)
+  File "asyncpg\protocol\protocol.pyx", line 639, in close
+  File "asyncpg\protocol\coreproto.pyx", line 1125, in asyncpg.protocol.protocol.CoreProtocol._terminate
+  File "asyncpg\protocol\protocol.pyx", line 966, in asyncpg.protocol.protocol.BaseProtocol._write
+  File "C:\Users\hp\AppData\Local\Programs\Python\Python311\Lib\asyncio\proactor_events.py", line 365, in write
+    self._loop_writing(data=bytes(data))
+  File "C:\Users\hp\AppData\Local\Programs\Python\Python311\Lib\asyncio\proactor_events.py", line 401, in _loop_writing
+    self._write_fut = self._loop._proactor.send(self._sock, data)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'NoneType' object has no attribute 'send'
+______ test_reusing_a_rotated_refresh_token_is_rejected_and_revokes_all _______
+------------------------------ Captured log call ------------------------------
+ERROR    sqlalchemy.pool.impl.AsyncAdaptedQueuePool:base.py:378 Exception closing connection <AdaptedConnection <asyncpg.connection.Connection object at 0x0000023948631C60>>
+Traceback (most recent call last):
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\pool\base.py", line 376, in _close_connection
+    self._dialect.do_close(connection)
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\engine\default.py", line 708, in do_close
+    dbapi_connection.close()
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\dialects\postgresql\asyncpg.py", line 886, in close
+    self.await_(self._connection.close())
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 132, in await_only
+    return current.parent.switch(awaitable)  # type: ignore[no-any-return,attr-defined] # noqa: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 196, in greenlet_spawn
+    value = await result
+            ^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\asyncpg\connection.py", line 1467, in close
+    await self._protocol.close(timeout)
+  File "asyncpg\protocol\protocol.pyx", line 639, in close
+  File "asyncpg\protocol\coreproto.pyx", line 1125, in asyncpg.protocol.protocol.CoreProtocol._terminate
+  File "asyncpg\protocol\protocol.pyx", line 966, in asyncpg.protocol.protocol.BaseProtocol._write
+  File "C:\Users\hp\AppData\Local\Programs\Python\Python311\Lib\asyncio\proactor_events.py", line 365, in write
+    self._loop_writing(data=bytes(data))
+  File "C:\Users\hp\AppData\Local\Programs\Python\Python311\Lib\asyncio\proactor_events.py", line 401, in _loop_writing
+    self._write_fut = self._loop._proactor.send(self._sock, data)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'NoneType' object has no attribute 'send'
+________ test_revoke_all_refresh_tokens_marks_every_live_token_revoked ________
+------------------------------ Captured log call ------------------------------
+ERROR    sqlalchemy.pool.impl.AsyncAdaptedQueuePool:base.py:378 Exception closing connection <AdaptedConnection <asyncpg.connection.Connection object at 0x0000023948631300>>
+Traceback (most recent call last):
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\pool\base.py", line 376, in _close_connection
+    self._dialect.do_close(connection)
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\engine\default.py", line 708, in do_close
+    dbapi_connection.close()
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\dialects\postgresql\asyncpg.py", line 886, in close
+    self.await_(self._connection.close())
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 132, in await_only
+    return current.parent.switch(awaitable)  # type: ignore[no-any-return,attr-defined] # noqa: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\sqlalchemy\util\_concurrency_py3k.py", line 196, in greenlet_spawn
+    value = await result
+            ^^^^^^^^^^^^
+  File "D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\asyncpg\connection.py", line 1467, in close
+    await self._protocol.close(timeout)
+  File "asyncpg\protocol\protocol.pyx", line 639, in close
+  File "asyncpg\protocol\coreproto.pyx", line 1125, in asyncpg.protocol.protocol.CoreProtocol._terminate
+  File "asyncpg\protocol\protocol.pyx", line 966, in asyncpg.protocol.protocol.BaseProtocol._write
+  File "C:\Users\hp\AppData\Local\Programs\Python\Python311\Lib\asyncio\proactor_events.py", line 365, in write
+    self._loop_writing(data=bytes(data))
+  File "C:\Users\hp\AppData\Local\Programs\Python\Python311\Lib\asyncio\proactor_events.py", line 401, in _loop_writing
+    self._write_fut = self._loop._proactor.send(self._sock, data)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'NoneType' object has no attribute 'send'
+=============================== tests coverage ================================
+_______________ coverage: platform win32, python 3.11.9-final-0 _______________
+
+Name                                         Stmts   Miss  Cover
+----------------------------------------------------------------
+app\__init__.py                                  0      0   100%
+app\api\__init__.py                              0      0   100%
+app\api\billing_webhook.py                      64     53    17%
+app\api\frontend\__init__.py                     0      0   100%
+app\api\frontend\audit.py                      172     53    69%
+app\api\frontend\auth.py                       225    163    28%
+app\api\frontend\chatbot.py                    335    255    24%
+app\api\frontend\conversations.py              199    117    41%
+app\api\frontend\dashboard.py                  178    129    28%
+app\api\frontend\helpers.py                    192    103    46%
+app\api\frontend\knowledge.py                  250    177    29%
+app\api\frontend\model_options.py               64     26    59%
+app\api\frontend\notifications.py               52     27    48%
+app\api\frontend\onboarding.py                 217    177    18%
+app\api\frontend\presence.py                    14      3    79%
+app\api\frontend\public_bot.py                 129     85    34%
+app\api\frontend\router.py                      17      0   100%
+app\api\frontend\settings.py                   335    239    29%
+app\api\frontend\team.py                        39     11    72%
+app\api\frontend\user.py                        88     54    39%
+app\api\ptt_ws.py                              193    155    20%
+app\api\public\__init__.py                       0      0   100%
+app\api\public\widget.py                       503    377    25%
+app\config.py                                  164      9    95%
+app\core\__init__.py                             0      0   100%
+app\core\audit_middleware.py                    96      9    91%
+app\core\background.py                           7      0   100%
+app\core\chunking.py                            44     12    73%
+app\core\email.py                               60     44    27%
+app\core\embeddings.py                          61     44    28%
+app\core\entitlements.py                        45      0   100%
+app\core\ip_validator.py                        44     35    20%
+app\core\ocr.py                                 36     36     0%
+app\core\perf_timing.py                         24      3    88%
+app\core\pq_crypto.py                          106     18    83%
+app\core\rate_limit.py                          19      3    84%
+app\core\rbac.py                                31      9    71%
+app\core\redis_client.py                        28     28     0%
+app\core\retry.py                               18     12    33%
+app\core\scraper.py                            701    275    61%
+app\core\security.py                            34      0   100%
+app\core\storage.py                             62     33    47%
+app\core\subscription_guard.py                  52     21    60%
+app\core\validation.py                          30      0   100%
+app\core\vector_store.py                        87     68    22%
+app\core\widget_auth.py                         74      4    95%
+app\core\ws_notifications.py                    55     19    65%
+app\database.py                                 27      3    89%
+app\main.py                                    128     55    57%
+app\models\__init__.py                          24      0   100%
+app\models\answer_trace.py                      32      1    97%
+app\models\audit_log.py                         35      1    97%
+app\models\chatbot_config.py                    18      1    94%
+app\models\conversation.py                      47      2    96%
+app\models\document.py                          59      1    98%
+app\models\document_chunk.py                    18      1    94%
+app\models\email_verification.py                25      1    96%
+app\models\invite.py                            26      2    92%
+app\models\llm_usage_log.py                     23      1    96%
+app\models\notification.py                      23      1    96%
+app\models\processed_stripe_event.py            11      1    91%
+app\models\ptt_session.py                       34      1    97%
+app\models\refresh_token.py                     18      1    94%
+app\models\revoked_token.py                     15      1    93%
+app\models\sample_document.py                   20      1    95%
+app\models\subscription.py                      39      1    97%
+app\models\tenant.py                            36      1    97%
+app\models\tenant_quota.py                      23      1    96%
+app\models\tenant_settings.py                   38      0   100%
+app\models\tenant_user.py                       25      1    96%
+app\models\usage_count.py                       23      1    96%
+app\models\user.py                              31      1    97%
+app\models\wallet_transaction.py                20      1    95%
+app\schemas\__init__.py                          0      0   100%
+app\schemas\frontend.py                        523      5    99%
+app\services\__init__.py                         0      0   100%
+app\services\audit_service.py                  216     60    72%
+app\services\auth_service.py                   279    168    40%
+app\services\call_transcript_service.py        157    119    24%
+app\services\classification_service.py          78     59    24%
+app\services\confidence.py                      45      1    98%
+app\services\conflict_detection.py             371     61    84%
+app\services\conflict_resolution.py             76      4    95%
+app\services\conversation_service.py           101     79    22%
+app\services\document_authority_service.py     109     34    69%
+app\services\document_service.py               236    183    22%
+app\services\hybrid_search.py                   97     64    34%
+app\services\indexing_service.py               321    238    26%
+app\services\llm\__init__.py                     0      0   100%
+app\services\llm\anthropic_provider.py          61     45    26%
+app\services\llm\base.py                        24      0   100%
+app\services\llm\gemini_provider.py             81     53    35%
+app\services\llm\pricing.py                     44     10    77%
+app\services\llm\provider_catalog.py             4      1    75%
+app\services\llm\router.py                     121     61    50%
+app\services\notification_service.py           106     77    27%
+app\services\rag_service.py                    534    343    36%
+app\services\small_talk_gate.py                 27      0   100%
+app\services\stripe_service.py                 446    376    16%
+app\services\team_service.py                    97     71    27%
+app\services\trace_service.py                   72     24    67%
+app\services\wallet_service.py                  75     48    36%
+----------------------------------------------------------------
+TOTAL                                        10263   5152    50%
+Coverage XML written to file test_results/coverage_2026-11-26.xml
+=========================== short test summary info ===========================
+PASSED tests/test_api_integration.py::test_health_endpoint
+PASSED tests/test_api_integration.py::test_every_protected_route_rejects_anonymous
+PASSED tests/test_api_integration.py::test_malformed_authorization_rejected[Bearer junk]
+PASSED tests/test_api_integration.py::test_malformed_authorization_rejected[Bearer a.b.c]
+PASSED tests/test_api_integration.py::test_malformed_authorization_rejected[Basic abc]
+PASSED tests/test_api_integration.py::test_malformed_authorization_rejected[Bearer ]
+PASSED tests/test_api_integration.py::test_refresh_token_cannot_authenticate_api_call
+PASSED tests/test_api_integration.py::test_forged_token_rejected
+PASSED tests/test_api_integration.py::test_unknown_route_is_404
+PASSED tests/test_api_integration.py::test_cors_blocks_unlisted_origin
+PASSED tests/test_api_integration.py::test_health_response_leaks_no_traceback
+PASSED tests/test_audit.py::test_hash_is_deterministic_and_covers_content
+PASSED tests/test_audit.py::test_canonical_content_is_timezone_and_type_stable
+PASSED tests/test_audit.py::test_details_hash_survives_jsonb_numeric_normalisation
+PASSED tests/test_audit.py::test_legacy_v1_rows_still_verify_and_new_rows_use_v2
+PASSED tests/test_audit.py::test_normalize_details_never_breaks_the_insert
+PASSED tests/test_audit.py::test_should_audit_rules[DELETE-/api/knowledge/documents/abc-True]
+PASSED tests/test_audit.py::test_should_audit_rules[PATCH-/api/knowledge/documents/abc/authority-True]
+PASSED tests/test_audit.py::test_should_audit_rules[PUT-/api/settings/workspace-True]
+PASSED tests/test_audit.py::test_should_audit_rules[POST-/api/settings/members/invite-True]
+PASSED tests/test_audit.py::test_should_audit_rules[GET-/api/knowledge/documents-False]
+PASSED tests/test_audit.py::test_should_audit_rules[POST-/api/public/widget/message-False]
+PASSED tests/test_audit.py::test_should_audit_rules[POST-/api/chatbot/test-chat-False]
+PASSED tests/test_audit.py::test_should_audit_rules[POST-/api/chatbot/test-chat/stream-False]
+PASSED tests/test_audit.py::test_should_audit_rules[POST-/api/auth/login-False]
+PASSED tests/test_audit.py::test_should_audit_rules[POST-/api/auth/logout-False]
+PASSED tests/test_audit.py::test_should_audit_rules[PUT-/api/user/password-False]
+PASSED tests/test_audit.py::test_should_audit_rules[POST-/api/presence/ping-False]
+PASSED tests/test_audit.py::test_should_audit_rules[POST-/health-False]
+PASSED tests/test_audit.py::test_action_names_are_friendly_or_fall_back_to_route_template
+PASSED tests/test_audit.py::test_actor_from_token_rejects_garbage_and_wrong_type
+PASSED tests/test_audit.py::test_client_ip_prefers_forwarded_header
+PASSED tests/test_audit.py::test_unmatched_or_anonymous_requests_are_not_recorded
+PASSED tests/test_audit.py::test_build_trace_records_evidence_decision_and_usage
+PASSED tests/test_audit.py::test_build_trace_tolerates_no_context
+PASSED tests/test_audit.py::test_chain_append_verify_tamper_immutability_and_anchor
+PASSED tests/test_audit.py::test_retention_purge_only_removes_expired_rows_of_that_tenant
+PASSED tests/test_audit.py::test_traces_are_tenant_scoped_and_a_failed_trace_does_not_poison_the_session
+PASSED tests/test_billing_rules.py::test_only_trialing_or_active_stripe_states_grant_access
+PASSED tests/test_billing_rules.py::test_cancel_at_period_end_keeps_access_but_shows_cancelled
+PASSED tests/test_billing_rules.py::test_local_row_usability_fails_closed
+PASSED tests/test_billing_rules.py::test_product_routes_are_behind_the_subscription_gate
+PASSED tests/test_billing_rules.py::test_unpriced_model_is_billed_at_provider_fallback_not_free
+PASSED tests/test_chunking_rrf.py::test_short_text_is_single_chunk
+PASSED tests/test_chunking_rrf.py::test_long_text_splits_into_multiple_chunks
+PASSED tests/test_chunking_rrf.py::test_chunks_never_exceed_size
+PASSED tests/test_chunking_rrf.py::test_consecutive_chunks_overlap
+PASSED tests/test_chunking_rrf.py::test_all_content_is_covered
+PASSED tests/test_chunking_rrf.py::test_offsets_are_monotonic_and_counts_positive
+PASSED tests/test_chunking_rrf.py::test_empty_text_does_not_crash
+PASSED tests/test_chunking_rrf.py::test_rrf_chunk_in_both_lists_ranks_first
+PASSED tests/test_chunking_rrf.py::test_rrf_dedupes_same_chunk
+PASSED tests/test_chunking_rrf.py::test_rrf_respects_top_k
+PASSED tests/test_chunking_rrf.py::test_rrf_score_formula
+PASSED tests/test_chunking_rrf.py::test_rrf_empty_inputs
+PASSED tests/test_chunking_rrf.py::test_rrf_same_chunk_id_in_different_documents_not_merged
+PASSED tests/test_confidence.py::test_empty_retrieval_is_zero_confidence
+PASSED tests/test_confidence.py::test_strong_concentrated_evidence_scores_high
+PASSED tests/test_confidence.py::test_weak_evidence_scores_low
+PASSED tests/test_confidence.py::test_rerank_score_preferred_over_cosine
+PASSED tests/test_confidence.py::test_single_chunk_has_zero_entropy
+PASSED tests/test_confidence.py::test_price_conflict_across_documents_detected
+PASSED tests/test_confidence.py::test_same_document_not_flagged_in_cross_document_mode
+PASSED tests/test_confidence.py::test_same_document_flagged_as_intra_document_scope
+PASSED tests/test_confidence.py::test_unrelated_numbers_do_not_conflict
+PASSED tests/test_confidence.py::test_identical_values_do_not_conflict
+PASSED tests/test_confidence.py::test_conflict_note_renders_document_names
+PASSED tests/test_confidence.py::test_gate_low_confidence_with_handoff_hands_off
+PASSED tests/test_confidence.py::test_gate_low_confidence_without_handoff_refuses
+PASSED tests/test_confidence.py::test_gate_borderline_clarifies
+PASSED tests/test_confidence.py::test_gate_clarify_disabled_answers
+PASSED tests/test_confidence.py::test_gate_high_confidence_answers
+PASSED tests/test_confidence.py::test_pregen_confidence_prefers_sigmoid_then_legacy
+PASSED tests/test_confidence.py::test_pregen_empty_is_zero
+PASSED tests/test_confidence.py::test_pregen_monotonic_in_rerank_score
+PASSED tests/test_confidence.py::test_pregen_single_chunk_gap_is_zero
+PASSED tests/test_confidence.py::test_pregen_gap_is_top1_minus_top2
+PASSED tests/test_confidence.py::test_pregen_without_rerank_falls_back_to_legacy_formula
+PASSED tests/test_confidence.py::test_pregen_disabled_flag_uses_legacy_formula
+PASSED tests/test_confidence.py::test_pregen_gate_refuses_weak_evidence
+PASSED tests/test_confidence.py::test_pregen_gate_relaxes_short_followup
+PASSED tests/test_confidence.py::test_weak_evidence_refused_without_llm_call
+PASSED tests/test_conflicts.py::test_numeric_contradiction_detected_with_values
+PASSED tests/test_conflicts.py::test_numeric_requires_specific_shared_subject_not_just_units
+PASSED tests/test_conflicts.py::test_numeric_unit_mismatch_is_not_compared
+PASSED tests/test_conflicts.py::test_numeric_identical_values_do_not_conflict
+PASSED tests/test_conflicts.py::test_semantic_negation_contradiction_detected
+PASSED tests/test_conflicts.py::test_semantic_antonym_contradiction_detected
+PASSED tests/test_conflicts.py::test_semantic_same_polarity_is_consistent
+PASSED tests/test_conflicts.py::test_negation_about_an_unshared_word_does_not_flip_polarity
+PASSED tests/test_conflicts.py::test_semantic_candidates_dropped_when_model_says_consistent
+PASSED tests/test_conflicts.py::test_semantic_candidates_confirmed_when_model_says_contradict
+PASSED tests/test_conflicts.py::test_different_conditions_are_not_a_conflict
+PASSED tests/test_conflicts.py::test_same_condition_different_value_is_a_conflict
+PASSED tests/test_conflicts.py::test_conflicting_dates_detected_across_formats
+PASSED tests/test_conflicts.py::test_year_inside_a_date_is_not_treated_as_a_quantity
+PASSED tests/test_conflicts.py::test_approved_superseding_document_wins
+PASSED tests/test_conflicts.py::test_supersession_is_transitive_within_tenant
+PASSED tests/test_conflicts.py::test_approved_superseder_not_yet_effective_keeps_current_version
+PASSED tests/test_conflicts.py::test_unapproved_superseding_document_does_not_win
+PASSED tests/test_conflicts.py::test_only_approved_source_wins_regardless_of_order
+PASSED tests/test_conflicts.py::test_upload_recency_version_and_rank_never_decide_between_unapproved_docs
+PASSED tests/test_conflicts.py::test_both_approved_later_effective_date_and_rank_rules
+PASSED tests/test_conflicts.py::test_missing_authority_metadata_is_unresolved
+PASSED tests/test_conflicts.py::test_default_rows_never_resolve
+PASSED tests/test_conflicts.py::test_intra_document_conflicts_are_never_resolved
+PASSED tests/test_conflicts.py::test_resolver_ignores_supersession_links_to_documents_outside_tenant_map
+PASSED tests/test_conflicts.py::test_database_rejects_cross_tenant_and_self_supersession
+PASSED tests/test_conflicts.py::test_authority_map_is_tenant_scoped
+PASSED tests/test_conflicts.py::test_disclosure_is_appended_when_model_omits_one_side
+PASSED tests/test_conflicts.py::test_unresolved_conflict_blocks_generation_in_handoff_and_refuse_modes
+PASSED tests/test_conflicts.py::test_resolved_conflict_never_blocks_and_drops_loser_chunk
+PASSED tests/test_conflicts.py::test_prompt_note_distinguishes_resolved_and_unresolved
+PASSED tests/test_conflicts.py::test_no_conflict_leaves_pipeline_inputs_untouched
+PASSED tests/test_conflicts.py::test_authority_request_validates_date_and_ranges
+PASSED tests/test_conflicts.py::test_bare_years_are_not_quantities
+PASSED tests/test_conflicts.py::test_conflicting_pool_chunk_is_promoted_into_context_with_remapped_indices
+PASSED tests/test_conflicts.py::test_pool_only_conflicts_are_ignored
+PASSED tests/test_conflicts.py::test_sibling_facts_are_not_contradictions[The Basic plan costs 10 dollars per month.-The Pro plan costs 20 dollars per month.]
+PASSED tests/test_conflicts.py::test_sibling_facts_are_not_contradictions[Standard shipping takes 5 business days.-Express shipping takes 2 business days.]
+PASSED tests/test_conflicts.py::test_sibling_facts_are_not_contradictions[Refunds are processed within 7 days of purchase.-Exchanges are processed within 14 days of purchase.]
+PASSED tests/test_conflicts.py::test_sibling_facts_are_not_contradictions[Our summer sale starts on 1 June 2026.-Our winter sale starts on 1 December 2026.]
+PASSED tests/test_conflicts.py::test_sibling_facts_are_not_contradictions[The Basic plan includes phone support.-The Pro plan does not include phone support.]
+PASSED tests/test_conflicts.py::test_intra_document_price_list_is_not_a_conflict
+PASSED tests/test_conflicts.py::test_one_sided_qualifier_and_rewording_still_detected
+PASSED tests/test_conflicts.py::test_intra_document_conflicts_are_left_out_of_the_prompt_note
+PASSED tests/test_conflicts.py::test_context_size_filters_tail_only_conflicts_before_the_cap
+PASSED tests/test_conflicts.py::test_value_mentioned_uses_digit_boundaries
+PASSED tests/test_conflicts.py::test_heuristic_semantic_candidates_never_block
+PASSED tests/test_conflicts.py::test_deprecated_superseder_falls_through_to_approval_rules
+PASSED tests/test_notifications_ws.py::test_authenticate_rejects_garbage_token
+PASSED tests/test_notifications_ws.py::test_authenticate_rejects_a_refresh_token
+PASSED tests/test_notifications_ws.py::test_authenticate_rejects_an_access_token_missing_tenant_id
+PASSED tests/test_notifications_ws.py::test_authenticate_accepts_a_valid_access_token
+PASSED tests/test_notifications_ws.py::test_manager_add_and_remove_tracks_sockets_per_tenant
+PASSED tests/test_notifications_ws.py::test_manager_remove_is_a_no_op_for_an_unknown_tenant_or_socket
+PASSED tests/test_notifications_ws.py::test_broadcast_reaches_every_socket_for_the_tenant_and_no_other
+PASSED tests/test_notifications_ws.py::test_broadcast_drops_a_failing_socket_without_affecting_others
+PASSED tests/test_pq_crypto.py::test_roundtrip_small_and_binary
+PASSED tests/test_pq_crypto.py::test_each_file_gets_a_unique_envelope
+PASSED tests/test_pq_crypto.py::test_legacy_fernet_blob_is_not_mistaken_for_pq
+PASSED tests/test_pq_crypto.py::test_tampered_ciphertext_rejected
+PASSED tests/test_pq_crypto.py::test_tampered_wrapped_key_rejected
+PASSED tests/test_pq_crypto.py::test_truncated_blob_rejected
+PASSED tests/test_pq_crypto.py::test_wrong_private_key_fails_closed
+PASSED tests/test_pq_crypto.py::test_token_sign_and_verify_roundtrip
+PASSED tests/test_pq_crypto.py::test_tampered_pq_signature_rejected
+PASSED tests/test_pq_crypto.py::test_tampered_jwt_under_valid_looking_structure_rejected
+PASSED tests/test_pq_crypto.py::test_legacy_unsigned_token_still_accepted
+PASSED tests/test_pq_crypto.py::test_decrypt_file_dispatches_on_blob_type
+PASSED tests/test_qa_fixes.py::test_weak_passwords_rejected_everywhere[weakweak]
+PASSED tests/test_qa_fixes.py::test_weak_passwords_rejected_everywhere[alllowercase1!]
+PASSED tests/test_qa_fixes.py::test_weak_passwords_rejected_everywhere[ALLUPPER1!]
+PASSED tests/test_qa_fixes.py::test_weak_passwords_rejected_everywhere[NoDigits!!]
+PASSED tests/test_qa_fixes.py::test_weak_passwords_rejected_everywhere[NoSpecial1a]
+PASSED tests/test_qa_fixes.py::test_weak_passwords_rejected_everywhere[Sh0r!t]
+PASSED tests/test_qa_fixes.py::test_strong_password_accepted_everywhere
+PASSED tests/test_qa_fixes.py::test_whitespace_only_names_rejected[]
+PASSED tests/test_qa_fixes.py::test_whitespace_only_names_rejected[   ]
+PASSED tests/test_qa_fixes.py::test_whitespace_only_names_rejected[\t\n]
+PASSED tests/test_qa_fixes.py::test_names_are_stripped
+PASSED tests/test_qa_fixes.py::test_safe_accent_colors_accepted[#D97706]
+PASSED tests/test_qa_fixes.py::test_safe_accent_colors_accepted[#fff]
+PASSED tests/test_qa_fixes.py::test_safe_accent_colors_accepted[#aabbccdd]
+PASSED tests/test_qa_fixes.py::test_safe_accent_colors_accepted[rgb(10, 20, 30)]
+PASSED tests/test_qa_fixes.py::test_safe_accent_colors_accepted[hsla(10,20%,30%,0.5)]
+PASSED tests/test_qa_fixes.py::test_safe_accent_colors_accepted[tomato]
+PASSED tests/test_qa_fixes.py::test_unsafe_accent_colors_rejected[javascript:alert(1)]
+PASSED tests/test_qa_fixes.py::test_unsafe_accent_colors_rejected[url(http://x)]
+PASSED tests/test_qa_fixes.py::test_unsafe_accent_colors_rejected[#fff; background:url(x)]
+PASSED tests/test_qa_fixes.py::test_unsafe_accent_colors_rejected[red}body{]
+PASSED tests/test_qa_fixes.py::test_unsafe_accent_colors_rejected[<script>]
+PASSED tests/test_qa_fixes.py::test_fe_plan_fallback_is_a_valid_frontend_id
+PASSED tests/test_qa_fixes.py::test_onboarding_completed_requires_completed_at
+PASSED tests/test_qa_fixes.py::test_starter_plan_loses_paid_features
+PASSED tests/test_qa_fixes.py::test_growth_plan_keeps_lead_capture_but_not_branding_removal
+PASSED tests/test_qa_fixes.py::test_business_plan_keeps_everything
+PASSED tests/test_qa_fixes.py::test_iframe_call_uses_widget_host_header
+PASSED tests/test_qa_fixes.py::test_iframe_call_without_widget_host_is_rejected
+PASSED tests/test_qa_fixes.py::test_customer_following_the_docs_is_now_allowed
+PASSED tests/test_qa_fixes.py::test_embedding_site_must_match_exactly
+PASSED tests/test_qa_fixes.py::test_direct_browser_call_checks_origin_and_ignores_header
+PASSED tests/test_qa_fixes.py::test_origin_less_caller_follows_require_origin_flag
+PASSED tests/test_qa_fixes.py::test_budget_clamps_and_skips_attempts
+PASSED tests/test_qa_fixes.py::test_generate_stops_at_budget
+PASSED tests/test_qa_fixes.py::test_failure_reason_maps_pdf_errors
+PASSED tests/test_rbac_routes.py::test_no_plain_authenticated_route_outside_allowlist
+PASSED tests/test_rbac_routes.py::test_sensitive_routes_admit_only_intended_roles
+PASSED tests/test_rbac_routes.py::test_invite_schema_can_never_grant_owner
+PASSED tests/test_rbac_routes.py::test_pq_is_per_tenant_and_needs_platform_keys
+PASSED tests/test_scraper.py::test_headings_are_kept
+PASSED tests/test_scraper.py::test_table_rows_are_kept_but_separator_row_is_dropped
+PASSED tests/test_scraper.py::test_links_keep_text_drop_target
+PASSED tests/test_scraper.py::test_images_are_stripped
+PASSED tests/test_scraper.py::test_emphasis_markers_are_stripped_but_text_kept
+PASSED tests/test_scraper.py::test_inline_code_is_preserved_verbatim
+PASSED tests/test_scraper.py::test_footnote_markers_are_stripped
+PASSED tests/test_scraper.py::test_bare_url_only_lines_are_dropped
+PASSED tests/test_scraper.py::test_sibling_table_rows_do_not_collapse_into_each_other
+PASSED tests/test_scraper.py::test_bot_challenge_titles_are_detected[Just a moment...]
+PASSED tests/test_scraper.py::test_bot_challenge_titles_are_detected[Attention Required! | Cloudflare]
+PASSED tests/test_scraper.py::test_bot_challenge_titles_are_detected[Access denied]
+PASSED tests/test_scraper.py::test_bot_challenge_titles_are_detected[Please verify you are human]
+PASSED tests/test_scraper.py::test_bot_challenge_titles_are_detected[Checking your browser before accessing]
+PASSED tests/test_scraper.py::test_normal_titles_are_not_flagged[Pricing \u2014 Acme Inc]
+PASSED tests/test_scraper.py::test_normal_titles_are_not_flagged[Home]
+PASSED tests/test_scraper.py::test_normal_titles_are_not_flagged[]
+PASSED tests/test_scraper.py::test_normal_titles_are_not_flagged[None]
+PASSED tests/test_scraper.py::test_title_from_url_strips_known_extension
+PASSED tests/test_scraper.py::test_title_from_url_keeps_dotted_non_extension_segment
+PASSED tests/test_scraper.py::test_title_from_url_falls_back_to_hostname
+PASSED tests/test_scraper.py::test_pin_replaces_hostname_with_resolved_ip
+PASSED tests/test_scraper.py::test_pin_preserves_explicit_port
+PASSED tests/test_scraper.py::test_pin_brackets_ipv6_literal
+PASSED tests/test_scraper.py::test_pin_rejects_unsafe_resolved_address
+PASSED tests/test_scraper.py::test_pin_surfaces_dns_failure_distinctly
+PASSED tests/test_scraper.py::test_sub_request_rejects_non_http_scheme
+PASSED tests/test_scraper.py::test_sub_request_allows_safe_host_and_caches_it
+PASSED tests/test_scraper.py::test_sub_request_blocks_unsafe_host
+PASSED tests/test_scraper.py::test_resolve_url_follows_redirect_to_safe_host
+PASSED tests/test_scraper.py::test_resolve_url_rejects_redirect_into_private_ip
+PASSED tests/test_scraper.py::test_resolve_url_enforces_size_cap
+PASSED tests/test_scraper.py::test_resolve_url_detects_pdf_by_magic_bytes_even_without_header
+PASSED tests/test_scraper.py::test_fetch_plain_rejects_short_content
+PASSED tests/test_scraper.py::test_fetch_plain_rejects_bot_challenge_page
+PASSED tests/test_scraper.py::test_fetch_plain_extracts_real_content_and_images
+PASSED tests/test_scraper.py::test_parse_retry_after_numeric_seconds
+PASSED tests/test_scraper.py::test_parse_retry_after_http_date
+PASSED tests/test_scraper.py::test_parse_retry_after_invalid_returns_none[None]
+PASSED tests/test_scraper.py::test_parse_retry_after_invalid_returns_none[]
+PASSED tests/test_scraper.py::test_parse_retry_after_invalid_returns_none[not-a-date-or-number]
+PASSED tests/test_scraper.py::test_body_marker_detects_cloudflare_turnstile
+PASSED tests/test_scraper.py::test_body_marker_ignores_normal_page
+PASSED tests/test_scraper.py::test_low_text_to_html_ratio_with_blocking_status_is_flagged
+PASSED tests/test_scraper.py::test_low_text_to_html_ratio_without_blocking_status_is_not_flagged
+PASSED tests/test_scraper.py::test_robots_txt_blocks_disallowed_path
+PASSED tests/test_scraper.py::test_robots_txt_fetch_failure_fails_open
+PASSED tests/test_scraper.py::test_robots_txt_is_cached_per_domain
+PASSED tests/test_scraper.py::test_robots_txt_disabled_always_allows
+PASSED tests/test_scraper.py::test_pace_enforces_minimum_interval
+PASSED tests/test_scraper.py::test_pace_disabled_does_not_wait
+PASSED tests/test_scraper.py::test_resolve_url_retries_after_429_then_succeeds
+PASSED tests/test_scraper.py::test_resolve_url_falls_through_to_profile_switch_after_retries_exhausted
+PASSED tests/test_scraper.py::test_get_browser_raises_clearly_when_disabled
+PASSED tests/test_security_core.py::test_hash_is_salted_and_verifies
+PASSED tests/test_security_core.py::test_wrong_password_rejected
+PASSED tests/test_security_core.py::test_plaintext_never_in_hash
+PASSED tests/test_security_core.py::test_access_token_claims
+PASSED tests/test_security_core.py::test_refresh_token_returns_jti_and_expiry
+PASSED tests/test_security_core.py::test_each_token_has_unique_jti
+PASSED tests/test_security_core.py::test_tampered_token_rejected
+PASSED tests/test_security_core.py::test_token_signed_with_other_key_rejected
+PASSED tests/test_security_core.py::test_expired_token_rejected
+PASSED tests/test_security_core.py::test_garbage_token_rejected
+PASSED tests/test_security_core.py::test_otp_format_and_hash_roundtrip
+PASSED tests/test_security_core.py::test_otp_is_not_constant
+PASSED tests/test_site_crawl.py::test_sitemap_urls_are_discovered_and_filtered_to_same_site
+PASSED tests/test_site_crawl.py::test_sitemap_index_is_followed_one_level
+PASSED tests/test_site_crawl.py::test_discover_site_urls_falls_back_to_bfs_when_no_sitemap
+PASSED tests/test_site_crawl.py::test_discover_site_urls_respects_max_pages_cap
+PASSED tests/test_site_crawl.py::test_bfs_ignores_cross_domain_links
+PASSED tests/test_site_crawl.py::test_check_for_update_reports_not_modified_on_304
+PASSED tests/test_site_crawl.py::test_check_for_update_reports_hash_on_200
+PASSED tests/test_site_crawl.py::test_check_for_update_returns_none_on_failure
+PASSED tests/test_site_crawl.py::test_check_for_update_returns_none_when_robots_disallows
+PASSED tests/test_site_crawl.py::test_refresh_sweep_skips_documents_not_yet_due
+PASSED tests/test_site_crawl.py::test_refresh_sweep_updates_last_checked_at_when_unchanged
+PASSED tests/test_site_crawl.py::test_refresh_sweep_reschedules_a_changed_document
+PASSED tests/test_site_crawl.py::test_refresh_sweep_leaves_document_alone_when_probe_fails
+PASSED tests/test_site_crawl.py::test_refresh_sweep_disabled_does_nothing
+PASSED tests/test_small_talk_gate.py::test_heuristic_matches_common_greetings_and_pleasantries[hi]
+PASSED tests/test_small_talk_gate.py::test_heuristic_matches_common_greetings_and_pleasantries[Hi!]
+PASSED tests/test_small_talk_gate.py::test_heuristic_matches_common_greetings_and_pleasantries[hii]
+PASSED tests/test_small_talk_gate.py::test_heuristic_matches_common_greetings_and_pleasantries[hello]
+PASSED tests/test_small_talk_gate.py::test_heuristic_matches_common_greetings_and_pleasantries[Hello there]
+PASSED tests/test_small_talk_gate.py::test_heuristic_matches_common_greetings_and_pleasantries[hey]
+PASSED tests/test_small_talk_gate.py::test_heuristic_matches_common_greetings_and_pleasantries[heyyy]
+PASSED tests/test_small_talk_gate.py::test_heuristic_matches_common_greetings_and_pleasantries[yo]
+PASSED tests/test_small_talk_gate.py::test_heuristic_matches_common_greetings_and_pleasantries[good morning]
+PASSED tests/test_small_talk_gate.py::test_heuristic_matches_common_greetings_and_pleasantries[Good Morning!]
+PASSED tests/test_small_talk_gate.py::test_heuristic_matches_common_greetings_and_pleasantries[greetings]
+PASSED tests/test_small_talk_gate.py::test_heuristic_matches_common_greetings_and_pleasantries[thanks]
+PASSED tests/test_small_talk_gate.py::test_heuristic_matches_common_greetings_and_pleasantries[Thank you!]
+PASSED tests/test_small_talk_gate.py::test_heuristic_matches_common_greetings_and_pleasantries[thank you so much]
+PASSED tests/test_small_talk_gate.py::test_heuristic_matches_common_greetings_and_pleasantries[ty]
+PASSED tests/test_small_talk_gate.py::test_heuristic_matches_common_greetings_and_pleasantries[cheers]
+PASSED tests/test_small_talk_gate.py::test_heuristic_matches_common_greetings_and_pleasantries[ok]
+PASSED tests/test_small_talk_gate.py::test_heuristic_matches_common_greetings_and_pleasantries[okay]
+PASSED tests/test_small_talk_gate.py::test_heuristic_matches_common_greetings_and_pleasantries[great]
+PASSED tests/test_small_talk_gate.py::test_heuristic_matches_common_greetings_and_pleasantries[cool]
+PASSED tests/test_small_talk_gate.py::test_heuristic_matches_common_greetings_and_pleasantries[got it]
+PASSED tests/test_small_talk_gate.py::test_heuristic_matches_common_greetings_and_pleasantries[sounds good]
+PASSED tests/test_small_talk_gate.py::test_heuristic_matches_common_greetings_and_pleasantries[perfect]
+PASSED tests/test_small_talk_gate.py::test_heuristic_matches_common_greetings_and_pleasantries[bye]
+PASSED tests/test_small_talk_gate.py::test_heuristic_matches_common_greetings_and_pleasantries[goodbye]
+PASSED tests/test_small_talk_gate.py::test_heuristic_matches_common_greetings_and_pleasantries[see ya]
+PASSED tests/test_small_talk_gate.py::test_heuristic_matches_common_greetings_and_pleasantries[take care]
+PASSED tests/test_small_talk_gate.py::test_heuristic_matches_common_greetings_and_pleasantries[have a good day]
+PASSED tests/test_small_talk_gate.py::test_real_questions_are_never_flagged_as_small_talk[hi, do you ship to Canada?]
+PASSED tests/test_small_talk_gate.py::test_real_questions_are_never_flagged_as_small_talk[What is your refund policy?]
+PASSED tests/test_small_talk_gate.py::test_real_questions_are_never_flagged_as_small_talk[Can you tell me about pricing for your business plan]
+PASSED tests/test_small_talk_gate.py::test_real_questions_are_never_flagged_as_small_talk[hello I need help resetting my password]
+PASSED tests/test_small_talk_gate.py::test_real_questions_are_never_flagged_as_small_talk[thanks for the info, but does this cover international orders?]
+PASSED tests/test_small_talk_gate.py::test_empty_message_is_not_small_talk
+PASSED tests/test_small_talk_gate.py::test_gate_disabled_always_returns_false
+PASSED tests/test_small_talk_gate.py::test_tier2_confirms_ambiguous_short_message
+PASSED tests/test_small_talk_gate.py::test_tier2_rejects_when_model_says_no
+PASSED tests/test_small_talk_gate.py::test_tier2_disabled_skips_llm_call_entirely
+PASSED tests/test_small_talk_gate.py::test_tier2_failure_defaults_to_false
+PASSED tests/test_small_talk_gate.py::test_tier2_not_reached_for_questions_or_long_messages
+PASSED tests/test_small_talk_gate.py::test_prepare_generation_skips_retrieval_for_small_talk
+PASSED tests/test_small_talk_gate.py::test_prepare_generation_runs_retrieval_for_a_real_question
+PASSED tests/test_storage_limits.py::test_max_words_is_defined_and_increasing_by_plan
+PASSED tests/test_storage_limits.py::test_word_limit_blocks_a_document_that_would_exceed_it
+PASSED tests/test_storage_limits.py::test_word_limit_allows_a_document_that_fits
+PASSED tests/test_storage_limits.py::test_chunk_limit_blocks_a_document_that_would_exceed_it
+PASSED tests/test_storage_limits.py::test_limits_check_excludes_the_document_being_indexed_itself
+PASSED tests/test_storage_limits.py::test_get_active_document_totals_sums_live_and_ignores_inactive
+PASSED tests/test_storage_limits.py::test_faq_entries_are_blocked_once_storage_limit_is_reached
+PASSED tests/test_tenant_isolation.py::test_document_list_contains_only_own_tenant
+PASSED tests/test_tenant_isolation.py::test_cannot_delete_other_tenants_document
+PASSED tests/test_tenant_isolation.py::test_conversation_list_contains_only_own_tenant
+PASSED tests/test_tenant_isolation.py::test_cannot_read_other_tenants_conversation
+PASSED tests/test_tenant_isolation.py::test_cannot_modify_or_delete_other_tenants_conversation
+PASSED tests/test_tenant_isolation.py::test_token_for_tenant_a_cannot_impersonate_tenant_b_user
+PASSED tests/test_token_refresh.py::test_create_refresh_token_embeds_jti_and_type
+PASSED tests/test_token_refresh.py::test_issue_and_rotate_refresh_token
+PASSED tests/test_token_refresh.py::test_reusing_a_rotated_refresh_token_is_rejected_and_revokes_all
+PASSED tests/test_token_refresh.py::test_revoke_all_refresh_tokens_marks_every_live_token_revoked
+PASSED tests/test_token_refresh.py::test_access_token_cannot_be_used_as_a_refresh_token
+PASSED tests/test_validation_upload.py::test_safe_extension[a.PDF-.pdf]
+PASSED tests/test_validation_upload.py::test_safe_extension[x.docx-.docx]
+PASSED tests/test_validation_upload.py::test_safe_extension[n.txt-.txt]
+PASSED tests/test_validation_upload.py::test_safe_extension[r.md-.md]
+PASSED tests/test_validation_upload.py::test_safe_extension[evil.exe-]
+PASSED tests/test_validation_upload.py::test_safe_extension[noext-]
+PASSED tests/test_validation_upload.py::test_safe_extension[-]
+PASSED tests/test_validation_upload.py::test_safe_extension[None-]
+PASSED tests/test_validation_upload.py::test_safe_extension[a.pdf.exe-]
+PASSED tests/test_validation_upload.py::test_declared_mime_accepted
+PASSED tests/test_validation_upload.py::test_charset_suffix_and_alias_normalised
+PASSED tests/test_validation_upload.py::test_octet_stream_falls_back_to_extension
+PASSED tests/test_validation_upload.py::test_disallowed_type_is_415[a.exe-application/x-msdownload]
+PASSED tests/test_validation_upload.py::test_disallowed_type_is_415[a.exe-application/octet-stream]
+PASSED tests/test_validation_upload.py::test_disallowed_type_is_415[a.png-image/png]
+PASSED tests/test_validation_upload.py::test_disallowed_type_is_415[a.zip-]
+PASSED tests/test_validation_upload.py::test_pdf_magic_bytes
+PASSED tests/test_validation_upload.py::test_docx_magic_bytes
+PASSED tests/test_validation_upload.py::test_txt_has_no_signature_check
+PASSED tests/test_validation_upload.py::test_safe_filename_trims_and_returns
+PASSED tests/test_validation_upload.py::test_safe_filename_rejects_with_422[]
+PASSED tests/test_validation_upload.py::test_safe_filename_rejects_with_422[   ]
+PASSED tests/test_validation_upload.py::test_safe_filename_rejects_with_422[None]
+PASSED tests/test_validation_upload.py::test_safe_filename_rejects_with_422[bad3]
+PASSED tests/test_validation_upload.py::test_safe_filename_boundary_500_ok
+PASSED tests/test_widget_entitlements.py::test_exact_host_allowed
+PASSED tests/test_widget_entitlements.py::test_allowlist_entry_forms_normalise
+PASSED tests/test_widget_entitlements.py::test_suffix_and_prefix_attacks_blocked
+PASSED tests/test_widget_entitlements.py::test_missing_origin_blocked_by_default_and_allowed_by_flag
+PASSED tests/test_widget_entitlements.py::test_multiple_domains_csv
+PASSED tests/test_widget_entitlements.py::test_empty_allowlist_blocks_everything
+PASSED tests/test_widget_entitlements.py::test_widget_token_roundtrip
+PASSED tests/test_widget_entitlements.py::test_widget_token_garbage_returns_none[]
+PASSED tests/test_widget_entitlements.py::test_widget_token_garbage_returns_none[junk]
+PASSED tests/test_widget_entitlements.py::test_widget_token_garbage_returns_none[a.b.c]
+PASSED tests/test_widget_entitlements.py::test_dashboard_jwt_is_not_a_widget_session
+PASSED tests/test_widget_entitlements.py::test_plan_limits_increase_with_tier
+PASSED tests/test_widget_entitlements.py::test_free_plan_has_no_paid_features
+PASSED tests/test_widget_entitlements.py::test_only_top_plan_removes_branding
+PASSED tests/test_widget_entitlements.py::test_missing_subscription_falls_back_to_free
+PASSED tests/test_widget_entitlements.py::test_restrictions_strip_paid_features_on_free
+PASSED tests/test_widget_entitlements.py::test_restrictions_keep_features_on_business
+372 passed, 2 warnings in 111.45s (0:01:51)

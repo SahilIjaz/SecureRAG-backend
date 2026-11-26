@@ -1,0 +1,33 @@
+  'What are the differences between MOLAP, ROLAP, and HOLAP?' R@5=True cite=True corr=1.0 faith=0.8333333333333334 8429ms
+  'What is a data warehouse?' R@5=True cite=True corr=1.0 faith=1.0 8101ms
+  'When should I include aggregate entities in a dimensional model?' R@5=True cite=True corr=1.0 faith=1.0 12465ms
+  'What are the five stages of the data warehouse environment?' R@5=True cite=True corr=1.0 faith=1.0 6335ms
+  'How many I/Os are required to join the date dimensional table to the p' R@5=True cite=True corr=1.0 faith=1.0 6006ms
+  'What is the difference between security groups and network ACLs?' R@5=True cite=True corr=1.0 faith=1.0 8775ms
+  'How should you handle a cube that becomes too large to be supported in' R@5=True cite=True corr=1.0 faith=1.0 5563ms
+  'What should drive the choice of OLAP tools in a data warehouse archite' R@5=True cite=True corr=1.0 faith=1.0 7895ms
+  'What are the typical early adopters of credit risk prediction and inve' R@5=True cite=True corr=1.0 faith=1.0 4915ms
+  'Why should I avoid pre-aggregating all combinations of dimensions in a' R@5=True cite=True corr=1.0 faith=1.0 5941ms
+  'What tradeoffs should be considered when choosing a physical implement' R@5=True cite=True corr=1.0 faith=1.0 3134ms
+  'What standard API supplanted the MDAPI in the marketplace?' R@5=True cite=True corr=1.0 faith=1.0 7214ms
+  'What are the main drawbacks of using pre-aggregate summary tables?' R@5=True cite=True corr=1.0 faith=1.0 5630ms
+  'What is a data warehouse?' R@5=True cite=True corr=1.0 faith=1.0 2797ms
+  'What does it mean for strategies to be fully aggregate aware?' R@5=True cite=True corr=1.0 faith=1.0 10052ms
+  'Can I use this domain for testing and monitoring purposes?' R@5=True cite=True corr=1.0 faith=1.0 3709ms
+  'How many days do I have to request a full refund?' R@5=True cite=True corr=1.0 faith=1.0 9749ms
+{
+  "answerable_n": 17,
+  "unanswerable_n": 30,
+  "answer_correctness": 1.0,
+  "faithfulness": 0.9901960784313727,
+  "citation_accuracy": 1.0,
+  "recall_at_5": 1.0,
+  "abstention_rate_unanswerable": 1.0,
+  "false_abstention_rate_answerable": 0.35294117647058826,
+  "cross_tenant_leaks": 0,
+  "latency_p50_ms": 6334.629100048915,
+  "latency_p95_ms": 10534.899800061246,
+  "mean_prompt_tokens": 1537.235294117647,
+  "mean_usd_per_answer": 0.00019847647058823527,
+  "usd_priced_answers": 17
+}

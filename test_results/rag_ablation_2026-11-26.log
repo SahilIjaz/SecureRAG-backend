@@ -1,0 +1,279 @@
+tenant 94ae05f1: 15 chunks
+  lexi conf=80 'What types of metrics can be stored in pre-aggregate summary'
+  para conf=0 'Why do precomputed rollup tables take up so much storage and'
+  lexi conf=100 'Can star schemas handle growing decision support needs, or d'
+  para conf=0 'Will a basic reporting database design still meet our needs '
+  lexi conf=100 'How many pre-aggregates are possible with just geography and'
+  para conf=0 "Why can't we just summarize our data in every possible combi"
+  lexi conf=95 'What response time do OLAP queries need to execute within?'
+  para conf=0 'What kinds of industries typically adopt these analytics sys'
+  lexi conf=0 "Why can't my VPC B and VPC C instances talk to each other th"
+  para conf=0 "Why can't two of my networks reach each other just because t"
+  lexi conf=100 'What is the difference between MOLAP cubes and relational da'
+  para conf=0 'How do multidimensional data stores keep their summarized fi'
+  lexi conf=100 'How many I/Os would a hash or sort-merge join need to scan t'
+  lexi conf=99 'What are the five stages of analytics in a data warehouse en'
+  para conf=0 'How does a company-wide analytics store differ from a smalle'
+  lexi conf=100 'Why do star schemas improve performance and simplify SQL gen'
+  para conf=16 'What makes star schema designs so fast for interactive OLAP '
+  lexi conf=85 'How can I control the trade-off between disk storage and que'
+  para conf=0 "How can I balance my analytics data's storage footprint agai"
+  lexi conf=100 'What is a data warehouse, and how does it differ from a sing'
+  para conf=95 'What exactly makes a data warehouse different from a single '
+  lexi conf=96 "What's the difference between scalability and elasticity in "
+  para conf=44 "What's the difference between permanently expanding capacity"
+  lexi conf=0 "Why don't row counts shrink proportionally when data is aggr"
+  para conf=0 'Why would a business track some cost adjustments for broader'
+  lexi conf=100 'What is a data warehouse and how is it used for decision-mak'
+  para conf=13 'What kind of central storage holds company data pulled from '
+  lexi conf=100 'What is the difference between MOLAP, ROLAP, and HOLAP?'
+  para conf=0 'How do the different analytical reporting methods compare on'
+  near conf=1 'What percentage of rows is eliminated when sales data is agg'
+  near conf=90 'How many days of query logs does the Usage-Based Optimizatio'
+  near conf=0 'How much storage would pre-aggregates need for a retail chai'
+  near conf=1 'How many sub-cubes does Microsoft Analytic Services typicall'
+  near conf=98 'How long would it take to read a terabyte of data with 10 pa'
+  near conf=0 'How much query response time improvement does a MOLAP deploy'
+  near conf=4 'What specific hardware vendor or software product does an or'
+  near conf=0 'What ephemeral port range do NACLs typically use for return '
+  near conf=0 'What specific response time threshold, in seconds, do end us'
+  near conf=10 'What specific performance improvement percentage do star sch'
+  near conf=0 "What specific sales figures did the company's data warehouse"
+  near conf=11 'Which specific aggregate-awareness wizard vendor recommends '
+tenant 47e6afba: 2 chunks
+  lexi conf=68 'Can I use example.com for testing or monitoring my applicati'
+  para conf=68 'Can I use this domain for my own testing or monitoring witho'
+  lexi conf=68 "What is Acme's refund policy?"
+  para conf=69 'How many working days will my package take to reach me if I '
+generation pass done
+{
+  "n": {
+    "near_miss": 12,
+    "cross_tenant": 8,
+    "off_topic": 12,
+    "answerable_lexical": 17,
+    "answerable_paraphrased": 16
+  },
+  "ablation": {
+    "dense": {
+      "lexical": {
+        "n": 17,
+        "recall_at_5": 0.9411764705882353,
+        "mrr": 0.9117647058823529
+      },
+      "paraphrased": {
+        "n": 16,
+        "recall_at_5": 0.6875,
+        "mrr": 0.546875
+      }
+    },
+    "keyword": {
+      "lexical": {
+        "n": 17,
+        "recall_at_5": 1.0,
+        "mrr": 0.9215686274509804
+      },
+      "paraphrased": {
+        "n": 16,
+        "recall_at_5": 0.8125,
+        "mrr": 0.546875
+      }
+    },
+    "hybrid": {
+      "lexical": {
+        "n": 17,
+        "recall_at_5": 1.0,
+        "mrr": 0.9313725490196079
+      },
+      "paraphrased": {
+        "n": 16,
+        "recall_at_5": 0.75,
+        "mrr": 0.5572916666666666
+      }
+    },
+    "hybrid_rerank": {
+      "lexical": {
+        "n": 17,
+        "recall_at_5": 1.0,
+        "mrr": 1.0
+      },
+      "paraphrased": {
+        "n": 16,
+        "recall_at_5": 0.875,
+        "mrr": 0.6375
+      }
+    }
+  },
+  "band": 15,
+  "sweep_production_band": [
+    {
+      "threshold": 40,
+      "answerable_answered": 0.5454545454545454,
+      "unsupported_answer_rate": 0.0625,
+      "unanswerable_answered": 0.46875,
+      "near_miss_unsupported": 0.08333333333333333,
+      "off_topic_unsupported": 0.08333333333333333,
+      "cross_tenant_unsupported": 0.0
+    },
+    {
+      "threshold": 45,
+      "answerable_answered": 0.5454545454545454,
+      "unsupported_answer_rate": 0.0625,
+      "unanswerable_answered": 0.46875,
+      "near_miss_unsupported": 0.08333333333333333,
+      "off_topic_unsupported": 0.08333333333333333,
+      "cross_tenant_unsupported": 0.0
+    },
+    {
+      "threshold": 50,
+      "answerable_answered": 0.5454545454545454,
+      "unsupported_answer_rate": 0.0625,
+      "unanswerable_answered": 0.46875,
+      "near_miss_unsupported": 0.08333333333333333,
+      "off_topic_unsupported": 0.08333333333333333,
+      "cross_tenant_unsupported": 0.0
+    },
+    {
+      "threshold": 55,
+      "answerable_answered": 0.42424242424242425,
+      "unsupported_answer_rate": 0.03125,
+      "unanswerable_answered": 0.0625,
+      "near_miss_unsupported": 0.08333333333333333,
+      "off_topic_unsupported": 0.0,
+      "cross_tenant_unsupported": 0.0
+    },
+    {
+      "threshold": 60,
+      "answerable_answered": 0.42424242424242425,
+      "unsupported_answer_rate": 0.03125,
+      "unanswerable_answered": 0.0625,
+      "near_miss_unsupported": 0.08333333333333333,
+      "off_topic_unsupported": 0.0,
+      "cross_tenant_unsupported": 0.0
+    },
+    {
+      "threshold": 65,
+      "answerable_answered": 0.42424242424242425,
+      "unsupported_answer_rate": 0.03125,
+      "unanswerable_answered": 0.0625,
+      "near_miss_unsupported": 0.08333333333333333,
+      "off_topic_unsupported": 0.0,
+      "cross_tenant_unsupported": 0.0
+    },
+    {
+      "threshold": 70,
+      "answerable_answered": 0.3939393939393939,
+      "unsupported_answer_rate": 0.03125,
+      "unanswerable_answered": 0.0625,
+      "near_miss_unsupported": 0.08333333333333333,
+      "off_topic_unsupported": 0.0,
+      "cross_tenant_unsupported": 0.0
+    },
+    {
+      "threshold": 75,
+      "answerable_answered": 0.36363636363636365,
+      "unsupported_answer_rate": 0.03125,
+      "unanswerable_answered": 0.0625,
+      "near_miss_unsupported": 0.08333333333333333,
+      "off_topic_unsupported": 0.0,
+      "cross_tenant_unsupported": 0.0
+    },
+    {
+      "threshold": 80,
+      "answerable_answered": 0.36363636363636365,
+      "unsupported_answer_rate": 0.03125,
+      "unanswerable_answered": 0.03125,
+      "near_miss_unsupported": 0.08333333333333333,
+      "off_topic_unsupported": 0.0,
+      "cross_tenant_unsupported": 0.0
+    }
+  ],
+  "sweep_no_clarify": [
+    {
+      "threshold": 40,
+      "answerable_answered": 0.5757575757575758,
+      "unsupported_answer_rate": 0.0625,
+      "unanswerable_answered": 0.46875,
+      "near_miss_unsupported": 0.08333333333333333,
+      "off_topic_unsupported": 0.08333333333333333,
+      "cross_tenant_unsupported": 0.0
+    },
+    {
+      "threshold": 45,
+      "answerable_answered": 0.5454545454545454,
+      "unsupported_answer_rate": 0.0625,
+      "unanswerable_answered": 0.46875,
+      "near_miss_unsupported": 0.08333333333333333,
+      "off_topic_unsupported": 0.08333333333333333,
+      "cross_tenant_unsupported": 0.0
+    },
+    {
+      "threshold": 50,
+      "answerable_answered": 0.5454545454545454,
+      "unsupported_answer_rate": 0.0625,
+      "unanswerable_answered": 0.46875,
+      "near_miss_unsupported": 0.08333333333333333,
+      "off_topic_unsupported": 0.08333333333333333,
+      "cross_tenant_unsupported": 0.0
+    },
+    {
+      "threshold": 55,
+      "answerable_answered": 0.5454545454545454,
+      "unsupported_answer_rate": 0.0625,
+      "unanswerable_answered": 0.46875,
+      "near_miss_unsupported": 0.08333333333333333,
+      "off_topic_unsupported": 0.08333333333333333,
+      "cross_tenant_unsupported": 0.0
+    },
+    {
+      "threshold": 60,
+      "answerable_answered": 0.5454545454545454,
+      "unsupported_answer_rate": 0.0625,
+      "unanswerable_answered": 0.46875,
+      "near_miss_unsupported": 0.08333333333333333,
+      "off_topic_unsupported": 0.08333333333333333,
+      "cross_tenant_unsupported": 0.0
+    },
+    {
+      "threshold": 65,
+      "answerable_answered": 0.5454545454545454,
+      "unsupported_answer_rate": 0.0625,
+      "unanswerable_answered": 0.46875,
+      "near_miss_unsupported": 0.08333333333333333,
+      "off_topic_unsupported": 0.08333333333333333,
+      "cross_tenant_unsupported": 0.0
+    },
+    {
+      "threshold": 70,
+      "answerable_answered": 0.42424242424242425,
+      "unsupported_answer_rate": 0.03125,
+      "unanswerable_answered": 0.0625,
+      "near_miss_unsupported": 0.08333333333333333,
+      "off_topic_unsupported": 0.0,
+      "cross_tenant_unsupported": 0.0
+    },
+    {
+      "threshold": 75,
+      "answerable_answered": 0.42424242424242425,
+      "unsupported_answer_rate": 0.03125,
+      "unanswerable_answered": 0.0625,
+      "near_miss_unsupported": 0.08333333333333333,
+      "off_topic_unsupported": 0.0,
+      "cross_tenant_unsupported": 0.0
+    },
+    {
+      "threshold": 80,
+      "answerable_answered": 0.42424242424242425,
+      "unsupported_answer_rate": 0.03125,
+      "unanswerable_answered": 0.0625,
+      "near_miss_unsupported": 0.08333333333333333,
+      "off_topic_unsupported": 0.0,
+      "cross_tenant_unsupported": 0.0
+    }
+  ],
+  "gate_off": {
+    "answerable_answered": 1.0,
+    "unsupported_answer_rate": 0.0625
+  },
+  "answerable_correct_when_answered": 0.8787878787878788
+}

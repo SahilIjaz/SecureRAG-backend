@@ -1,0 +1,23 @@
+D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\pytest_asyncio\plugin.py:306: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
+The event loop scope for asynchronous fixtures will default to the fixture scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to "function" scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session". Set it to "fixture-scope" to keep the current behavior.
+
+  warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
+============================= test session starts =============================
+collecting ... collected 5 items
+
+tests/test_pinecone_isolation_live.py::test_tenant_retrieves_its_own_vectors PASSED [ 20%]
+tests/test_pinecone_isolation_live.py::test_identical_vector_in_other_tenant_returns_nothing_of_a PASSED [ 40%]
+tests/test_pinecone_isolation_live.py::test_document_id_filter_cannot_reach_across_tenants PASSED [ 60%]
+tests/test_pinecone_isolation_live.py::test_raw_namespace_query_is_empty_for_foreign_tenant_filter PASSED [ 80%]
+tests/test_pinecone_isolation_live.py::test_deleting_tenant_a_leaves_tenant_b_intact PASSED [100%]
+
+============================== warnings summary ===============================
+venv\Lib\site-packages\anyio\pytest_plugin.py:14
+  D:\FYP\FYP-Code\Backend\venv\Lib\site-packages\anyio\pytest_plugin.py:14: PytestRemovedIn10Warning: _pytest.python.CallSpec2 has been renamed to CallSpec.
+  The CallSpec2 alias will be removed in pytest 10.
+  Update imports to use CallSpec instead.
+  See https://docs.pytest.org/en/stable/deprecations.html#callspec2-renamed
+    from _pytest.python import CallSpec2
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+======================== 5 passed, 1 warning in 24.25s ========================

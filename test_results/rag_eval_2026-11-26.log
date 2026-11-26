@@ -1,0 +1,87 @@
+Could not connect to Redis (Timeout connecting to server) — falling back to in-memory
+gemini model gemini-flash-lite-latest failed: 503 UNAVAILABLE. {'error': {'code': 503, 'message': 'This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.', 'status': 'UNAVAILABLE'}}
+gemini model gemini-flash-latest failed: Gemini model gemini-flash-latest timed out after 20s
+gemini model gemini-flash-latest failed: 503 UNAVAILABLE. {'error': {'code': 503, 'message': 'This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.', 'status': 'UNAVAILABLE'}}
+Failed to generate answer: 503 UNAVAILABLE. {'error': {'code': 503, 'message': 'This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.', 'status': 'UNAVAILABLE'}}
+gemini model gemini-flash-lite-latest failed: 503 UNAVAILABLE. {'error': {'code': 503, 'message': 'This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.', 'status': 'UNAVAILABLE'}}
+gemini model gemini-flash-latest failed: 503 UNAVAILABLE. {'error': {'code': 503, 'message': 'This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.', 'status': 'UNAVAILABLE'}}
+gemini model gemini-flash-latest failed: 503 UNAVAILABLE. {'error': {'code': 503, 'message': 'This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.', 'status': 'UNAVAILABLE'}}
+Failed to generate answer: 503 UNAVAILABLE. {'error': {'code': 503, 'message': 'This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.', 'status': 'UNAVAILABLE'}}
+Tenants with knowledge: 2 (94ae05f1…(23 chunks), 47e6afba…(2 chunks))
+
+    (provider busy — retrying in 5s)
+Tenant 94ae05f1… — 20 questions
+  [faith=1.00] auth=OK What are the five stages of the data warehouse environment?
+  [faith=1.00] auth=OK Which industries are typical early adopters of credit risk prediction 
+  [faith=1.00] auth=OK When should aggregate entities be included in the dimensional model?
+  [faith=1.00] auth=OK What does fully aggregate aware mean for strategies?
+  [faith=1.00] auth=OK Why should you avoid pre-aggregating all combinations of dimensions in
+  [faith=1.00] auth=OK What will I learn about data warehouse performance in this course?
+  [faith=1.00] auth=OK How do you calculate speedup using Amdahl's Law?
+  [faith=1.00] auth=OK What tradeoffs should be considered when choosing a physical implement
+  [faith=1.00] auth=OK What are the differences between MOLAP, ROLAP, and HOLAP?
+  [faith=1.00] auth=OK What are the main challenges and difficulties involved in implementing
+  [faith=1.00] auth=OK What types of metrics can be used for pre-aggregates?
+  [faith=1.00] auth=OK What is the ultimate goal of a star schema design?
+  [faith=1.00] auth=OK What is a data warehouse?
+    (provider busy — retrying answer in 5s)
+  [faith=1.00] auth=OK What is the difference between security groups and network ACLs?
+  [faith=1.00] auth=OK What is a data warehouse?
+  [faith=1.00] auth=OK What are the limitations of using a star schema in a data warehousing 
+  [faith=1.00] auth=OK Should my data warehouse architecture drive my choice of OLAP tools?
+  [faith=1.00] auth=OK What is the difference between scalability and elasticity in cloud com
+  [faith=1.00] auth=OK Why do traditional optimizers tend to avoid considering cartesian prod
+  [faith=1.00] auth=OK What assumptions are used for the approximate calculations of block si
+Tenant 47e6afba… — 2 questions
+  [faith=1.00] auth=OK How many days do I have to request a full refund?
+  [faith=1.00] auth=OK Can I use this domain for testing and monitoring purposes?
+
+Cross-tenant probes: asking tenant 47e6afba… questions from tenant 94ae05f1…'s documents
+  [ OK ] What makes implementing business intelligence and data warehousing env
+  [ OK ] What should drive your choice of OLAP tools in a data warehouse?
+  [ OK ] What is the difference between scalability and elasticity in cloud com
+  [ OK ] What assumptions were used to calculate the approximate block size and
+  [ OK ] What is a data warehouse?
+  [ OK ] What are the limitations of using a star schema in a data warehouse?
+  [ OK ] How is speedup calculated using Amdahl's Law?
+  [ OK ] How do you handle a cube that becomes too large to support in a single
+  [ OK ] What is the ultimate goal of a star schema design?
+  [ OK ] Why should I avoid pre-aggregating all dimension combinations in a ROL
+
+Off-topic probes: 10 per tenant
+  [conf=  0] What is the capital of Australia?
+    (provider busy — retrying answer in 5s)
+  [conf=  0] Who won the football world cup in 2010?
+  [conf=  0] How do I bake sourdough bread at home?
+  [conf=  0] What is the boiling point of water at sea level?
+  [conf=  0] Can you recommend a good science fiction novel?
+  [conf=  0] How many moons does Jupiter have?
+  [conf=  0] What is the square root of 1764?
+  [conf=  0] Who painted the Mona Lisa?
+  [conf=  0] What is the best way to learn the guitar?
+  [conf=  0] Explain how photosynthesis works.
+  [conf= 66] What is the capital of Australia?
+  [conf= 66] Who won the football world cup in 2010?
+  [conf= 68] How do I bake sourdough bread at home?
+  [conf= 68] What is the boiling point of water at sea level?
+  [conf= 67] Can you recommend a good science fiction novel?
+  [conf= 66] How many moons does Jupiter have?
+  [conf= 67] What is the square root of 1764?
+  [conf= 65] Who painted the Mona Lisa?
+  [conf= 63] What is the best way to learn the guitar?
+  [conf= 69] Explain how photosynthesis works.
+
+==============================================================
+EVALUATION SUMMARY
+==============================================================
+Questions asked:              22
+Answered (vs refused/no-ctx): 22 (100%)
+Mean faithfulness (RAGAS):    100.0%
+Median faithfulness:          100.0%
+Citations authorized:         22/22 (100%)
+Cross-tenant probes:          10, leaks: 0 → isolation 100%
+Median answer latency:        5676 ms
+
+Labelled CSV: 52 rows (22 good / 30 bad) → scripts/eval_results/2026-11-26-labelled.csv
+
+Per-question details written to scripts/eval_results/2026-11-26-faithfulness-isolation.json
