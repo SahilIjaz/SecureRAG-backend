@@ -1,0 +1,434 @@
+{
+  "summary": {
+    "answerable_n": 17,
+    "unanswerable_n": 30,
+    "answer_correctness": 1.0,
+    "faithfulness": 0.9901960784313727,
+    "citation_accuracy": 1.0,
+    "recall_at_5": 1.0,
+    "abstention_rate_unanswerable": 1.0,
+    "false_abstention_rate_answerable": 0.35294117647058826,
+    "cross_tenant_leaks": 0,
+    "latency_p50_ms": 6334.629100048915,
+    "latency_p95_ms": 10534.899800061246,
+    "mean_prompt_tokens": 1537.235294117647,
+    "mean_usd_per_answer": 0.00019847647058823527,
+    "usd_priced_answers": 17
+  },
+  "records": [
+    {
+      "kind": "answerable",
+      "q": "What are the differences between MOLAP, ROLAP, and HOLAP?",
+      "recall5": true,
+      "cited_gold_doc": true,
+      "answered": true,
+      "correct": 1.0,
+      "faithfulness": 0.8333333333333334,
+      "authorized": true,
+      "latency_ms": 8429,
+      "decision": "answer"
+    },
+    {
+      "kind": "answerable",
+      "q": "What is a data warehouse?",
+      "recall5": true,
+      "cited_gold_doc": true,
+      "answered": true,
+      "correct": 1.0,
+      "faithfulness": 1.0,
+      "authorized": true,
+      "latency_ms": 8101,
+      "decision": "answer"
+    },
+    {
+      "kind": "answerable",
+      "q": "When should I include aggregate entities in a dimensional model?",
+      "recall5": true,
+      "cited_gold_doc": true,
+      "answered": true,
+      "correct": 1.0,
+      "faithfulness": 1.0,
+      "authorized": true,
+      "latency_ms": 12465,
+      "decision": "answer"
+    },
+    {
+      "kind": "answerable",
+      "q": "What are the five stages of the data warehouse environment?",
+      "recall5": true,
+      "cited_gold_doc": true,
+      "answered": true,
+      "correct": 1.0,
+      "faithfulness": 1.0,
+      "authorized": true,
+      "latency_ms": 6335,
+      "decision": "answer"
+    },
+    {
+      "kind": "answerable",
+      "q": "How many I/Os are required to join the date dimensional table to the previous result set?",
+      "recall5": true,
+      "cited_gold_doc": true,
+      "answered": true,
+      "correct": 1.0,
+      "faithfulness": 1.0,
+      "authorized": true,
+      "latency_ms": 6006,
+      "decision": "answer"
+    },
+    {
+      "kind": "answerable",
+      "q": "What is the difference between security groups and network ACLs?",
+      "recall5": true,
+      "cited_gold_doc": true,
+      "answered": true,
+      "correct": 1.0,
+      "faithfulness": 1.0,
+      "authorized": true,
+      "latency_ms": 8775,
+      "decision": "refuse"
+    },
+    {
+      "kind": "answerable",
+      "q": "How should you handle a cube that becomes too large to be supported in a single cube?",
+      "recall5": true,
+      "cited_gold_doc": true,
+      "answered": true,
+      "correct": 1.0,
+      "faithfulness": 1.0,
+      "authorized": true,
+      "latency_ms": 5563,
+      "decision": "refuse"
+    },
+    {
+      "kind": "answerable",
+      "q": "What should drive the choice of OLAP tools in a data warehouse architecture?",
+      "recall5": true,
+      "cited_gold_doc": true,
+      "answered": true,
+      "correct": 1.0,
+      "faithfulness": 1.0,
+      "authorized": true,
+      "latency_ms": 7895,
+      "decision": "answer"
+    },
+    {
+      "kind": "answerable",
+      "q": "What are the typical early adopters of credit risk prediction and inventory management technologies?",
+      "recall5": true,
+      "cited_gold_doc": true,
+      "answered": true,
+      "correct": 1.0,
+      "faithfulness": 1.0,
+      "authorized": true,
+      "latency_ms": 4915,
+      "decision": "clarify"
+    },
+    {
+      "kind": "answerable",
+      "q": "Why should I avoid pre-aggregating all combinations of dimensions in a ROLAP environment?",
+      "recall5": true,
+      "cited_gold_doc": true,
+      "answered": true,
+      "correct": 1.0,
+      "faithfulness": 1.0,
+      "authorized": true,
+      "latency_ms": 5941,
+      "decision": "answer"
+    },
+    {
+      "kind": "answerable",
+      "q": "What tradeoffs should be considered when choosing a physical implementation for an OLAP deployment?",
+      "recall5": true,
+      "cited_gold_doc": true,
+      "answered": true,
+      "correct": 1.0,
+      "faithfulness": 1.0,
+      "authorized": true,
+      "latency_ms": 3134,
+      "decision": "answer"
+    },
+    {
+      "kind": "answerable",
+      "q": "What standard API supplanted the MDAPI in the marketplace?",
+      "recall5": true,
+      "cited_gold_doc": true,
+      "answered": true,
+      "correct": 1.0,
+      "faithfulness": 1.0,
+      "authorized": true,
+      "latency_ms": 7214,
+      "decision": "answer"
+    },
+    {
+      "kind": "answerable",
+      "q": "What are the main drawbacks of using pre-aggregate summary tables?",
+      "recall5": true,
+      "cited_gold_doc": true,
+      "answered": true,
+      "correct": 1.0,
+      "faithfulness": 1.0,
+      "authorized": true,
+      "latency_ms": 5630,
+      "decision": "refuse"
+    },
+    {
+      "kind": "answerable",
+      "q": "What is a data warehouse?",
+      "recall5": true,
+      "cited_gold_doc": true,
+      "answered": true,
+      "correct": 1.0,
+      "faithfulness": 1.0,
+      "authorized": true,
+      "latency_ms": 2797,
+      "decision": "answer"
+    },
+    {
+      "kind": "answerable",
+      "q": "What does it mean for strategies to be fully aggregate aware?",
+      "recall5": true,
+      "cited_gold_doc": true,
+      "answered": true,
+      "correct": 1.0,
+      "faithfulness": 1.0,
+      "authorized": true,
+      "latency_ms": 10052,
+      "decision": "answer"
+    },
+    {
+      "kind": "answerable",
+      "q": "Can I use this domain for testing and monitoring purposes?",
+      "recall5": true,
+      "cited_gold_doc": true,
+      "answered": true,
+      "correct": 1.0,
+      "faithfulness": 1.0,
+      "authorized": true,
+      "latency_ms": 3709,
+      "decision": "clarify"
+    },
+    {
+      "kind": "answerable",
+      "q": "How many days do I have to request a full refund?",
+      "recall5": true,
+      "cited_gold_doc": true,
+      "answered": true,
+      "correct": 1.0,
+      "faithfulness": 1.0,
+      "authorized": true,
+      "latency_ms": 9749,
+      "decision": "clarify"
+    },
+    {
+      "kind": "off_topic",
+      "q": "What is the capital of Australia?",
+      "decision": "refuse",
+      "pregen_confidence": 0,
+      "leaked": false
+    },
+    {
+      "kind": "off_topic",
+      "q": "Who won the football world cup in 2010?",
+      "decision": "refuse",
+      "pregen_confidence": 0,
+      "leaked": false
+    },
+    {
+      "kind": "off_topic",
+      "q": "How do I bake sourdough bread at home?",
+      "decision": "refuse",
+      "pregen_confidence": 0,
+      "leaked": false
+    },
+    {
+      "kind": "off_topic",
+      "q": "What is the boiling point of water at sea level?",
+      "decision": "refuse",
+      "pregen_confidence": 0,
+      "leaked": false
+    },
+    {
+      "kind": "off_topic",
+      "q": "Can you recommend a good science fiction novel?",
+      "decision": "refuse",
+      "pregen_confidence": 0,
+      "leaked": false
+    },
+    {
+      "kind": "off_topic",
+      "q": "How many moons does Jupiter have?",
+      "decision": "refuse",
+      "pregen_confidence": 0,
+      "leaked": false
+    },
+    {
+      "kind": "off_topic",
+      "q": "What is the square root of 1764?",
+      "decision": "refuse",
+      "pregen_confidence": 0,
+      "leaked": false
+    },
+    {
+      "kind": "off_topic",
+      "q": "Who painted the Mona Lisa?",
+      "decision": "refuse",
+      "pregen_confidence": 0,
+      "leaked": false
+    },
+    {
+      "kind": "off_topic",
+      "q": "What is the best way to learn the guitar?",
+      "decision": "refuse",
+      "pregen_confidence": 0,
+      "leaked": false
+    },
+    {
+      "kind": "off_topic",
+      "q": "Explain how photosynthesis works.",
+      "decision": "refuse",
+      "pregen_confidence": 0,
+      "leaked": false
+    },
+    {
+      "kind": "off_topic",
+      "q": "What is the capital of Australia?",
+      "decision": "clarify",
+      "pregen_confidence": 66,
+      "leaked": false
+    },
+    {
+      "kind": "off_topic",
+      "q": "Who won the football world cup in 2010?",
+      "decision": "clarify",
+      "pregen_confidence": 66,
+      "leaked": false
+    },
+    {
+      "kind": "off_topic",
+      "q": "How do I bake sourdough bread at home?",
+      "decision": "clarify",
+      "pregen_confidence": 68,
+      "leaked": false
+    },
+    {
+      "kind": "off_topic",
+      "q": "What is the boiling point of water at sea level?",
+      "decision": "clarify",
+      "pregen_confidence": 68,
+      "leaked": false
+    },
+    {
+      "kind": "off_topic",
+      "q": "Can you recommend a good science fiction novel?",
+      "decision": "clarify",
+      "pregen_confidence": 67,
+      "leaked": false
+    },
+    {
+      "kind": "off_topic",
+      "q": "How many moons does Jupiter have?",
+      "decision": "clarify",
+      "pregen_confidence": 66,
+      "leaked": false
+    },
+    {
+      "kind": "off_topic",
+      "q": "What is the square root of 1764?",
+      "decision": "clarify",
+      "pregen_confidence": 67,
+      "leaked": false
+    },
+    {
+      "kind": "off_topic",
+      "q": "Who painted the Mona Lisa?",
+      "decision": "clarify",
+      "pregen_confidence": 65,
+      "leaked": false
+    },
+    {
+      "kind": "off_topic",
+      "q": "What is the best way to learn the guitar?",
+      "decision": "clarify",
+      "pregen_confidence": 63,
+      "leaked": false
+    },
+    {
+      "kind": "off_topic",
+      "q": "Explain how photosynthesis works.",
+      "decision": "clarify",
+      "pregen_confidence": 69,
+      "leaked": false
+    },
+    {
+      "kind": "cross_tenant",
+      "q": "What will I learn about optimizing performance in a data warehouse by the end of this course?",
+      "decision": "clarify",
+      "pregen_confidence": 66,
+      "leaked": false
+    },
+    {
+      "kind": "cross_tenant",
+      "q": "Can pre-aggregate summary tables take up significantly more space than raw data tables?",
+      "decision": "clarify",
+      "pregen_confidence": 66,
+      "leaked": false
+    },
+    {
+      "kind": "cross_tenant",
+      "q": "How do fully aggregate-aware strategies deliver metrics without forcing run-time aggregation?",
+      "decision": "clarify",
+      "pregen_confidence": 66,
+      "leaked": false
+    },
+    {
+      "kind": "cross_tenant",
+      "q": "Why do traditional database optimizers typically avoid cartesian product joins?",
+      "decision": "clarify",
+      "pregen_confidence": 66,
+      "leaked": false
+    },
+    {
+      "kind": "cross_tenant",
+      "q": "When should I include aggregate entities in a dimensional model?",
+      "decision": "clarify",
+      "pregen_confidence": 65,
+      "leaked": false
+    },
+    {
+      "kind": "cross_tenant",
+      "q": "What is a data warehouse?",
+      "decision": "clarify",
+      "pregen_confidence": 68,
+      "leaked": false
+    },
+    {
+      "kind": "cross_tenant",
+      "q": "What are the main challenges and complexities involved in data warehouse environments?",
+      "decision": "clarify",
+      "pregen_confidence": 68,
+      "leaked": false
+    },
+    {
+      "kind": "cross_tenant",
+      "q": "What are the differences between MOLAP, ROLAP, and HOLAP?",
+      "decision": "clarify",
+      "pregen_confidence": 68,
+      "leaked": false
+    },
+    {
+      "kind": "cross_tenant",
+      "q": "What is the ultimate goal of a star schema design?",
+      "decision": "clarify",
+      "pregen_confidence": 66,
+      "leaked": false
+    },
+    {
+      "kind": "cross_tenant",
+      "q": "What performance and scalability tradeoffs should be considered when implementing OLAP?",
+      "decision": "clarify",
+      "pregen_confidence": 68,
+      "leaked": false
+    }
+  ]
+}
