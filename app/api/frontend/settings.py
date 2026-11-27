@@ -19,7 +19,7 @@ from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
-from app.core import pq_crypto
+from app.core import pq_crypto, subscription_guard
 from app.core.rate_limit import limiter
 from app.core.rbac import require_admin, require_owner
 from sqlalchemy import func, select, update as _sa_update
@@ -207,6 +207,7 @@ async def _billing_info(user: User, db: AsyncSession) -> FEBillingInfo:
     fe_plan = helpers.fe_plan_for_subscription(subscription)
 
     fe_status = _FE_STATUS.get(subscription.status, "Active") if subscription else "Active"
+    access_active = await subscription_guard.is_subscription_usable(subscription, db)
 
     renews_on = helpers.first_of_next_month()
     if subscription is not None and subscription.expires_at is not None:
@@ -229,6 +230,7 @@ async def _billing_info(user: User, db: AsyncSession) -> FEBillingInfo:
     return FEBillingInfo(
         planId=fe_plan,
         status=fe_status,
+        accessActive=access_active,
         priceLabel=helpers.PLAN_PRICE_LABELS[fe_plan],
         renewsOn=helpers.format_date(renews_on),
         # The row is seeded with placeholder defaults ("VISA"/"0000"/"12/30")

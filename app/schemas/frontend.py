@@ -552,6 +552,13 @@ class FEPaymentMethod(BaseModel):
 class FEBillingInfo(BaseModel):
     planId: FEPlanId
     status: Literal["Active", "Trialing", "Past Due", "Canceled"]
+    # Whether the subscription still has time on the clock — the single
+    # source of truth is subscription_guard.is_subscription_usable(), the
+    # same check every billed route enforces server-side. `status` alone
+    # isn't enough: a `cancelled` subscription still reads "Canceled" but
+    # stays usable until its expires_at, and a lapsed one only flips to
+    # `expired` lazily on the next check.
+    accessActive: bool = True
     priceLabel: str
     renewsOn: str
     # None until Stripe has synced a real card (previously a placeholder
