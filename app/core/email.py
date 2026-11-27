@@ -12,6 +12,7 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 BREVO_API_URL = "https://api.brevo.com/v3/smtp/email"
+RESEND_API_URL = "https://api.resend.com/emails"
 
 def _build_otp_html(full_name: str, otp: str) -> str:
     return f"""
@@ -95,6 +96,39 @@ def _send_via_brevo(
         logger.error("[EMAIL] Brevo error %s: %s", response.status_code, response.text)
         response.raise_for_status()
 
+def _send_via_resend(
+    recipient_email: str, subject: str, html_content: str, text_content: str,
+    from_name: str, reply_to: Optional[str], reply_to_name: Optional[str],
+) -> None:
+    """Send an email using the Resend HTTP API (works on Render — same
+    reasoning as _send_via_brevo: a plain HTTPS call, not a blocked SMTP
+    socket). Resend can't send from an arbitrary address like Brevo can;
+    the sender is always settings.RESEND_FROM_EMAIL (its shared test
+    domain by default, or your own DNS-verified domain)."""
+    payload = {
+        "from": f"{from_name} <{settings.RESEND_FROM_EMAIL}>",
+        "to": [recipient_email],
+        "subject": subject,
+        "html": html_content,
+        "text": text_content,
+    }
+    if reply_to:
+        payload["reply_to"] = f"{reply_to_name} <{reply_to}>" if reply_to_name else reply_to
+
+    headers = {
+        "Authorization": f"Bearer {settings.RESEND_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    logger.info("[EMAIL] Sending via Resend API to %s ...", recipient_email)
+    response = httpx.post(RESEND_API_URL, json=payload, headers=headers, timeout=15)
+
+    if response.status_code == 200:
+        logger.info("[EMAIL] Resend success: %s", response.json())
+    else:
+        logger.error("[EMAIL] Resend error %s: %s", response.status_code, response.text)
+        response.raise_for_status()
+
 def _send_via_smtp(
     recipient_email: str, subject: str, html_content: str, text_content: str,
     from_name: str, reply_to: Optional[str], reply_to_name: Optional[str],
@@ -125,10 +159,12 @@ async def send_email(
     reply_to_name: Optional[str] = None,
 ) -> None:
     """
-    Send an email. Uses Brevo HTTP API if configured, otherwise falls back to
-    SMTP, then to logging — the same fallback chain send_otp_email always
-    used, generalized so notification_service can reuse it for anything else
-    transactional (conversation handoffs, weekly summaries, ...).
+    Send an email. Tries Resend's HTTP API first, then Brevo's, then SMTP
+    (which only works outside Render — see _send_via_smtp), then gives up
+    and logs it. All three are plain alternatives; set whichever one you
+    have credentials for. Generalized so notification_service can reuse
+    this for anything else transactional (conversation handoffs, weekly
+    summaries, ...).
 
     from_name/reply_to let a caller send "as" a tenant without actually
     needing that tenant's own verified sending domain (which Nexus doesn't
@@ -141,6 +177,16 @@ async def send_email(
     """
     loop = asyncio.get_event_loop()
     from_name = from_name or settings.EMAILS_FROM_NAME
+
+    if settings.RESEND_API_KEY:
+        try:
+            await loop.run_in_executor(
+                None, _send_via_resend, recipient_email, subject, html_content, text_content,
+                from_name, reply_to, reply_to_name,
+            )
+            return
+        except Exception as e:
+            logger.error("[EMAIL] Resend failed: %s", e)
 
     if settings.BREVO_API_KEY:
         try:

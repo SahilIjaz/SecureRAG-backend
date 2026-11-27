@@ -38,7 +38,6 @@ from app.schemas.frontend import (
     FEVolumePoint,
 )
 from app.services.auth_service import get_current_user
-from app.services.classification_service import UNCLASSIFIED_TOPIC
 
 # Dashboard analytics are owner/admin territory — agents see the conversation
 # inbox, not workspace-wide metrics.

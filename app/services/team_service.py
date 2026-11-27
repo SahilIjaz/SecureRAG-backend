@@ -13,7 +13,6 @@ from __future__ import annotations
 import logging
 import secrets
 from datetime import datetime, timedelta, timezone
-from typing import Optional
 
 from fastapi import HTTPException, status
 from sqlalchemy import func, select
@@ -25,7 +24,6 @@ from app.core.entitlements import get_entitlements
 from app.core.security import hash_password, verify_password
 from app.models.invite import Invite
 from app.models.subscription import Subscription
-from app.models.tenant import Tenant
 from app.models.tenant_user import TenantRole, TenantUser
 from app.models.user import User
 

@@ -619,13 +619,13 @@ def _extract_text(content: bytes, mime_type: str) -> tuple[str, list[tuple[int, 
     Returns (text, page_map). page_map is [(char_start, page_number), ...]
     for PDFs (empty for everything else — DOCX/TXT/MD have no page concept
     at this stage). Runs on a worker thread (see asyncio.to_thread call
-    site) since PyPDF2/python-docx parsing and tiktoken chunking are both
+    site) since pypdf/python-docx parsing and tiktoken chunking are both
     CPU-bound and would otherwise block the event loop.
     """
     if mime_type == "application/pdf" or content[:5] == b"%PDF-":
         import io
 
-        from PyPDF2 import PdfReader
+        from pypdf import PdfReader
 
         reader = PdfReader(io.BytesIO(content))
         parts = []

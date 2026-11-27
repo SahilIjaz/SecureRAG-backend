@@ -3,7 +3,6 @@
 import asyncio
 import logging
 import time
-import uuid
 from typing import AsyncIterator, List
 
 from app.core.embeddings import embed_text
