@@ -15,7 +15,7 @@ reflect actual traffic. Each answer counts toward the monthly message quota.
 
 import logging
 import uuid
-from typing import List, Optional
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, EmailStr, Field

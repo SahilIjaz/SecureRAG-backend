@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-import uuid
 from typing import List, Dict, Any
 from pinecone import Pinecone
 

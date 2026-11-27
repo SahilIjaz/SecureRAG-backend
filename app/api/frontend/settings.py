@@ -44,7 +44,6 @@ from app.schemas.frontend import (
     FECheckoutRequest,
     FECheckoutResponse,
     FEChangePlanRequest,
-    FEAcceptInviteRequest,
     FECreateApiKeyRequest,
     FECreateApiKeyResponse,
     FEInviteRequest,

@@ -27,7 +27,6 @@ from app.models.tenant import Tenant
 from app.models.tenant_quota import TenantQuota
 from app.models.usage_count import UsageCount
 from app.models.user import User
-from app.services.notification_service import notify_tenant
 
 # ── Plan mapping ──────────────────────────────────────────────────────────────
 # Frontend plan ids: starter | growth | business — backend PlanName stays

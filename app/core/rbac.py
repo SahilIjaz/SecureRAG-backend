@@ -14,7 +14,6 @@ important given the 15-second user cache.
 
 from __future__ import annotations
 
-from typing import Iterable
 
 from fastapi import Depends, HTTPException, status
 from sqlalchemy import func, select

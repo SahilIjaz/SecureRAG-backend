@@ -48,6 +48,12 @@ class Settings(BaseSettings):
     EMAILS_FROM_NAME: str = "SecureRAG++"
 
     BREVO_API_KEY: str = ""
+    RESEND_API_KEY: str = ""
+    # Resend requires sending from either its own shared test domain or a
+    # domain you've verified by DNS — unlike Brevo, it can't send from an
+    # arbitrary address like a Gmail inbox. Defaults to the shared test
+    # domain so this works with no DNS setup at all.
+    RESEND_FROM_EMAIL: str = "onboarding@resend.dev"
 
     GOOGLE_CLIENT_ID: str = ""
 
@@ -82,7 +88,6 @@ class Settings(BaseSettings):
         seen: set[str] = set()
         return [o for o in origins if o and not (o in seen or seen.add(o))]
 
-    UPLOAD_DIR: str = "storage/uploads"
     MAX_UPLOAD_SIZE_MB: int = 50
     # Hard ceiling on a whole upload request body (multipart), rejected from
     # Content-Length before buffering. Must exceed the largest plan's per-file

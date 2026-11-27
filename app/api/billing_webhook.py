@@ -16,7 +16,6 @@ import logging
 
 import stripe
 from fastapi import APIRouter, Header, HTTPException, Request, status
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database import AsyncSessionLocal

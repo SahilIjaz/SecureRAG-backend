@@ -10,7 +10,6 @@ dashboard bell's backend.
 """
 
 import uuid
-from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import delete, func, or_, select, update

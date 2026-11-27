@@ -1,3 +1,5 @@
+import re
+
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import declarative_base
 
@@ -15,6 +17,16 @@ def _build_database_url(raw_url: str) -> str:
 
 _db_url = _build_database_url(settings.DATABASE_URL)
 
+# A local Postgres (used for fast local dev) has no SSL configured at all —
+# only require it for a real remote host like Neon. A Tailscale address
+# (100.64.0.0/10) is already end-to-end encrypted at the WireGuard layer,
+# so Postgres-level SSL on top of it is redundant, not a security gap.
+_connect_args = {"statement_cache_size": 0}
+_is_local_host = any(host in _db_url for host in ("localhost", "127.0.0.1"))
+_is_tailscale_host = re.search(r"@100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.", _db_url) is not None
+if not _is_local_host and not _is_tailscale_host:
+    _connect_args["ssl"] = "require"
+
 async_engine = create_async_engine(
     _db_url,
     echo=settings.SQL_ECHO,
@@ -27,7 +39,7 @@ async_engine = create_async_engine(
     # surfacing as "prepared statement ... does not exist". Disabling asyncpg's client-side
     # statement cache avoids that; the pooler is what actually removes the connection-setup
     # latency, so losing local statement caching costs nothing extra here.
-    connect_args={"ssl": "require", "statement_cache_size": 0},
+    connect_args=_connect_args,
 )
 
 AsyncSessionLocal = async_sessionmaker(

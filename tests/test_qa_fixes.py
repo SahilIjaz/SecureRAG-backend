@@ -5,7 +5,6 @@ BUGS.md at the workspace root). Each test names the bug it would have caught.
 Run with:  PYTHONPATH=. ./venv/bin/pytest tests/ -v
 """
 
-import re
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
