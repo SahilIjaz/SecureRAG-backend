@@ -126,14 +126,29 @@ async def record_usage(
     # background sentiment/topic classifier rides along uncounted, since a
     # tenant sending one message shouldn't see their trial deplete by two.
     free_this_call = usage.provider == DEFAULT_PROVIDER and tenant.trial_ended_at is None
+    if free_this_call and not _still_in_trial(tenant):
+        # The trial ran out (message cap or day window) but no gate has flipped
+        # the flag yet — e.g. the background classifier or a stream that
+        # finished after the window closed. Bill this call, don't gift it.
+        tenant.trial_ended_at = _utcnow()
+        free_this_call = False
+    raw_cost = None if free_this_call else pricing.estimate_cost_usd(
+        usage.provider, usage.model, usage.prompt_tokens, usage.completion_tokens
+    )
+    if raw_cost is None and not free_this_call:
+        # No price configured for this exact model: bill at the provider's
+        # dearest known price rather than silently never deducting.
+        raw_cost = pricing.fallback_cost_usd(usage.provider, usage.prompt_tokens, usage.completion_tokens)
+        if raw_cost is not None:
+            logger.warning("Billing %s/%s at fallback price — add it to LLM_PRICING_TABLE", usage.provider, usage.model)
+        else:
+            logger.warning("No token usage reported for %s/%s — nothing to bill for this call", usage.provider, usage.model)
     usage_log = LLMUsageLog(
         tenant_id=tenant_id, conversation_id=conversation_id,
         provider=usage.provider, model=usage.model, call_type=call_type,
         prompt_tokens=usage.prompt_tokens, completion_tokens=usage.completion_tokens,
         total_tokens=usage.total_tokens,
-        raw_cost_usd=None if free_this_call else pricing.estimate_cost_usd(
-            usage.provider, usage.model, usage.prompt_tokens, usage.completion_tokens
-        ),
+        raw_cost_usd=raw_cost,
     )
     db.add(usage_log)
 

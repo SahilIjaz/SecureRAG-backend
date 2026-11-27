@@ -60,7 +60,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(
     prefix="/knowledge",
     tags=["Frontend — Knowledge"],
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(require_admin), Depends(require_active_subscription)],
 )
 
 def _doc_label(doc: Document) -> str:

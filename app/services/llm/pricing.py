@@ -43,6 +43,21 @@ def _parse_pricing_table(raw: str) -> dict[tuple[str, str], tuple[Decimal, Decim
 _PRICING_TABLE = _parse_pricing_table(settings.LLM_PRICING_TABLE)
 
 
+def fallback_cost_usd(provider: str, prompt_tokens: int | None, completion_tokens: int | None) -> Decimal | None:
+    """Conservative stand-in price for a (provider, model) with no entry in
+    LLM_PRICING_TABLE: the dearest configured price for that provider (or
+    overall). Used only by the wallet so an unpriced model — a new alias, a
+    fallback model nobody listed — is still billed instead of running free."""
+    if prompt_tokens is None or completion_tokens is None:
+        return None
+    candidates = [v for (p, _m), v in _PRICING_TABLE.items() if p == provider] or list(_PRICING_TABLE.values())
+    if not candidates:
+        return None
+    input_price = max(c[0] for c in candidates)
+    output_price = max(c[1] for c in candidates)
+    return (Decimal(prompt_tokens) * input_price + Decimal(completion_tokens) * output_price) / Decimal(1_000_000)
+
+
 def estimate_cost_usd(provider: str, model: str, prompt_tokens: int | None, completion_tokens: int | None) -> Decimal | None:
     """Real $ cost of one call, or None if this (provider, model) has no
     configured price yet — callers must treat None as "cost unknown," never

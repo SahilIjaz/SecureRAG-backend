@@ -17,14 +17,22 @@ def _build_database_url(raw_url: str) -> str:
 
 _db_url = _build_database_url(settings.DATABASE_URL)
 
-# A local Postgres (used for fast local dev) has no SSL configured at all —
-# only require it for a real remote host like Neon. A Tailscale address
-# (100.64.0.0/10) is already end-to-end encrypted at the WireGuard layer,
-# so Postgres-level SSL on top of it is redundant, not a security gap.
+def _is_local_db(url: str) -> bool:
+    """A Postgres on this machine / the Docker host / reached over Tailscale
+    has no TLS configured — forcing SSL against it makes asyncpg fail with
+    "rejected SSL upgrade". Cloud hosts (Neon etc.) keep SSL required.
+    A Tailscale address (100.64.0.0/10) is already end-to-end encrypted at
+    the WireGuard layer, so Postgres-level SSL on top of it is redundant,
+    not a security gap."""
+    from sqlalchemy.engine import make_url
+
+    host = make_url(url).host or ""
+    if host in ("localhost", "127.0.0.1", "::1", "host.docker.internal", "postgres", "db"):
+        return True
+    return re.match(r"^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.", host) is not None
+
 _connect_args = {"statement_cache_size": 0}
-_is_local_host = any(host in _db_url for host in ("localhost", "127.0.0.1"))
-_is_tailscale_host = re.search(r"@100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.", _db_url) is not None
-if not _is_local_host and not _is_tailscale_host:
+if not _is_local_db(_db_url):
     _connect_args["ssl"] = "require"
 
 async_engine = create_async_engine(

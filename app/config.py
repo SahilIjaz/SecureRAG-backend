@@ -335,6 +335,30 @@ class Settings(BaseSettings):
     # short clarifying question instead of answering or escalating.
     RAG_CLARIFY_ENABLED: bool = True
     RAG_CLARIFY_BAND: int = 15
+    # Pre-generation confidence (app/services/confidence.py:compute_pregen_confidence):
+    #   S = sigmoid(B0 + B1·top_rerank + B2·(top1 - top2) + B3·coverage)
+    # computed from retrieval scores BEFORE the LLM is called, so weak evidence
+    # is refused/clarified without a generation. The model's self-reported
+    # CONFIDENCE line is no longer requested. B0..B3 are hand-set defaults —
+    # UNCALIBRATED until fitted offline with scripts/fit_confidence.py on the
+    # labelled CSV from scripts/evaluate_rag.py --csv; paste fitted values here.
+    # RAG_PREGEN_CONF_ENABLED=False gates (still before the LLM call) on the
+    # old hand-weighted retrievalConfidence formula instead of the sigmoid.
+    RAG_PREGEN_CONF_ENABLED: bool = True
+    # PROVISIONAL (2026-11-25): set from live-measured feature ranges on a tiny
+    # (3-chunk) knowledge base — in-scope questions scored top_rerank 0.78-0.84 /
+    # gap 0.03-0.08, off-topic 0.70-0.78 / gap < 0.035. The first guess
+    # (-4, 6, 1.5, 1.5) put EVERYTHING in the clarify band (65-69). Coverage is
+    # weighted 0 because with <= 3 retrieved chunks it carries no signal. These
+    # are NOT fitted — replace with scripts/fit_confidence.py output.
+    RAG_CONF_B0: float = -19.0
+    RAG_CONF_B1: float = 25.0
+    RAG_CONF_B2: float = 10.0
+    RAG_CONF_B3: float = 0.0
+    # A short message (<= this many words) in a chat that already has history
+    # is a follow-up ("yes", "tell me more") — retrieval on it alone is weak
+    # by nature, so the pre-gate never refuses it.
+    RAG_FOLLOWUP_MAX_WORDS: int = 6
     # Cross-document conflict detection (see app/services/confidence.py):
     # retrieved chunks are compared for numeric contradictions and the score
     # distribution's entropy; detected conflicts are disclosed in the answer

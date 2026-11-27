@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Awaitable, Callable, List, TypeVar
 
 from fastapi import APIRouter, Depends
+from app.core.subscription_guard import require_active_subscription
 
 from app.core.rbac import require_admin
 from sqlalchemy import select
@@ -43,7 +44,7 @@ from app.services.auth_service import get_current_user
 router = APIRouter(
     prefix="/dashboard",
     tags=["Frontend — Dashboard"],
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(require_admin), Depends(require_active_subscription)],
 )
 
 WINDOW_DAYS = 30

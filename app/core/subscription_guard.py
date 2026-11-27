@@ -51,22 +51,49 @@ def _is_expired_now(subscription: Subscription) -> bool:
     return datetime.now(timezone.utc) >= expires
 
 
-async def _resolve_usable(subscription: Subscription, db: AsyncSession) -> bool:
-    """Shared core: a subscription is usable while it still has time on the
-    clock (trial/active/cancelled) AND that time hasn't run out. Once the period
-    has elapsed, flip it to `expired` (so it stays blocked without re-checking
-    the clock) and treat it as unusable."""
+def _currently_usable(subscription: Subscription) -> bool:
+    """Pure check against the local row — no I/O."""
     if subscription.status not in _TIME_REMAINING_STATUSES:
-        return False  # already expired (or any future terminal state)
-    if _is_expired_now(subscription):
-        # The trial/paid period is over — now it's genuinely blocked.
-        if subscription.status != SubscriptionStatus.expired:
-            subscription.status = SubscriptionStatus.expired
-            await db.flush()
         return False
-    # Still within the trial or paid period — cancelled-but-not-yet-expired
-    # keeps working exactly like active, matching Stripe's own behaviour.
-    return True
+    if subscription.expires_at is None:
+        # A row with no deadline is only legitimate for a legacy plan that was
+        # never attached to Stripe. A Stripe-backed row (or the pre-checkout
+        # placeholder) without a confirmed deadline used to read as "never
+        # expires" and unlocked the product for free — fail closed instead.
+        return subscription.stripe_subscription_id is None and subscription.status == SubscriptionStatus.active
+    return not _is_expired_now(subscription)
+
+
+async def _resolve_usable(subscription: Subscription, db: AsyncSession) -> bool:
+    """Shared core: usable only while the local row says there is paid/trial
+    time left. When it says there isn't, Stripe gets one (throttled) chance to
+    contradict it — a renewal that landed while webhooks weren't delivered —
+    before the tenant is blocked. A blocked tenant is flipped to `expired`
+    once, and told."""
+    if _currently_usable(subscription):
+        return True
+
+    if subscription.stripe_subscription_id:
+        from app.services import stripe_service
+
+        if await stripe_service.refresh_from_stripe(subscription, db) and _currently_usable(subscription):
+            return True
+
+    if subscription.status != SubscriptionStatus.expired:
+        had_real_plan = subscription.stripe_subscription_id is not None or subscription.expires_at is not None
+        subscription.status = SubscriptionStatus.expired
+        await db.flush()
+        if had_real_plan:
+            from app.services import stripe_service
+
+            await stripe_service.notify_billing(
+                subscription.tenant_id, "ended",
+                "Your plan has ended",
+                "Your trial or subscription period is over, so your chatbot and dashboard are paused. "
+                "Renew in Billing to restore access.",
+                db,
+            )
+    return False
 
 
 async def ensure_subscription_active(

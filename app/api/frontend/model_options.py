@@ -13,6 +13,7 @@ behavior, zero disruption for a tenant who never visits this page.
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from app.core.subscription_guard import require_active_subscription
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,7 +28,7 @@ from app.services.llm.provider_catalog import get_catalog_entry
 from app.services.llm.router import KNOWN_PROVIDERS, _get_provider, health_check_all
 from app.services import wallet_service
 
-router = APIRouter(tags=["Frontend — AI Model"])
+router = APIRouter(tags=["Frontend — AI Model"], dependencies=[Depends(require_active_subscription)])
 
 
 class FEModelOption(BaseModel):

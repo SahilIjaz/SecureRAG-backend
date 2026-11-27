@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from typing import List, Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from app.core.subscription_guard import require_active_subscription
 from pydantic import BaseModel
 from sqlalchemy import func, select, update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -47,7 +48,10 @@ from app.services.conversation_service import purge_old_message_text
 from app.services.notification_service import notify_visitor_of_reply
 from app.services.call_transcript_service import process_call_recording
 
-router = APIRouter(prefix="/conversations", tags=["Frontend — Conversations"])
+router = APIRouter(
+    prefix="/conversations", tags=["Frontend — Conversations"],
+    dependencies=[Depends(require_active_subscription)],
+)
 
 def _preview(convo: Conversation) -> str:
     first_user_msg = next((m.text for m in convo.messages if m.role == "user"), "")

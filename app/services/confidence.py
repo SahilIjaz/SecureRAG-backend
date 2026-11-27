@@ -88,6 +88,59 @@ def compute_retrieval_metrics(chunks: List[dict]) -> dict:
     }
 
 
+def _sigmoid(x: float) -> float:
+    # Numerically stable for large |x|.
+    if x >= 0:
+        return 1.0 / (1.0 + math.exp(-x))
+    e = math.exp(x)
+    return e / (1.0 + e)
+
+
+def compute_pregen_confidence(chunks: List[dict]) -> dict:
+    """Pre-generation confidence from retrieval evidence alone (no model call):
+
+        S = sigmoid(b0 + b1·top_rerank + b2·(top1 - top2) + b3·coverage)
+
+    top_rerank — best chunk's cross-encoder score; gap — how far the best chunk
+    stands above the runner-up; coverage — share of chunks clearing the support
+    floor. b0..b3 come from settings (RAG_CONF_B0..B3), fitted offline.
+
+    Returns 0-100 `pregenConfidence` so the per-tenant `confidenceThreshold`
+    and RAG_CLARIFY_BAND keep their meaning. When no chunk carries a
+    rerank_score (reranker disabled, timed out, or failed → RRF order), the
+    scale the coefficients were fitted on isn't available, so
+    `rerankAvailable` is False and `pregenConfidence` falls back to the legacy
+    weighted formula rather than feeding a wrong-scale number to the sigmoid.
+    """
+    from app.config import settings
+
+    base = compute_retrieval_metrics(chunks)
+    if not chunks:
+        return {"pregenConfidence": 0, "topRerank": 0.0, "gap": 0.0,
+                "coverage": 0.0, "rerankAvailable": False}
+
+    rerank_available = any(c.get("rerank_score") is not None for c in chunks)
+    scores = sorted((_chunk_score(c) for c in chunks), reverse=True)
+    top_rerank = scores[0]
+    gap = scores[0] - scores[1] if len(scores) > 1 else 0.0
+    coverage = base["coverage"]
+
+    if settings.RAG_PREGEN_CONF_ENABLED and rerank_available:
+        z = (settings.RAG_CONF_B0 + settings.RAG_CONF_B1 * top_rerank
+             + settings.RAG_CONF_B2 * gap + settings.RAG_CONF_B3 * coverage)
+        value = round(100 * _sigmoid(z))
+    else:
+        value = base["retrievalConfidence"]
+
+    return {
+        "pregenConfidence": int(value),
+        "topRerank": round(top_rerank, 4),
+        "gap": round(gap, 4),
+        "coverage": round(coverage, 4),
+        "rerankAvailable": rerank_available,
+    }
+
+
 # Conflict detection and prompt rendering moved to
 # app/services/conflict_detection.py (numeric + date + semantic detectors);
 # resolution lives in app/services/conflict_resolution.py. Re-exported here

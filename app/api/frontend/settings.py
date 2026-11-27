@@ -21,7 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from app.core import pq_crypto, subscription_guard
 from app.core.rate_limit import limiter
-from app.core.rbac import require_admin, require_owner
+from app.core.rbac import require_admin, require_owner, resolve_role
 from sqlalchemy import func, select, update as _sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -42,6 +42,10 @@ from app.schemas.frontend import (
     FEApiKey,
     FEBillingInfo,
     FECheckoutRequest,
+    FEConfirmSetupRequest,
+    FEConfirmTopupRequest,
+    FEWalletTopupIntentResponse,
+    FESubscriptionStatus,
     FECheckoutResponse,
     FEChangePlanRequest,
     FECreateApiKeyRequest,
@@ -203,6 +207,11 @@ async def _get_or_create_payment_method(user: User, db: AsyncSession) -> Payment
 
 async def _billing_info(user: User, db: AsyncSession) -> FEBillingInfo:
     subscription = await helpers.get_subscription(user.tenant_id, db)
+    if subscription is not None:
+        # Stripe is the source of truth: reconcile first so the page never
+        # shows a stale plan/status/card when a webhook was missed or delayed.
+        await stripe_service.refresh_from_stripe(subscription, db)
+        await stripe_service.ensure_card_synced(subscription, db)
     payment = await _get_or_create_payment_method(user, db)
     fe_plan = helpers.fe_plan_for_subscription(subscription)
 
@@ -212,6 +221,9 @@ async def _billing_info(user: User, db: AsyncSession) -> FEBillingInfo:
     renews_on = helpers.first_of_next_month()
     if subscription is not None and subscription.expires_at is not None:
         renews_on = subscription.expires_at
+    # "Past Due" = a renewal charge failed and access is paused.
+    if subscription is not None and subscription.status == SubscriptionStatus.expired and subscription.stripe_subscription_id:
+        fe_status = "Past Due"
 
     trial_ends_on = None
     if subscription is not None and subscription.status == SubscriptionStatus.trial and subscription.expires_at:
@@ -227,6 +239,9 @@ async def _billing_info(user: User, db: AsyncSession) -> FEBillingInfo:
         days_elapsed = (helpers._utcnow() - helpers._as_aware(tenant.created_at)).days
         trial_days_remaining = max(0, settings.TRIAL_DURATION_DAYS - days_elapsed)
 
+    from app.core.subscription_guard import _currently_usable
+
+    access_active = subscription is not None and _currently_usable(subscription)
     return FEBillingInfo(
         planId=fe_plan,
         status=fe_status,
@@ -242,6 +257,8 @@ async def _billing_info(user: User, db: AsyncSession) -> FEBillingInfo:
             else None
         ),
         trialEndsOn=trial_ends_on,
+        accessActive=access_active,
+        cancelAtPeriodEnd=bool(access_active and subscription.status == SubscriptionStatus.cancelled),
         walletBalanceUsd=float(tenant.balance_usd or 0),
         trialMessagesRemaining=trial_messages_remaining,
         trialDaysRemaining=trial_days_remaining,
@@ -273,9 +290,12 @@ async def start_checkout(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No subscription found.")
 
     plan_name = helpers.FE_TO_BE_PLAN[body.planId]
-    client_secret = await stripe_service.start_trial_subscription(
-        tenant, current_user, subscription, plan_name, db
-    )
+    try:
+        client_secret = await stripe_service.start_trial_subscription(
+            tenant, current_user, subscription, plan_name, db, skip_trial=body.skipTrial
+        )
+    except stripe_service.BillingError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.message)
     return FECheckoutResponse(clientSecret=client_secret)
 
 @router.post("/billing/cancel", response_model=FEBillingInfo)
@@ -305,7 +325,28 @@ async def change_plan(
         )
 
     plan_name = helpers.FE_TO_BE_PLAN[body.planId]
-    await stripe_service.change_subscription_plan(subscription, plan_name, db)
+    try:
+        await stripe_service.change_subscription_plan(subscription, plan_name, db)
+    except stripe_service.BillingError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.message)
+    return await _billing_info(current_user, db)
+
+@router.post("/billing/start-plan", response_model=FEBillingInfo)
+@limiter.limit("10/minute")
+async def start_plan_now(
+    request: Request,
+    body: FEChangePlanRequest,
+    current_user: User = Depends(require_owner),
+    db: AsyncSession = Depends(get_db),
+) -> FEBillingInfo:
+    """Ends the free trial now and starts the chosen plan (charged immediately)."""
+    subscription = await helpers.get_subscription(current_user.tenant_id, db)
+    if subscription is None or not subscription.stripe_subscription_id:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="No subscription to start — begin checkout first.")
+    try:
+        await stripe_service.start_plan_now(subscription, helpers.FE_TO_BE_PLAN[body.planId], db)
+    except stripe_service.BillingError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.message)
     return await _billing_info(current_user, db)
 
 @router.post("/billing/payment-method/setup-intent", response_model=FESetupIntentResponse)
@@ -324,6 +365,69 @@ async def create_payment_method_setup_intent(
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
     return FESetupIntentResponse(clientSecret=client_secret)
+
+@router.post("/billing/payment-method/confirm", response_model=FEBillingInfo)
+async def confirm_payment_method(
+    body: FEConfirmSetupRequest,
+    current_user: User = Depends(require_owner),
+    db: AsyncSession = Depends(get_db),
+) -> FEBillingInfo:
+    """Called right after Stripe confirms a new card: makes it the default for
+    the customer and the subscription (see stripe_service.confirm_card_setup)."""
+    subscription = await helpers.get_subscription(current_user.tenant_id, db)
+    if subscription is None or not subscription.stripe_customer_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No subscription found.")
+    try:
+        await stripe_service.confirm_card_setup(subscription, body.setupIntentId, db)
+    except stripe_service.BillingError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.message)
+    return await _billing_info(current_user, db)
+
+@router.post("/billing/wallet/topup-intent", response_model=FEWalletTopupIntentResponse)
+@limiter.limit("10/minute")
+async def start_wallet_topup_intent(
+    request: Request,
+    body: FEWalletTopupRequest,
+    current_user: User = Depends(require_owner),
+    db: AsyncSession = Depends(get_db),
+) -> FEWalletTopupIntentResponse:
+    """In-app wallet top-up: returns a PaymentIntent client secret for the
+    dashboard's 'Add funds' dialog (Stripe Elements, button says 'Pay $X')."""
+    tenant = await helpers.get_tenant(current_user, db)
+    try:
+        result = await stripe_service.create_wallet_topup_intent(tenant, current_user, body.amountUsd, db)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    return FEWalletTopupIntentResponse(**result)
+
+@router.post("/billing/wallet/topup/confirm", response_model=FEBillingInfo)
+async def confirm_wallet_topup(
+    body: FEConfirmTopupRequest,
+    current_user: User = Depends(require_owner),
+    db: AsyncSession = Depends(get_db),
+) -> FEBillingInfo:
+    """Credits the wallet for a PaymentIntent the browser just confirmed. The
+    payment is re-verified against Stripe and credited at most once."""
+    try:
+        await stripe_service.confirm_wallet_topup(body.paymentIntentId, current_user.tenant_id, db)
+    except stripe_service.BillingError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.message)
+    return await _billing_info(current_user, db)
+
+@router.get("/subscription-status", response_model=FESubscriptionStatus)
+async def subscription_status(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> FESubscriptionStatus:
+    """Whether this workspace may use the product right now — for any role, so
+    the dashboard can show agents/admins a block screen too (billing details
+    themselves stay owner-only)."""
+    from app.core.subscription_guard import is_subscription_usable
+
+    subscription = await helpers.get_subscription(current_user.tenant_id, db)
+    usable = await is_subscription_usable(subscription, db)
+    expires = helpers.format_date(subscription.expires_at) if subscription is not None and subscription.expires_at else None
+    return FESubscriptionStatus(usable=usable, expiresOn=expires, isOwner=(await resolve_role(current_user, db)) == TenantRole.owner)
 
 @router.post("/billing/wallet/topup", response_model=FEWalletTopupResponse)
 async def start_wallet_topup(

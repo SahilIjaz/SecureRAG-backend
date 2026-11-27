@@ -565,6 +565,10 @@ class FEBillingInfo(BaseModel):
     # "VISA •••• 0000 12/30" was shown as if a card were on file).
     paymentMethod: Optional[FEPaymentMethod] = None
     trialEndsOn: Optional[str] = None
+    # True while the workspace may use the product (trial / paid period left).
+    accessActive: bool = True
+    # True when the plan was cancelled but is paid through renewsOn.
+    cancelAtPeriodEnd: bool = False
     # Prepaid wallet — separate concept from the plan above (plan quota
     # covers document/storage limits; the wallet covers real LLM $ cost).
     # See NexusContext plan doc i-want-to-implement-floofy-hickey.md
@@ -580,6 +584,8 @@ class FEChangePlanRequest(BaseModel):
 
 class FECheckoutRequest(BaseModel):
     planId: FEPlanId
+    # Optional: skip the one-time 3-day trial and start paying for the plan now.
+    skipTrial: bool = False
 
 class FECheckoutResponse(BaseModel):
     clientSecret: str
@@ -592,6 +598,21 @@ class FEWalletTopupRequest(BaseModel):
 
 class FEWalletTopupResponse(BaseModel):
     checkoutUrl: str
+
+class FEWalletTopupIntentResponse(BaseModel):
+    clientSecret: str
+    paymentIntentId: str
+
+class FEConfirmTopupRequest(BaseModel):
+    paymentIntentId: str = Field(..., min_length=5, max_length=255, pattern=r"^pi_")
+
+class FEConfirmSetupRequest(BaseModel):
+    setupIntentId: str = Field(..., min_length=5, max_length=255, pattern=r"^seti_")
+
+class FESubscriptionStatus(BaseModel):
+    usable: bool
+    expiresOn: Optional[str] = None
+    isOwner: bool = False
 
 class FEWalletTransaction(BaseModel):
     id: str

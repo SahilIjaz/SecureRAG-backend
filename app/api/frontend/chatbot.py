@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(
     prefix="/chatbot",
     tags=["Frontend — Chatbot"],
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(require_admin), Depends(require_active_subscription)],
 )
 
 def _default_config(workspace_name: str, slug: str) -> dict:
